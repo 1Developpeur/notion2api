@@ -428,6 +428,11 @@ def _extract_text_from_patch(patch: dict[str, Any]) -> str:
                     if isinstance(item, dict) and isinstance(item.get("content"), str):
                         text_parts.append(str(item.get("content", "")))
                 content = "".join(text_parts)
+        elif isinstance(patch_v, dict) and "content" in patch_v:
+            # 子 value block 创建：o:"a" /s/N/value/- → {type:"text", content:"..."}
+            raw = patch_v.get("content")
+            if isinstance(raw, str):
+                content = raw
 
     elif patch_op == "x" and "v" in patch:
         content = patch["v"] if isinstance(patch["v"], str) else ""
@@ -675,6 +680,57 @@ def _classify_segment_type(effective_type: str) -> str:
     return SEG_CONTENT
 
 
+def _bind_pending_segment(
+    notion_idx: int,
+    pending: list[dict],
+    segment_types: dict[int, str],
+    value_types: dict[tuple[int, int], str],
+    next_val_id: dict[int, int],
+    patch_path: str,
+) -> None:
+    """
+    从 pending 列表中找到最匹配的段落绑定到 Notion 的真实 index。
+
+    策略：优先绑定 agent-inference（thinking）段落，因为它是唯一需要
+    精确分类的段落。其他段落（tool、meta、content）即使绑错也不影响输出，
+    因为它们的文本要么被跳过（meta/tool）要么本来就是 content。
+    """
+    if not pending:
+        return
+
+    # 从 patch_path 提取 value index，用于匹配
+    val_idx = _extract_value_index(patch_path)
+
+    # 策略：如果 path 引用了 value/0/content，优先找有 thinking value[0] 的段落
+    best_idx = 0  # 默认取第一个
+    if val_idx is not None:
+        for i, seg in enumerate(pending):
+            vt = seg.get("value_types", {})
+            if vt.get(val_idx) == SEG_THINKING:
+                best_idx = i
+                break
+
+    chosen = pending.pop(best_idx)
+    segment_types[notion_idx] = chosen["seg_class"]
+    for vi, vc in chosen["value_types"].items():
+        value_types[(notion_idx, vi)] = vc
+    next_val_id[notion_idx] = chosen["next_val_id"]
+
+    logger.debug(
+        "Pending segment bound to Notion index",
+        extra={
+            "request_info": {
+                "event": "segment_bound",
+                "notion_idx": notion_idx,
+                "seg_class": chosen["seg_class"],
+                "value_types": {str(k): v for k, v in chosen["value_types"].items()},
+                "remaining_pending": len(pending),
+                "patch_path": patch_path,
+            }
+        },
+    )
+
+
 def parse_stream(response: requests.Response) -> Generator[dict[str, Any], None, None]:
     """
     解析 Notion NDJSON 流，输出三种结构化事件：
@@ -695,10 +751,17 @@ def parse_stream(response: requests.Response) -> Generator[dict[str, Any], None,
     search_json_depth = 0
 
     # ---- 段落注册表 ----
-    segment_types: dict[int, str] = {}          # seg_index → SEG_THINKING / SEG_TOOL / SEG_CONTENT
-    value_types: dict[tuple[int, int], str] = {}  # (seg_index, val_index) → 类型
-    next_seg_id = 0                             # /s/- 追加时分配的递增序号
-    next_val_id: dict[int, int] = {}            # seg_index → 下一个 value block 序号
+    # Notion 的 /s/N 中的 N 是全局 index（包括 config/context/user 等隐含段落），
+    # 但 o:"a" /s/- 不告诉我们真实 index。
+    # 策略：o:"a" /s/- 时记录到 pending dict。
+    # 当 o:"x" /s/N/... 或 o:"a" /s/N/... 首次引用未知 N 时，
+    # 从 pending 中找最匹配的段落绑定（优先匹配 agent-inference/thinking 类型）。
+    segment_types: dict[int, str] = {}            # notion_index → SEG_THINKING / SEG_TOOL / SEG_CONTENT
+    value_types: dict[tuple[int, int], str] = {}  # (notion_index, val_index) → 类型
+    next_val_id: dict[int, int] = {}              # notion_index → 下一个 value block 序号
+
+    # pending：o:"a" /s/- 注册但尚未绑定到 Notion 真实 index 的段落
+    _pending_segments: list[dict] = []  # [{seg_class, value_types_local, next_val_id_local}]
 
     for line in response.iter_lines(decode_unicode=True):
         if not line:
@@ -773,14 +836,11 @@ def parse_stream(response: requests.Response) -> Generator[dict[str, Any], None,
             patch_role: str | None = None
 
             if is_new_toplevel_segment:
-                # 分配序号，记录类型
-                seg_idx = next_seg_id
-                next_seg_id += 1
                 seg_class = _classify_segment_type(effective_type)
-                segment_types[seg_idx] = seg_class
 
-                # 关键修复：遍历 v.value 数组，为每个元素设置正确的类型
-                # Opus/GPT 模型在 agent-inference 的 value 数组中明确标注了每个元素的 type
+                # 收集 value item 类型
+                local_value_types: dict[int, str] = {}
+                local_next_val_id = 0
                 if isinstance(patch_v, dict) and "value" in patch_v:
                     value_array = patch_v.get("value")
                     if isinstance(value_array, list):
@@ -788,39 +848,49 @@ def parse_stream(response: requests.Response) -> Generator[dict[str, Any], None,
                             if isinstance(item, dict):
                                 item_type = str(item.get("type", "") or "").lower()
                                 item_class = _classify_segment_type(item_type)
-                                value_types[(seg_idx, idx)] = item_class
-                                next_val_id[seg_idx] = idx + 1
+                                local_value_types[idx] = item_class
+                                local_next_val_id = idx + 1
 
-                # 如果 v.value 不存在或为空，value[0] 继承段落类型
-                if (seg_idx, 0) not in value_types:
-                    value_types[(seg_idx, 0)] = seg_class
-                    next_val_id[seg_idx] = max(next_val_id.get(seg_idx, 0), 1)
+                if 0 not in local_value_types:
+                    local_value_types[0] = seg_class
+                    local_next_val_id = max(local_next_val_id, 1)
 
-                # 本 patch 后续处理使用此 seg_idx
-                patch_seg = seg_idx
-                patch_role = seg_class
+                # 加入 pending 队列，等待 o:"x" /s/N 绑定真实 index
+                _pending_segments.append({
+                    "seg_class": seg_class,
+                    "value_types": local_value_types,
+                    "next_val_id": local_next_val_id,
+                })
+
+                # 初始 patch 的文本用 value[0] 的类型
+                patch_role = local_value_types.get(0, seg_class)
+                # patch_seg 暂时设为 None，因为还不知道真实 index
+                patch_seg = None
 
                 logger.debug(
-                    "Segment registered",
+                    "Segment registered (pending)",
                     extra={
                         "request_info": {
                             "event": "segment_registered",
-                            "seg_idx": seg_idx,
+                            "pending_idx": len(_pending_segments) - 1,
                             "seg_class": seg_class,
                             "effective_type": effective_type,
-                            "patch": _truncate_json(patch, 500),
+                            "value_types": local_value_types,
+                            "patch_role": patch_role,
                         }
                     },
                 )
+
             elif patch_op == "a" and patch_seg is not None:
                 # o:"a" 但 path 不是 /s/-（如 /s/2/value/-），属于已有段落的子追加
-                if patch_seg >= next_seg_id:
-                    next_seg_id = patch_seg + 1
+                # 先尝试绑定 pending 段落
+                if patch_seg not in segment_types and _pending_segments:
+                    _bind_pending_segment(patch_seg, _pending_segments, segment_types, value_types, next_val_id, patch_path)
+
                 if patch_seg not in segment_types:
                     segment_types[patch_seg] = _classify_segment_type(effective_type)
 
-                # 关键：检测 /s/N/value/<idx|-> 子块追加
-                # 某些模型会发送显式索引（/value/1）而不是 /value/-。
+                # 检测 /s/N/value/<idx|-> 子块追加
                 value_add_idx = _extract_value_add_index(patch_path)
                 if value_add_idx is not None:
                     vid = next_val_id.get(patch_seg, 0) if value_add_idx < 0 else value_add_idx
@@ -831,22 +901,9 @@ def parse_stream(response: requests.Response) -> Generator[dict[str, Any], None,
                     in_lang_tag[0] = False
                     in_primary_attr[0] = False
 
-                    logger.debug(
-                        "Value block registered",
-                        extra={
-                            "request_info": {
-                                "event": "value_block_registered",
-                                "seg_idx": patch_seg,
-                                "val_idx": vid,
-                                "val_class": val_class,
-                                "effective_type": effective_type,
-                                "patch_path": patch_path,
-                                "value_add_idx": value_add_idx,
-                                "patch_v_type": type(patch_v).__name__,
-                                "registered_value_types": dict(value_types),
-                            }
-                        },
-                    )
+            # ========== 绑定 pending 段落（o:"x" 首次引用时） ==========
+            if patch_seg is not None and patch_seg not in segment_types and _pending_segments:
+                _bind_pending_segment(patch_seg, _pending_segments, segment_types, value_types, next_val_id, patch_path)
 
             # ========== 确定当前 patch 所属的角色 ==========
             if patch_role is not None:
@@ -947,89 +1004,7 @@ def parse_stream(response: requests.Response) -> Generator[dict[str, Any], None,
             if seg_owner == SEG_META:
                 continue
             if seg_owner in (SEG_THINKING, SEG_TOOL):
-                # Enhanced fix for Opus/GPT/Sonnet thinking content overflow
-                # Some models (especially Opus/Sonnet) include main content in thinking
-                # Detect split point: first "\n\n" followed by Chinese or English response
-                thinking_text = cleaned
-
-                # Detect content overflow
-                overflow_split = None
-
-                # Extended pattern list covering more models (especially Sonnet)
-                patterns = [
-                    # Original patterns
-                    "\n\n在", "\n\nThe", "\n\n回答", "\n\nAnswer", "\n\n所以", "\n\nThus",
-                    # New English patterns (Sonnet common)
-                    "\n\nLet me", "\n\nI'll", "\n\nI will", "\n\nTo", "\n\nBased", "\n\nHere",
-                    "\n\nFirst", "\n\nNext", "\n\nFinally", "\n\nIn conclusion",
-                    # Thinking markers
-                    "\n\nThinking", "\n\nReasoning", "\n\nAnalysis",
-                    # New Chinese patterns
-                    "\n\n让我", "\n\n根据", "\n\n分析", "\n\n首先", "\n\n其次", "\n\n最后",
-                    "\n\n综上所述", "\n\n因此",
-                ]
-
-                for pattern in patterns:
-                    if pattern in thinking_text:
-                        parts = thinking_text.split(pattern, 1)
-                        if len(parts) > 1 and len(parts[1]) > 3:
-                            overflow_split = (parts[0], pattern + parts[1])
-                            break
-
-                # If simple patterns didn't detect, try regex semantic detection
-                if not overflow_split:
-                    import re
-                    semantic_patterns = [
-                        r"\n\n\d+\.\s",
-                        r"\n\n[-•*]\s",
-                        r"\n\n(?:Answer|Response|Conclusion|Result):",
-                    ]
-
-                    for semantic_pattern in semantic_patterns:
-                        match = re.search(semantic_pattern, thinking_text)
-                        if match:
-                            split_pos = match.start()
-                            if split_pos > 20:
-                                overflow_split = (thinking_text[:split_pos], thinking_text[split_pos:])
-                                break
-
-                # Fallback: for long text (>500 chars) split at second-to-last \n\n
-                if not overflow_split and len(thinking_text) > 500:
-                    paragraph_count = thinking_text.count("\n\n")
-                    if paragraph_count >= 2:
-                        last_split = thinking_text.rfind("\n\n", 0, -1)
-                        second_last_split = thinking_text.rfind("\n\n", 0, last_split)
-                        if second_last_split > 0:
-                            overflow_split = (thinking_text[:second_last_split], thinking_text[second_last_split:])
-
-                if overflow_split:
-                    pure_thinking, overflow_content = overflow_split
-                    logger.debug(
-                        "Thinking content overflow detected and split",
-                        extra={
-                            "request_info": {
-                                "event": "thinking_overflow_split",
-                                "thinking_length": len(pure_thinking),
-                                "overflow_length": len(overflow_content),
-                                "overflow_preview": overflow_content[:100] if len(overflow_content) > 100 else overflow_content,
-                                "detection_method": "pattern" if any(p in thinking_text for p in patterns[:6]) else "enhanced",
-                            }
-                        },
-                    )
-                    yield {"type": "thinking", "text": pure_thinking}
-                else:
-                    logger.debug(
-                        "Thinking segment processed without overflow detection",
-                        extra={
-                            "request_info": {
-                                "event": "thinking_segment_processed",
-                                "thinking_length": len(thinking_text),
-                                "overflow_detected": False,
-                                "paragraph_count": thinking_text.count("\n\n"),
-                            }
-                        },
-                    )
-                    yield {"type": "thinking", "text": thinking_text}
+                yield {"type": "thinking", "text": cleaned}
             else:
                 yield {"type": "content", "text": cleaned}
 

@@ -65,3 +65,6 @@ docker-compose.override.yml
 # Local cleanup folder
 0311_cleanup/
 
+
+# Response debug data (contains sensitive tokens)
+response/
