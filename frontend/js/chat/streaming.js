@@ -70,10 +70,34 @@ window.NotionAI.Chat.Streaming = {
             }
 
             if (!response.ok) {
-                if (response.status === 401) {
-                    throw new Error("API KEY doesn't match.");
+                // Read the response body to get structured error info
+                let errorInfo = { message: `HTTP Error: ${response.status}`, code: '', suggestion: '' };
+                try {
+                    const errorBody = await response.json();
+                    if (errorBody?.error) {
+                        errorInfo.message = errorBody.error.message || errorInfo.message;
+                        errorInfo.code = errorBody.error.code || '';
+                        errorInfo.suggestion = errorBody.error.suggestion || '';
+                        errorInfo.detail = errorBody.error.detail || '';
+                    } else if (errorBody?.detail) {
+                        // FastAPI HTTPException format
+                        errorInfo.message = errorBody.detail;
+                    }
+                } catch (e) {
+                    // Response body is not JSON, use status code
                 }
-                throw new Error(`HTTP Error: ${response.status}`);
+
+                if (response.status === 401) {
+                    errorInfo.message = errorInfo.message || "API KEY doesn't match.";
+                    errorInfo.suggestion = errorInfo.suggestion || "Check your API Key in Settings.";
+                }
+
+                const err = new Error(errorInfo.message);
+                err.errorCode = errorInfo.code;
+                err.suggestion = errorInfo.suggestion;
+                err.errorDetail = errorInfo.detail;
+                err.httpStatus = response.status;
+                throw err;
             }
 
             // Process stream
@@ -83,10 +107,13 @@ window.NotionAI.Chat.Streaming = {
         } catch (err) {
             if (err.name !== 'AbortError') {
                 console.error('API Error:', err);
-                window.NotionAI.Chat.Renderer.updateAIMessage(
+                window.NotionAI.Chat.Renderer.showErrorCard(
                     aiWrapper,
-                    `**Error:** Failed to connect to backend.\n\n${err.message}`,
-                    true
+                    err.message,
+                    err.errorCode || '',
+                    err.suggestion || '',
+                    err.errorDetail || '',
+                    err.httpStatus || 0
                 );
             }
             throw err;

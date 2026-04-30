@@ -24,6 +24,108 @@ from app.schemas import (
 
 router = APIRouter()
 
+
+# ─── 结构化错误响应 ─────────────────────────────────────────────
+def _classify_upstream_error(exc: NotionUpstreamError) -> dict[str, Any]:
+    """将 NotionUpstreamError 分类为结构化错误信息，前端可直接展示。"""
+    sc = exc.status_code
+    excerpt = exc.response_excerpt or ""
+
+    if sc == 401:
+        return {
+            "code": "NOTION_401",
+            "type": "upstream_auth_error",
+            "message": "Notion 认证失败 (HTTP 401)，token 可能已过期",
+            "suggestion": "请重新获取 token_v2 并更新配置",
+        }
+    if sc == 403:
+        return {
+            "code": "NOTION_403",
+            "type": "upstream_forbidden",
+            "message": "Notion 拒绝访问 (HTTP 403)，可能被 Cloudflare 拦截或账号受限",
+            "suggestion": "检查服务器网络环境，或稍后重试",
+        }
+    if sc == 429:
+        return {
+            "code": "NOTION_429",
+            "type": "upstream_rate_limit",
+            "message": "Notion 请求频率过高 (HTTP 429)",
+            "suggestion": "等待几秒后重试，或配置多个账号分散请求",
+        }
+    if sc and sc >= 500:
+        return {
+            "code": f"NOTION_{sc}",
+            "type": "upstream_server_error",
+            "message": f"Notion 服务暂时不可用 (HTTP {sc})",
+            "suggestion": "Notion 服务端故障，请稍后重试",
+        }
+    if "timed out" in str(exc).lower():
+        return {
+            "code": "NETWORK_TIMEOUT",
+            "type": "network_timeout",
+            "message": "连接 Notion 超时",
+            "suggestion": "检查服务器到 notion.so 的网络连通性",
+        }
+    if "failed" in str(exc).lower() and not sc:
+        return {
+            "code": "NETWORK_ERROR",
+            "type": "network_error",
+            "message": "无法连接 Notion 服务",
+            "suggestion": "检查服务器网络和 DNS 配置",
+        }
+    if "empty" in str(exc).lower():
+        return {
+            "code": "NOTION_EMPTY",
+            "type": "upstream_empty_response",
+            "message": "Notion 返回了空内容",
+            "suggestion": "请重新发送消息",
+        }
+    # 兜底
+    return {
+        "code": "UPSTREAM_UNKNOWN",
+        "type": "upstream_error",
+        "message": str(exc),
+        "suggestion": "请稍后重试",
+    }
+
+
+def _build_error_response(
+    status_code: int,
+    *,
+    code: str,
+    message: str,
+    error_type: str = "server_error",
+    suggestion: str = "",
+    detail: str = "",
+) -> JSONResponse:
+    """构建统一格式的错误 JSON 响应，前端可解析展示。"""
+    content: dict[str, Any] = {
+        "error": {
+            "message": message,
+            "type": error_type,
+            "code": code,
+        }
+    }
+    if suggestion:
+        content["error"]["suggestion"] = suggestion
+    if detail:
+        content["error"]["detail"] = detail
+    return JSONResponse(status_code=status_code, content=content)
+
+
+def _upstream_error_response(exc: NotionUpstreamError) -> JSONResponse:
+    """将 NotionUpstreamError 转为统一的 503 JSON 响应。"""
+    info = _classify_upstream_error(exc)
+    return _build_error_response(
+        503,
+        code=info["code"],
+        message=info["message"],
+        error_type=info["type"],
+        suggestion=info.get("suggestion", ""),
+        detail=exc.response_excerpt or "",
+    )
+
+
 RECALL_INTENT_KEYWORDS = [
     "之前",
     "上次",
@@ -702,9 +804,9 @@ def _persist_round(
     )
 
 
-def _persist_history_messages(manager, conversation_id: str, history_messages: List[Tuple[str, str]]) -> None:
-    for role, content in history_messages:
-        manager.add_message(conversation_id, role, content)
+def _persist_history_messages(manager, conversation_id: str, history_messages: List[Tuple[str, str, str]]) -> None:
+    for role, content, thinking in history_messages:
+        manager.add_message(conversation_id, role, content, thinking)
 
 
 def _is_client_disconnect_error(exc: BaseException) -> bool:
@@ -737,7 +839,7 @@ async def _handle_lite_request(
         )
 
     response_id = f"chatcmpl-{uuid.uuid4().hex}"
-    max_retries = min(3, len(pool.clients))
+    max_retries = max(3, len(pool.clients))
 
     for attempt in range(1, max_retries + 1):
         client = None
@@ -836,21 +938,18 @@ async def _handle_lite_request(
                 },
             )
             if attempt == max_retries or not exc.retriable:
-                raise HTTPException(status_code=503, detail=str(exc)) from exc
+                return _upstream_error_response(exc)
         except RuntimeError as exc:
             logger.error(
                 "Lite mode: No available client in account pool",
                 extra={"request_info": {"event": "lite_account_pool_unavailable", "detail": str(exc)}},
             )
-            return JSONResponse(
-                status_code=503,
-                content={
-                    "error": {
-                        "message": str(exc),
-                        "type": "rate_limit_error",
-                        "code": "account_pool_cooling"
-                    }
-                }
+            return _build_error_response(
+                503,
+                code="POOL_COOLING",
+                message=str(exc),
+                error_type="account_pool_cooling",
+                suggestion="所有账号暂时冷却中，请等待几秒后重试",
             )
         except HTTPException:
             raise
@@ -868,12 +967,21 @@ async def _handle_lite_request(
                 },
             )
             if attempt == max_retries:
-                raise HTTPException(
-                    status_code=500,
-                    detail="Unexpected internal error while generating completion.",
+                return _build_error_response(
+                    500,
+                    code="INTERNAL_ERROR",
+                    message="服务内部异常",
+                    error_type="internal_error",
+                    suggestion="请稍后重试，如持续出现请联系管理员",
                 )
 
-    raise HTTPException(status_code=503, detail="Service unavailable: all upstream retries exhausted.")
+    return _build_error_response(
+        503,
+        code="RETRIES_EXHAUSTED",
+        message="所有重试均已失败",
+        error_type="upstream_error",
+        suggestion="Notion 上游服务暂时不可用，请稍后重试",
+    )
 
 
 async def _handle_standard_request(
@@ -903,7 +1011,7 @@ async def _handle_standard_request(
         )
 
     response_id = f"chatcmpl-{uuid.uuid4().hex}"
-    max_retries = min(3, len(pool.clients))
+    max_retries = max(3, len(pool.clients))
 
     for attempt in range(1, max_retries + 1):
         client = None
@@ -1046,21 +1154,18 @@ async def _handle_standard_request(
                 },
             )
             if attempt == max_retries or not exc.retriable:
-                raise HTTPException(status_code=503, detail=str(exc)) from exc
+                return _upstream_error_response(exc)
         except RuntimeError as exc:
             logger.error(
                 "Standard mode: No available client in account pool",
                 extra={"request_info": {"event": "standard_account_pool_unavailable", "detail": str(exc)}},
             )
-            return JSONResponse(
-                status_code=503,
-                content={
-                    "error": {
-                        "message": str(exc),
-                        "type": "rate_limit_error",
-                        "code": "account_pool_cooling"
-                    }
-                }
+            return _build_error_response(
+                503,
+                code="POOL_COOLING",
+                message=str(exc),
+                error_type="account_pool_cooling",
+                suggestion="所有账号暂时冷却中，请等待几秒后重试",
             )
         except HTTPException:
             raise
@@ -1078,12 +1183,21 @@ async def _handle_standard_request(
                 },
             )
             if attempt == max_retries:
-                raise HTTPException(
-                    status_code=500,
-                    detail="Unexpected internal error while generating completion.",
+                return _build_error_response(
+                    500,
+                    code="INTERNAL_ERROR",
+                    message="服务内部异常",
+                    error_type="internal_error",
+                    suggestion="请稍后重试，如持续出现请联系管理员",
                 )
 
-    raise HTTPException(status_code=503, detail="Service unavailable: all upstream retries exhausted.")
+    return _build_error_response(
+        503,
+        code="RETRIES_EXHAUSTED",
+        message="所有重试均已失败",
+        error_type="upstream_error",
+        suggestion="Notion 上游服务暂时不可用，请稍后重试",
+    )
 
 
 @router.post("/chat/completions", tags=["chat"])
@@ -1158,8 +1272,8 @@ async def create_chat_completion(
             # 3. 解决"滑动窗口缺失 AI 回复"的 bug
             if history_count > existing_count:
                 _persist_history_messages(manager, conversation_id, history_messages)
-                restored_user_count = sum(1 for role, _ in history_messages if role == "user")
-                restored_assistant_count = sum(1 for role, _ in history_messages if role == "assistant")
+                restored_user_count = sum(1 for role, *_ in history_messages if role == "user")
+                restored_assistant_count = sum(1 for role, *_ in history_messages if role == "assistant")
 
                 logger.info(
                     "Restored history into conversation",
@@ -1178,7 +1292,7 @@ async def create_chat_completion(
                 )
 
     response_id = f"chatcmpl-{uuid.uuid4().hex}"
-    max_retries = min(3, len(pool.clients))
+    max_retries = max(3, len(pool.clients))
 
     for attempt in range(1, max_retries + 1):
         client = None
@@ -1563,22 +1677,18 @@ async def create_chat_completion(
                 },
             )
             if attempt == max_retries or not exc.retriable:
-                raise HTTPException(status_code=503, detail=str(exc)) from exc
+                return _upstream_error_response(exc)
         except RuntimeError as exc:
             logger.error(
                 "No available client in account pool",
                 extra={"request_info": {"event": "account_pool_unavailable", "detail": str(exc)}},
             )
-            # 返回标准的 OpenAI 错误格式，让客户端（如 Cherry Studio）能直观显示报错
-            return JSONResponse(
-                status_code=503,
-                content={
-                    "error": {
-                        "message": str(exc),
-                        "type": "rate_limit_error",
-                        "code": "account_pool_cooling"
-                    }
-                }
+            return _build_error_response(
+                503,
+                code="POOL_COOLING",
+                message=str(exc),
+                error_type="account_pool_cooling",
+                suggestion="所有账号暂时冷却中，请等待几秒后重试",
             )
         except HTTPException:
             raise
@@ -1597,12 +1707,21 @@ async def create_chat_completion(
                 },
             )
             if attempt == max_retries:
-                raise HTTPException(
-                    status_code=500,
-                    detail="Unexpected internal error while generating completion.",
+                return _build_error_response(
+                    500,
+                    code="INTERNAL_ERROR",
+                    message="服务内部异常",
+                    error_type="internal_error",
+                    suggestion="请稍后重试，如持续出现请联系管理员",
                 )
 
-    raise HTTPException(status_code=503, detail="Service unavailable: all upstream retries exhausted.")
+    return _build_error_response(
+        503,
+        code="RETRIES_EXHAUSTED",
+        message="所有重试均已失败",
+        error_type="upstream_error",
+        suggestion="Notion 上游服务暂时不可用，请稍后重试",
+    )
 
 
 @router.delete("/conversations/{conversation_id}", tags=["chat"])

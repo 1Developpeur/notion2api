@@ -1,3 +1,4 @@
+import os
 import threading
 import time
 import uuid
@@ -13,6 +14,9 @@ from app.stream_parser import parse_stream
 
 # 禁用 SSL 警告
 urllib3.disable_warnings(urllib3.exceptions.InsecureRequestWarning)
+
+# 可通过环境变量覆盖 Notion 客户端版本号（Notion 更新后可能需要同步）
+NOTION_CLIENT_VERSION = os.getenv("NOTION_CLIENT_VERSION", "23.13.20260228.0625")
 
 
 class NotionUpstreamError(RuntimeError):
@@ -47,6 +51,10 @@ class NotionOpusAPI:
         self.url = "https://www.notion.so/api/v3/runInferenceTranscript"
         self.delete_url = "https://www.notion.so/api/v3/saveTransactions"
         self.account_key = self.user_email or self.user_id or "unknown-account"
+
+        # 复用 cloudscraper 实例：保留 Cloudflare challenge cookie，避免每次请求都重新过验证
+        self._scraper = cloudscraper.create_scraper()
+        self._scraper_lock = threading.Lock()
 
     def _to_notion_transcript(self, transcript: list[dict[str, Any]]) -> list[dict[str, Any]]:
         converted: list[dict[str, Any]] = []
@@ -243,10 +251,9 @@ class NotionOpusAPI:
             # 关键修复：设置 is_partial_transcript=True，让 Notion 接受客户端的历史消息
             request_profile["is_partial_transcript"] = True
 
-        cookies = {
-            "token_v2": self.token_v2,
-            "notion_user_id": self.user_id,
-        }
+        # 把 cookie 直接放进 header，绕过 cloudscraper 的 cookie jar
+        # （cookie jar 可能被 Cloudflare challenge 写入含非 ASCII 字符的 cookie，导致编码错误）
+        cookie_header = f"token_v2={self.token_v2}; notion_user_id={self.user_id}"
 
         headers = {
             "Content-Type": "application/json",
@@ -255,9 +262,10 @@ class NotionOpusAPI:
             "x-notion-space-id": self.space_id,
             "x-notion-active-user-header": self.user_id,
             "notion-audit-log-platform": "web",
-            "notion-client-version": "23.13.20260228.0625",
+            "notion-client-version": NOTION_CLIENT_VERSION,
             "origin": "https://www.notion.so",
             "referer": "https://www.notion.so/ai",
+            "cookie": cookie_header,
         }
 
         payload = {
@@ -305,18 +313,37 @@ class NotionOpusAPI:
         )
 
         try:
-            scraper = cloudscraper.create_scraper()
+            with self._scraper_lock:
+                scraper = self._scraper
+                scraper.cookies.clear()
             response = scraper.post(
                 self.url,
-                cookies=cookies,
                 headers=headers,
                 json=payload,
                 stream=True,
                 timeout=(15, 120),
             )
+            if response.status_code == 403:
+                # Cloudflare challenge 可能过期，重建 scraper 后重试一次
+                response.close()
+                logger.warning(
+                    "Got 403, rebuilding cloudscraper to refresh Cloudflare challenge",
+                    extra={"request_info": {"event": "cloudflare_challenge_refresh", "account": self.account_key}},
+                )
+                new_scraper = cloudscraper.create_scraper()
+                with self._scraper_lock:
+                    self._scraper = new_scraper
+                response = new_scraper.post(
+                    self.url,
+                    headers=headers,
+                    json=payload,
+                    stream=True,
+                    timeout=(15, 120),
+                )
             if response.status_code != 200:
                 excerpt = (response.text or "").strip().replace("\n", " ")[:300]
-                retriable = response.status_code >= 500  # 429 不再重试，避免账号被冷却
+                # 429 和 5xx 都允许重试（换账号或等待后重试）
+                retriable = response.status_code >= 500 or response.status_code == 429
                 raise NotionUpstreamError(
                     f"Notion upstream returned HTTP {response.status_code}.",
                     status_code=response.status_code,

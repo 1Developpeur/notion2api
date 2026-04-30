@@ -22,11 +22,13 @@ class AccountPool:
         self._current_index = 0
         self._lock = threading.Lock()
         
-    def get_client(self) -> NotionOpusAPI:
+    def get_client(self, wait_if_cooling: bool = True) -> NotionOpusAPI:
         """
         轮询（Round-Robin）返回下一个可用客户端。
         过滤掉正处于冷却期中的客户端。
-        若所有客户端均不可用，将抛出异常。
+
+        如果 wait_if_cooling=True（默认），当所有账号都在冷却时，
+        会等待最近的冷却结束后返回，而不是抛异常。
         """
         now = time.time()
         with self._lock:
@@ -46,9 +48,31 @@ class AccountPool:
                 # 如果转了一圈都没找到可用的
                 if self._current_index == start_index:
                     next_available = min(self.cooldown_until)
-                    wait_seconds = max(1, int(next_available - now))
+                    wait_seconds = max(0.5, next_available - now)
+
+                    if wait_if_cooling and wait_seconds <= 15:
+                        # 等待冷却结束后重新尝试
+                        logger.info(
+                            f"All accounts cooling, waiting {wait_seconds:.1f}s",
+                            extra={
+                                "request_info": {
+                                    "event": "account_pool_wait_cooling",
+                                    "wait_seconds": round(wait_seconds, 1),
+                                }
+                            },
+                        )
+                        # 释放锁再 sleep，避免阻塞其他线程
+                        self._lock.release()
+                        try:
+                            time.sleep(wait_seconds)
+                        finally:
+                            self._lock.acquire()
+                        # 更新时间后重新扫描
+                        now = time.time()
+                        continue
+
                     raise RuntimeError(
-                        f"Notion 账号限流中（触发官方公平使用政策），请在 {wait_seconds} 秒后重试。"
+                        f"所有账号冷却中，请在 {max(1, int(wait_seconds))} 秒后重试。"
                     )
 
     def get_status_summary(self) -> Dict[str, int]:
@@ -63,9 +87,9 @@ class AccountPool:
                 "cooling": cooling,
             }
                     
-    def mark_failed(self, client: NotionOpusAPI, cooldown_seconds: int = 10):
+    def mark_failed(self, client: NotionOpusAPI, cooldown_seconds: int = 3):
         """
-        标记某个客户端为临时不可用（默认冷却 60 秒后恢复）
+        标记某个客户端为临时不可用（默认冷却 3 秒后恢复）。
         """
         with self._lock:
             try:

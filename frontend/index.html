@@ -649,6 +649,22 @@ pre:hover .code-copy-btn{opacity:1}
 /* ===== FADE IN ===== */
 .fade-in{animation:fadeIn .2s ease}
 @keyframes fadeIn{from{opacity:0;transform:translateY(4px)}to{opacity:1;transform:none}}
+
+/* ===== ERROR CARD ===== */
+.error-card{border:1px solid #f5c6cb;border-radius:8px;padding:14px 16px;background:#fff5f5;color:#721c24;font-size:13px;line-height:1.5}
+[data-theme="dark"] .error-card{background:#2d1b1b;border-color:#5a2d2d;color:#f5c6cb}
+.error-card-header{display:flex;align-items:center;gap:8px;margin-bottom:8px;font-weight:600}
+.error-card-icon{font-size:16px;flex-shrink:0}
+.error-card-title{font-size:14px}
+.error-card-code{margin-left:auto;font-size:11px;font-family:monospace;padding:2px 6px;border-radius:4px;background:rgba(114,28,36,.1);color:#a94442}
+[data-theme="dark"] .error-card-code{background:rgba(245,198,203,.1);color:#f5c6cb}
+.error-card-message{margin-bottom:6px}
+.error-card-suggestion{font-size:12px;opacity:.85;margin-top:6px;padding-top:6px;border-top:1px solid rgba(114,28,36,.15)}
+[data-theme="dark"] .error-card-suggestion{border-top-color:rgba(245,198,203,.15)}
+.error-card-details{margin-top:8px;font-size:11px}
+.error-card-details summary{cursor:pointer;opacity:.7;user-select:none}
+.error-card-details pre{margin-top:4px;padding:8px;border-radius:4px;background:rgba(0,0,0,.05);white-space:pre-wrap;word-break:break-all;font-size:11px;max-height:120px;overflow-y:auto}
+[data-theme="dark"] .error-card-details pre{background:rgba(255,255,255,.05)}
 </style>
 
 <script>
@@ -755,7 +771,14 @@ window.NotionAI.Utils.Validation = {
 
 /* ===== MARKDOWN ===== */
 window.NotionAI.Utils.Markdown = {
-  renderToSafeHtml(md){return DOMPurify.sanitize(marked.parse(md||''),{USE_PROFILES:{html:true},ADD_ATTR:['target','rel']})},
+  _cleanFootnotes(md){
+    if(!md)return md;
+    let c=md.replace(/\[\^(\d+)\]/g,'');
+    c=c.replace(/^\[\^\d+\]:\s*.*$/gm,'');
+    c=c.replace(/\n{3,}/g,'\n\n');
+    return c.trim();
+  },
+  renderToSafeHtml(md){return DOMPurify.sanitize(marked.parse(this._cleanFootnotes(md||'')),{USE_PROFILES:{html:true},ADD_ATTR:['target','rel']})},
   setSafeMarkdown(el,md){
     el.innerHTML=this.renderToSafeHtml(md);
     this._processCitations(el);
@@ -1045,6 +1068,21 @@ window.NotionAI.Chat.Renderer = {
     const sh = wrapper.querySelector('.search-header');
     if (th) th.addEventListener('click', () => { wrapper.thinkingExpanded=!wrapper.thinkingExpanded; this.updateThinkingPanel(wrapper) });
     if (sh) sh.addEventListener('click', () => { wrapper.searchExpanded=!wrapper.searchExpanded; this.updateSearchPanel(wrapper) });
+  },
+  showErrorCard(wrapper, message, code, suggestion, detail, httpStatus) {
+    const mdDiv = wrapper.mdDivRef; if (!mdDiv) return;
+    if (wrapper._thinkingTimerInterval) { clearInterval(wrapper._thinkingTimerInterval); wrapper._thinkingTimerInterval = null; }
+    if (wrapper.thinkingCardRef) wrapper.thinkingCardRef.classList.add('hidden');
+    const esc = t => { const d = document.createElement('div'); d.textContent = t; return d.innerHTML; };
+    let h = '<div class="error-card"><div class="error-card-header"><span class="error-card-icon">⚠</span><span class="error-card-title">请求失败</span>';
+    if (code) h += `<span class="error-card-code">${esc(code)}</span>`;
+    h += '</div>';
+    h += `<div class="error-card-message">${esc(message)}</div>`;
+    if (suggestion) h += `<div class="error-card-suggestion">💡 ${esc(suggestion)}</div>`;
+    if (detail) h += `<details class="error-card-details"><summary>技术详情</summary><pre>${esc(detail)}</pre></details>`;
+    h += '</div>';
+    mdDiv.innerHTML = h; mdDiv.classList.remove('streaming-cursor');
+    window.NotionAI.Utils.DOM.scrollToBottom();
   }
 };
 </script>
@@ -1065,10 +1103,15 @@ window.NotionAI.Chat.Streaming = {
       if(window.NotionAI.API.Client.checkMemoryStatus(response))this.notifyMemoryDegradedOnce();
       const bid=window.NotionAI.API.Client.getConversationId(response);
       if(bid&&chat.conversationId!==bid){window.NotionAI.Chat.Storage.updateConversationId(chat.id,bid);chat.conversationId=bid}
-      if(!response.ok){if(response.status===401)throw new Error("API KEY doesn't match.");throw new Error(`HTTP Error: ${response.status}`)}
+      if(!response.ok){
+        let ei={message:`HTTP Error: ${response.status}`,code:'',suggestion:''};
+        try{const eb=await response.json();if(eb?.error){ei.message=eb.error.message||ei.message;ei.code=eb.error.code||'';ei.suggestion=eb.error.suggestion||'';ei.detail=eb.error.detail||''}else if(eb?.detail){ei.message=eb.detail}}catch(e){}
+        if(response.status===401){ei.message=ei.message||"API KEY doesn't match.";ei.suggestion=ei.suggestion||"Check your API Key in Settings."}
+        const err=new Error(ei.message);err.errorCode=ei.code;err.suggestion=ei.suggestion;err.errorDetail=ei.detail;err.httpStatus=response.status;throw err;
+      }
       return await this.processStream(response,aiWrapper,searchState,thinkingText,fullAiReply);
     } catch(err) {
-      if(err.name!=='AbortError'){console.error('API Error:',err);window.NotionAI.Chat.Renderer.updateAIMessage(aiWrapper,`**Error:** ${err.message}`,true)}
+      if(err.name!=='AbortError'){console.error('API Error:',err);window.NotionAI.Chat.Renderer.showErrorCard(aiWrapper,err.message,err.errorCode||'',err.suggestion||'',err.errorDetail||'',err.httpStatus||0)}
       throw err;
     }
   },
