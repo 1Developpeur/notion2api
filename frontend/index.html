@@ -6,7 +6,8 @@
 <title>Notion AI Studio</title>
 <script src="https://cdn.jsdelivr.net/npm/marked/marked.min.js"></script>
 <script src="https://cdn.jsdelivr.net/npm/dompurify@3.2.6/dist/purify.min.js"></script>
-<link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/highlight.js/11.9.0/styles/github.min.css">
+<link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/highlight.js/11.9.0/styles/github.min.css" id="hljs-light">
+<link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/highlight.js/11.9.0/styles/github-dark.min.css" id="hljs-dark" disabled>
 <script src="https://cdnjs.cloudflare.com/ajax/libs/highlight.js/11.9.0/highlight.min.js"></script>
 <style>
 /* ===== RESET & BASE ===== */
@@ -43,12 +44,20 @@ body{background:var(--bg);color:var(--text)}
 
 /* ===== SIDEBAR ===== */
 .sidebar{
-  width:220px;min-width:220px;height:100vh;
+  width:220px;min-width:160px;max-width:400px;height:100vh;
   background:var(--bg-sidebar);
   border-right:1px solid var(--border);
   display:flex;flex-direction:column;
   transition:transform .2s;
   z-index:100;
+  position:relative;
+}
+.sidebar-resize-handle{
+  position:absolute;top:0;right:-3px;width:6px;height:100%;
+  cursor:col-resize;z-index:101;
+}
+.sidebar-resize-handle:hover,.sidebar-resize-handle.active{
+  background:var(--border-active);opacity:.3;
 }
 .sidebar-top{
   height:48px;display:flex;align-items:center;
@@ -231,6 +240,7 @@ body{background:var(--bg);color:var(--text)}
 
 <!-- SIDEBAR -->
 <aside id="sidebar" class="sidebar">
+  <div class="sidebar-resize-handle" id="sidebarResizeHandle"></div>
   <div class="sidebar-top">
     <div class="search-box">
       <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="11" cy="11" r="8"/><path d="M21 21l-4.35-4.35"/></svg>
@@ -437,7 +447,10 @@ body{background:var(--bg);color:var(--text)}
   transition:opacity .15s;padding:2px 6px;border-radius:3px;
 }
 .assistant-message:hover .message-copy-btn{opacity:1}
+.user-message:hover .message-copy-btn{opacity:1}
+.user-message .message-copy-row{justify-content:flex-end}
 .message-copy-btn:hover{background:var(--bg-hover)}
+.message-copy-row{margin-top:8px;display:flex;justify-content:flex-start}
 
 /* Thinking card */
 .thinking-card{
@@ -929,6 +942,16 @@ window.NotionAI.Chat.Renderer = {
       const bubble = document.createElement('div');
       bubble.className = 'user-bubble';
       wrapper.appendChild(bubble);
+      const userCopyRow = document.createElement('div');
+      userCopyRow.className = 'message-copy-row';
+      const userCopyBtn = document.createElement('button');
+      userCopyBtn.className = 'message-copy-btn';
+      userCopyBtn.textContent = 'Copy';
+      userCopyBtn.onclick = () => {
+        navigator.clipboard.writeText(bubble.innerText).then(() => { userCopyBtn.textContent='Copied!'; setTimeout(()=>userCopyBtn.textContent='Copy',2000) });
+      };
+      userCopyRow.appendChild(userCopyBtn);
+      wrapper.appendChild(userCopyRow);
       return { wrapper, bubble };
     }
     const content = document.createElement('div');
@@ -951,7 +974,7 @@ window.NotionAI.Chat.Renderer = {
       const md = wrapper.mdDivRef;
       if (md) navigator.clipboard.writeText(md.innerText).then(() => { cb.textContent='Copied!'; setTimeout(()=>cb.textContent='Copy',2000) });
     };
-    meta.appendChild(cb);
+    // Copy button is now at bottom of message, not in meta
     content.appendChild(meta);
     wrapper.appendChild(content);
     return { wrapper, bubble: content };
@@ -1054,6 +1077,17 @@ window.NotionAI.Chat.Renderer = {
       window.NotionAI.Utils.Markdown.setSafeMarkdown(md, content);
       if (isFinished) { md.querySelectorAll('pre code').forEach(b=>hljs.highlightElement(b)); window.NotionAI.Utils.DOM.addCodeBlockCopyButtons(md) }
     }
+    // Copy button at bottom of message
+    const copyBtnWrapper = document.createElement('div');
+    copyBtnWrapper.className = 'message-copy-row';
+    const cb = document.createElement('button');
+    cb.className = 'message-copy-btn';
+    cb.textContent = 'Copy';
+    cb.onclick = () => {
+      if (md) navigator.clipboard.writeText(md.innerText).then(() => { cb.textContent='Copied!'; setTimeout(()=>cb.textContent='Copy',2000) });
+    };
+    copyBtnWrapper.appendChild(cb);
+    container.appendChild(copyBtnWrapper);
     return {
       bubbleRef:container, mdDivRef:md,
       searchCardRef:sc, searchExpanded:false, searchData:{queries:[],sources:[]},
@@ -1149,8 +1183,16 @@ window.NotionAI.UI.Theme = {
   apply(t){
     document.documentElement.setAttribute('data-theme',t);
     const sun=document.getElementById('sunIcon'),moon=document.getElementById('moonIcon');
-    if(t==='dark'){document.documentElement.classList.add('dark');if(sun)sun.classList.remove('hidden');if(moon)moon.classList.add('hidden')}
-    else{document.documentElement.classList.remove('dark');if(sun)sun.classList.add('hidden');if(moon)moon.classList.remove('hidden')}
+    const hljsLight=document.getElementById('hljs-light'),hljsDark=document.getElementById('hljs-dark');
+    if(t==='dark'){
+      document.documentElement.classList.add('dark');
+      if(sun)sun.classList.remove('hidden');if(moon)moon.classList.add('hidden');
+      if(hljsLight)hljsLight.disabled=true;if(hljsDark)hljsDark.disabled=false;
+    } else {
+      document.documentElement.classList.remove('dark');
+      if(sun)sun.classList.add('hidden');if(moon)moon.classList.remove('hidden');
+      if(hljsLight)hljsLight.disabled=false;if(hljsDark)hljsDark.disabled=true;
+    }
   },
   init(){this.apply(window.NotionAI.Core.State.get('theme'))}
 };
@@ -1542,6 +1584,32 @@ function setupHeaderTitleEditing(){
   });
 }
 
+// Sidebar resize
+function setupSidebarResize(){
+  const sidebar=document.getElementById('sidebar');
+  const handle=document.getElementById('sidebarResizeHandle');
+  if(!sidebar||!handle)return;
+  let startX,startW;
+  handle.addEventListener('mousedown',e=>{
+    e.preventDefault();
+    startX=e.clientX;startW=sidebar.offsetWidth;
+    handle.classList.add('active');
+    sidebar.style.transition='none';
+    const onMove=ev=>{
+      const w=Math.min(400,Math.max(160,startW+(ev.clientX-startX)));
+      sidebar.style.width=w+'px';
+    };
+    const onUp=()=>{
+      handle.classList.remove('active');
+      sidebar.style.transition='';
+      document.removeEventListener('mousemove',onMove);
+      document.removeEventListener('mouseup',onUp);
+    };
+    document.addEventListener('mousemove',onMove);
+    document.addEventListener('mouseup',onUp);
+  });
+}
+
 async function handleSend(){
   if(STATE.isGenerating)return;
   const text=window.NotionAI.UI.Input.getValue();if(!text)return;
@@ -1593,6 +1661,7 @@ function init(){
   renderWelcomeSuggestions();
   populateModels();
   setupHeaderTitleEditing();
+  setupSidebarResize();
 
   // Event listeners
   document.getElementById('themeToggleBtn').addEventListener('click',()=>window.NotionAI.UI.Theme.toggle());
