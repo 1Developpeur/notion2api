@@ -21,9 +21,10 @@ env/
 *.swo
 *~
 
-# Environment variables
+# Environment & Secrets
 .env
 .env.*
+accounts.json
 
 # Data & Database
 data/
@@ -40,30 +41,25 @@ logs/
 .gitignore
 
 # Documentation
-# README.md is usually needed
-# We want to INCLUDE GEMINI.md, CODEX.md, and ref/ for debugging
-# So we remove *.md and docs/ if they might catch them, 
-# or just allow them specifically.
-README.md
 docs/
-
-# AI Development Notes (AI-note is still ignored for size/security)
-AI-note/
+*.md
 
 # Testing
 .pytest_cache/
 .coverage
-test.py
-test_strip.py
 htmlcov/
 
-# Deployment & Docker
+# Deployment configs (already in container context)
 Dockerfile
 docker-compose.yml
 .dockerignore
-deploy.sh
-deploy.bat
-manage.sh
+
+# Scripts (not needed in container)
+scripts/
+
+# Debug data
+response/
+AI-note/
 
 # OS
 .DS_Store

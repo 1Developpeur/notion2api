@@ -78,9 +78,12 @@ Heavy mode requires `SILICONFLOW_API_KEY` (for conversation summary compression)
 #### Docker Deployment (Recommended)
 
 ```bash
-docker-compose up -d
+# Build and start
+docker-compose build --no-cache && docker-compose up -d
 # Access http://localhost:8000
 ```
+
+**Note**: `accounts.json` is mounted as a volume. After modifying accounts, just `docker-compose restart` — no rebuild needed.
 
 #### Local Run
 
@@ -163,17 +166,34 @@ Access `http://localhost:8000` to use the built-in Web UI:
 ### Using docker-compose (Recommended)
 
 ```bash
-# 1. Configure .env file
+# 1. Configure environment
 cp .env.example .env
+nano .env
 
-# 2. Start service
-docker-compose up -d
+# 2. Configure accounts (see accounts.README.md)
+nano accounts.json
 
-# 3. View logs
+# 3. Build and start
+docker-compose build --no-cache && docker-compose up -d
+
+# 4. View logs
 docker-compose logs -f
 
-# 4. Stop service
+# 5. Stop service
 docker-compose down
+```
+
+### Update After Code Changes
+
+```bash
+git pull && docker-compose down && docker-compose build --no-cache && docker-compose up -d
+```
+
+### Update Accounts Only (No Rebuild Needed)
+
+```bash
+nano accounts.json
+docker-compose restart
 ```
 
 ### Custom Port

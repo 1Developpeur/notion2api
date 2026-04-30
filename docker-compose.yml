@@ -1,5 +1,3 @@
-version: '3.8'
-
 # ============================================================
 # Notion AI Wrapper - Docker Compose Configuration
 # ============================================================
@@ -37,10 +35,11 @@ services:
       - PYTHONUNBUFFERED=1
       - TZ=Asia/Shanghai
 
-    # Data persistence
+    # Data persistence + account config
     volumes:
       - ./data:/app/data
       - ./logs:/app/logs
+      - ./accounts.json:/app/accounts.json:ro
 
     # Resource limits (prevents container from using all system resources)
     deploy:
