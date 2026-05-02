@@ -44,11 +44,12 @@ class NotionAccount:
     space_view_id: str
     user_name: str
     user_email: str
+    cookies: dict[str, str]
 
     def with_profile(self, profile_name: str) -> "NotionAccount":
         return replace(self, profile_name=profile_name or DEFAULT_PROFILE)
 
-    def to_dict(self) -> dict[str, str]:
+    def to_dict(self) -> dict[str, Any]:
         return {
             "profile_name": self.profile_name or DEFAULT_PROFILE,
             "token_v2": self.token_v2,
@@ -57,6 +58,7 @@ class NotionAccount:
             "space_view_id": self.space_view_id,
             "user_name": self.user_name,
             "user_email": self.user_email,
+            "cookies": self.cookies,
         }
 
 
@@ -425,6 +427,7 @@ def _extract_candidates(token_v2: str, cookies: dict[str, str] | None = None) ->
                         space_view_id=account_space_views.get(space_id, ""),
                         user_name=user_data["name"] or "user",
                         user_email=user_data["email"],
+                        cookies=cookies,
                     )
                 )
         return accounts
@@ -568,7 +571,10 @@ def _validate_account(account: dict[str, Any]) -> tuple[bool, str]:
     if not token_v2 or not space_id or not user_id:
         return False, "missing required fields"
 
-    session = _session_for_token(token_v2)
+    account_cookies = account.get("cookies")
+    if not isinstance(account_cookies, dict):
+        account_cookies = {}
+    session = _session_for_token(token_v2, account_cookies)
     try:
         response = session.post(f"{BASE_URL}/api/v3/loadUserContent", json={}, timeout=30)
         if response.status_code != 200:

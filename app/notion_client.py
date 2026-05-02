@@ -48,6 +48,11 @@ class NotionOpusAPI:
         self.space_view_id = account_config.get("space_view_id", "")
         self.user_name = account_config.get("user_name", "user")
         self.user_email = account_config.get("user_email", "")
+        self.cookies = account_config.get("cookies", {})
+        if not isinstance(self.cookies, dict):
+            self.cookies = {}
+        self.cookies["token_v2"] = self.token_v2
+
         self.url = "https://www.notion.so/api/v3/runInferenceTranscript"
         self.delete_url = "https://www.notion.so/api/v3/saveTransactions"
         self.account_key = self.user_email or self.user_id or "unknown-account"
@@ -55,6 +60,11 @@ class NotionOpusAPI:
         # 复用 cloudscraper 实例：保留 Cloudflare challenge cookie，避免每次请求都重新过验证
         self._scraper = cloudscraper.create_scraper()
         self._scraper_lock = threading.Lock()
+
+    def _build_cookie_header(self) -> str:
+        cookie_jar = self.cookies.copy()
+        cookie_jar["notion_user_id"] = self.user_id
+        return "; ".join(f"{name}={value}" for name, value in cookie_jar.items() if value)
 
     def _to_notion_transcript(self, transcript: list[dict[str, Any]]) -> list[dict[str, Any]]:
         converted: list[dict[str, Any]] = []
@@ -99,7 +109,7 @@ class NotionOpusAPI:
     def _build_thread_headers(self) -> dict[str, str]:
         return {
             "content-type": "application/json",
-            "cookie": f"token_v2={self.token_v2}",
+            "cookie": self._build_cookie_header(),
             "x-notion-active-user-header": self.user_id,
             "x-notion-space-id": self.space_id,
         }
@@ -253,7 +263,7 @@ class NotionOpusAPI:
 
         # 把 cookie 直接放进 header，绕过 cloudscraper 的 cookie jar
         # （cookie jar 可能被 Cloudflare challenge 写入含非 ASCII 字符的 cookie，导致编码错误）
-        cookie_header = f"token_v2={self.token_v2}; notion_user_id={self.user_id}"
+        cookie_header = self._build_cookie_header()
 
         headers = {
             "Content-Type": "application/json",
