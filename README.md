@@ -46,11 +46,15 @@ python login.py
 It will:
 1. Launch a local Chrome window on a debug port.
 2. Let you sign in to Notion in that browser.
-3. Read `token_v2` from the browser session via DevTools.
-4. Validate the token against Notion.
-5. Extract `space_id`, `user_id`, `space_view_id`, `user_name`, and `user_email`.
-6. Save the result into `accounts.json` as a named profile.
-7. Update `.env` with the refreshed `NOTION_ACCOUNTS` value.
+3. Read the Notion browser session cookies via DevTools.
+4. Use those cookies locally to capture `token_v2` and identify the active Notion user.
+5. Validate the token against Notion.
+6. Extract `space_id`, `user_id`, `space_view_id`, `user_name`, and `user_email`.
+7. Prefer the active `notion_user_id` cookie when multiple users/workspaces are visible.
+8. Save the result into `accounts.json` as a named profile.
+9. Update `.env` with the refreshed `NOTION_ACCOUNTS` value.
+
+The helper does not commit or store the full browser cookie jar. Browser cookies are only used during the local login flow to select the correct account/workspace. Keep generated `accounts.json` and `.env` files private; both are ignored by git because they contain credentials.
 
 To verify the saved login later, run:
 

@@ -46,11 +46,15 @@ python login.py
 它会：
 1. 启动一个本地 Chrome 窗口，并开启调试端口
 2. 让你在这个浏览器里登录 Notion
-3. 通过 DevTools 从浏览器会话中读取 `token_v2`
-4. 校验 token 是否有效
-5. 自动提取 `space_id`、`user_id`、`space_view_id`、`user_name`、`user_email`
-6. 以命名 profile 的形式保存到 `accounts.json`
-7. 自动更新 `.env` 中的 `NOTION_ACCOUNTS`
+3. 通过 DevTools 从浏览器会话中读取 Notion cookies
+4. 仅在本地登录流程中使用这些 cookies 捕获 `token_v2` 并识别当前活跃的 Notion 用户
+5. 校验 token 是否有效
+6. 自动提取 `space_id`、`user_id`、`space_view_id`、`user_name`、`user_email`
+7. 如果登录态中能看到多个用户/工作区，会优先使用当前活跃的 `notion_user_id`
+8. 以命名 profile 的形式保存到 `accounts.json`
+9. 自动更新 `.env` 中的 `NOTION_ACCOUNTS`
+
+登录脚本不会提交或持久化完整的浏览器 cookie jar。浏览器 cookies 只在本地登录过程中临时使用，用于选择正确的账号和工作区。生成的 `accounts.json` 和 `.env` 包含凭据，应保持私密；这两个文件已经被 git ignore。
 
 之后如果想检查保存的登录状态，可以运行：
 
