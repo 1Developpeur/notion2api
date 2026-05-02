@@ -1,7 +1,10 @@
 /**
- * Notion 账号信息提取脚本
+ * Notion 账号信息提取脚本（旧版手动备用流程）
  *
- * 使用方法：
+ * 推荐优先运行 `python login.py`。该登录脚本会自动打开临时 Chrome/Edge
+ * 调试窗口，并从本地浏览器会话中提取 token_v2 和账号/工作区字段。
+ *
+ * 如果自动登录流程不可用，可以使用本手动脚本：
  * 1. 浏览器登录 https://www.notion.so/ai
  * 2. 确保左上角切换到你要提取的账号
  * 3. F12 → Application → Cookies → 复制 token_v2 的值
