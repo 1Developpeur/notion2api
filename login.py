@@ -1,3 +1,7 @@
+# pylint: disable=missing-module-docstring,missing-class-docstring,missing-function-docstring
+# pylint: disable=broad-exception-caught,line-too-long
+# pylint: disable=consider-using-with,too-many-locals
+
 from __future__ import annotations
 
 import argparse
@@ -12,7 +16,6 @@ import webbrowser
 from dataclasses import dataclass, replace
 from pathlib import Path
 from typing import Any, Sequence
-from urllib.error import URLError
 from urllib.request import urlopen
 
 import requests
@@ -97,11 +100,10 @@ def _find_free_port(start: int = DEFAULT_DEBUG_PORT, end: int = DEFAULT_DEBUG_PO
     raise RuntimeError("No free debugging port found")
 
 
-def _get_json(url: str, timeout: int = 2) -> dict[str, Any]:
+def _get_json(url: str, timeout: int = 2) -> Any:
     with urlopen(url, timeout=timeout) as response:
         payload = response.read().decode("utf-8", errors="replace")
-    data = json.loads(payload)
-    return data if isinstance(data, dict) else {}
+    return json.loads(payload)
 
 
 def _find_chrome_executable() -> str | None:
@@ -145,7 +147,7 @@ def _find_chrome_executable() -> str | None:
     return None
 
 
-def _start_chrome_debug_session(port: int) -> tuple[subprocess.Popen[str], Path]:
+def _start_chrome_debug_session(port: int) -> tuple[subprocess.Popen[bytes], Path]:
     chrome = _find_chrome_executable()
     if not chrome:
         raise FileNotFoundError("Chrome or Edge executable not found")
@@ -154,6 +156,7 @@ def _start_chrome_debug_session(port: int) -> tuple[subprocess.Popen[str], Path]
     args = [
         chrome,
         f"--remote-debugging-port={port}",
+        "--remote-allow-origins=*",
         f"--user-data-dir={profile_dir}",
         "--no-first-run",
         "--no-default-browser-check",
@@ -211,6 +214,19 @@ def _find_debug_target(port: int) -> dict[str, Any] | None:
     return items[0] if items else None
 
 
+def _parse_cookie_string(cookie_string: str) -> dict[str, str]:
+    cookies: dict[str, str] = {}
+    for part in cookie_string.split(";"):
+        part = part.strip()
+        if "=" in part:
+            name, _, value = part.partition("=")
+            name = name.strip()
+            value = value.strip()
+            if name:
+                cookies[name] = value
+    return cookies
+
+
 def _extract_cookies_from_cdp(port: int) -> dict[str, str]:
     target = _find_debug_target(port)
     if not target:
@@ -234,6 +250,8 @@ def _extract_cookies_from_cdp(port: int) -> dict[str, str]:
         except Exception:
             pass
 
+        cookies: dict[str, str] = {}
+
         try:
             cookie_eval = client.call(
                 "Runtime.evaluate",
@@ -242,25 +260,14 @@ def _extract_cookies_from_cdp(port: int) -> dict[str, str]:
             cookie_string = ""
             if isinstance(cookie_eval, dict):
                 cookie_string = str(cookie_eval.get("result", {}).get("value") or "")
-            cookies: dict[str, str] = {}
-            for part in cookie_string.split(";"):
-                part = part.strip()
-                if "=" in part:
-                    name, _, value = part.partition("=")
-                    name = name.strip()
-                    value = value.strip()
-                    if name:
-                        cookies[name] = value
-            if cookies.get("token_v2"):
-                return cookies
+            cookies.update(_parse_cookie_string(cookie_string))
         except Exception:
             pass
 
         cookie_result = client.call("Network.getCookies", {"urls": [BASE_URL, AI_URL]})
         cookies_list = cookie_result.get("cookies", [])
         if not isinstance(cookies_list, list):
-            return {}
-        cookies: dict[str, str] = {}
+            return cookies
         for item in cookies_list:
             if not isinstance(item, dict):
                 continue
@@ -273,17 +280,22 @@ def _extract_cookies_from_cdp(port: int) -> dict[str, str]:
         client.close()
 
 
-def _wait_for_browser_token(port: int, timeout_seconds: int = DEFAULT_LOGIN_TIMEOUT) -> str:
+def _wait_for_browser_cookies(port: int, timeout_seconds: int = DEFAULT_LOGIN_TIMEOUT) -> dict[str, str]:
     started = time.time()
+    last_error = ""
     while time.time() - started < timeout_seconds:
         try:
             cookies = _extract_cookies_from_cdp(port)
-        except Exception:
+        except Exception as exc:
             cookies = {}
+            message = str(exc)
+            if message and message != last_error:
+                print(f"Chrome DevTools not ready yet: {message}")
+                last_error = message
 
         token_v2 = cookies.get("token_v2", "").strip()
         if token_v2:
-            return token_v2
+            return cookies
 
         print("Waiting for token_v2... sign in to the opened Chrome window.")
         time.sleep(5)
@@ -291,7 +303,7 @@ def _wait_for_browser_token(port: int, timeout_seconds: int = DEFAULT_LOGIN_TIME
     raise TimeoutError("Timed out waiting for token_v2 in Chrome")
 
 
-def _launch_and_extract_token(timeout_seconds: int = DEFAULT_LOGIN_TIMEOUT) -> str:
+def _launch_and_extract_cookies(timeout_seconds: int = DEFAULT_LOGIN_TIMEOUT) -> dict[str, str]:
     port = _find_free_port()
     process, profile_dir = _start_chrome_debug_session(port)
     try:
@@ -299,7 +311,7 @@ def _launch_and_extract_token(timeout_seconds: int = DEFAULT_LOGIN_TIMEOUT) -> s
             _get_json(f"http://127.0.0.1:{port}/json/version", timeout=2)
         except Exception:
             pass
-        return _wait_for_browser_token(port, timeout_seconds=timeout_seconds)
+        return _wait_for_browser_cookies(port, timeout_seconds=timeout_seconds)
     finally:
         try:
             process.terminate()
@@ -315,17 +327,27 @@ def _launch_and_extract_token(timeout_seconds: int = DEFAULT_LOGIN_TIMEOUT) -> s
             pass
 
 
-def _session_for_token(token_v2: str) -> requests.Session:
+def _launch_and_extract_token(timeout_seconds: int = DEFAULT_LOGIN_TIMEOUT) -> str:
+    return _launch_and_extract_cookies(timeout_seconds=timeout_seconds).get("token_v2", "")
+
+
+def _session_for_token(token_v2: str, cookies: dict[str, str] | None = None) -> requests.Session:
     session = requests.Session()
+    cookie_values = dict(cookies or {})
+    cookie_values["token_v2"] = token_v2
     session.headers.update(
         {
             "Origin": BASE_URL,
             "Referer": AI_URL,
             "User-Agent": USER_AGENT,
             "Content-Type": "application/json",
+            "Cookie": "; ".join(f"{name}={value}" for name, value in cookie_values.items() if value),
         }
     )
-    session.cookies.set("token_v2", token_v2, domain="www.notion.so", path="/")
+    for name, value in cookie_values.items():
+        if not value:
+            continue
+        session.cookies.set(name, value, domain="www.notion.so", path="/")
     return session
 
 
@@ -347,8 +369,10 @@ def _load_json_response(session: requests.Session, path: str) -> dict[str, Any]:
     return payload if isinstance(payload, dict) else {}
 
 
-def _extract_candidates(token_v2: str) -> list[NotionAccount]:
-    session = _session_for_token(token_v2)
+def _extract_candidates(token_v2: str, cookies: dict[str, str] | None = None) -> list[NotionAccount]:
+    cookies = cookies or {}
+    active_user_id = str(cookies.get("notion_user_id") or "").strip()
+    session = _session_for_token(token_v2, cookies)
 
     try:
         get_spaces = _load_json_response(session, "/api/v3/getSpaces")
@@ -361,63 +385,85 @@ def _extract_candidates(token_v2: str) -> list[NotionAccount]:
     spaces: dict[str, dict[str, str]] = {}
     space_views: dict[str, str] = {}
 
-    def add_users(source: dict[str, Any]) -> None:
+    def add_users(source: dict[str, Any], target: dict[str, dict[str, str]]) -> None:
         for user_id, raw in source.items():
             v = _safe_value(raw)
-            users[user_id] = {
+            target[user_id] = {
                 "name": str(v.get("given_name") or v.get("name") or v.get("family_name") or "").strip(),
                 "email": str(v.get("email") or "").strip(),
             }
 
-    def add_spaces(source: dict[str, Any]) -> None:
+    def add_spaces(source: dict[str, Any], target: dict[str, dict[str, str]]) -> None:
         for space_id, raw in source.items():
             v = _safe_value(raw)
-            spaces[space_id] = {
+            target[space_id] = {
                 "name": str(v.get("name") or "").strip(),
                 "plan": str(v.get("plan_type") or v.get("subscription_tier") or "").strip(),
             }
 
-    def add_space_views(source: dict[str, Any]) -> None:
+    def add_space_views(source: dict[str, Any], target: dict[str, str]) -> None:
         for space_view_id, raw in source.items():
             v = _safe_value(raw)
             space_id = str(v.get("space_id") or "").strip()
             if space_id:
-                space_views.setdefault(space_id, space_view_id)
+                target.setdefault(space_id, space_view_id)
 
+    def accounts_from_maps(
+        account_users: dict[str, dict[str, str]],
+        account_spaces: dict[str, dict[str, str]],
+        account_space_views: dict[str, str],
+    ) -> list[NotionAccount]:
+        accounts: list[NotionAccount] = []
+        for user_id, user_data in account_users.items():
+            for space_id in account_spaces:
+                accounts.append(
+                    NotionAccount(
+                        profile_name=DEFAULT_PROFILE,
+                        token_v2=token_v2,
+                        space_id=space_id,
+                        user_id=user_id,
+                        space_view_id=account_space_views.get(space_id, ""),
+                        user_name=user_data["name"] or "user",
+                        user_email=user_data["email"],
+                    )
+                )
+        return accounts
+
+    candidates: list[NotionAccount] = []
     for raw_user_data in get_spaces.values():
         if not isinstance(raw_user_data, dict):
             continue
-        add_users(raw_user_data.get("notion_user", {}))
-        add_spaces(raw_user_data.get("space", {}))
-        add_space_views(raw_user_data.get("space_view", {}))
+        grouped_users: dict[str, dict[str, str]] = {}
+        grouped_spaces: dict[str, dict[str, str]] = {}
+        grouped_space_views: dict[str, str] = {}
+        add_users(raw_user_data.get("notion_user", {}), grouped_users)
+        add_spaces(raw_user_data.get("space", {}), grouped_spaces)
+        add_space_views(raw_user_data.get("space_view", {}), grouped_space_views)
+        users.update(grouped_users)
+        spaces.update(grouped_spaces)
+        space_views.update(grouped_space_views)
+        candidates.extend(accounts_from_maps(grouped_users, grouped_spaces, grouped_space_views))
 
-    add_users(load_user_content.get("notion_user", {}))
-    add_spaces(load_user_content.get("space", {}))
-    add_space_views(load_user_content.get("space_view", {}))
+    add_users(load_user_content.get("notion_user", {}), users)
+    add_spaces(load_user_content.get("space", {}), spaces)
+    add_space_views(load_user_content.get("space_view", {}), space_views)
 
     if not users:
         raise ValueError("No Notion users were returned. The token may be invalid or expired.")
     if not spaces:
         raise ValueError("No Notion workspaces were returned. The token may be invalid or expired.")
 
-    candidates: list[NotionAccount] = []
-    for user_id, user_data in users.items():
-        for space_id, space_data in spaces.items():
-            _ = space_data
-            candidates.append(
-                NotionAccount(
-                    profile_name=DEFAULT_PROFILE,
-                    token_v2=token_v2,
-                    space_id=space_id,
-                    user_id=user_id,
-                    space_view_id=space_views.get(space_id, ""),
-                    user_name=user_data["name"] or "user",
-                    user_email=user_data["email"],
-                )
-            )
+    if not candidates:
+        candidates = accounts_from_maps(users, spaces, space_views)
+
+    if active_user_id:
+        active_candidates = [account for account in candidates if account.user_id == active_user_id]
+        if active_candidates:
+            candidates = active_candidates
 
     candidates.sort(
         key=lambda account: (
+            1 if account.user_id == active_user_id else 0,
             1 if account.user_email else 0,
             1 if account.space_view_id else 0,
             1 if account.user_name else 0,
@@ -634,13 +680,15 @@ def main(argv: Sequence[str] | None = None) -> int:
         if args.manual:
             _open_login_page()
             token_v2 = _prompt_token()
+            cookies = {"token_v2": token_v2}
         else:
             print(f"Launching Chrome for {AI_URL}...")
             print(f"Chrome will wait up to {args.timeout} seconds for token_v2 to appear.")
-            token_v2 = _launch_and_extract_token(timeout_seconds=args.timeout)
+            cookies = _launch_and_extract_cookies(timeout_seconds=args.timeout)
+            token_v2 = str(cookies.get("token_v2") or "").strip()
             print("token_v2 captured from Chrome.")
 
-        candidates = _extract_candidates(token_v2)
+        candidates = _extract_candidates(token_v2, cookies)
         chosen = _choose_account(candidates).with_profile(args.profile)
         merged_accounts = _write_accounts(chosen)
         if not args.no_env:
