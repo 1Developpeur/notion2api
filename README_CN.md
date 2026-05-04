@@ -1,20 +1,23 @@
 # Notion2API
 
-> Notion AI 转 OpenAI 兼容 API 封装
+> Notion AI → OpenAI 兼容 API
 
 🌐 [English](./README.md) | 中文
 
-Notion2API 将 Notion AI 封装为 OpenAI 兼容的 API 接口，支持 Cherry Studio、Zotero第三方客户端直接使用，也可直接使用已有的前端页面。
+Notion2API 对 Notion AI 网页接口进行逆向工程，将其封装为标准的 `/v1/chat/completions` 端点，可直接用于 Cherry Studio、Zotero 以及任何兼容 OpenAI 的客户端。
+
+---
 
 ## 特性
 
-- **三种运行模式** - Lite/Standard/Heavy 满足不同场景需求
-- **OpenAI 兼容** - 标准的 `/v1/chat/completions` 接口
-- **流式响应** - 支持 SSE 实时输出
-- **Thinking 面板** - 支持 所有模型 推理过程展示
-- **搜索功能** - 支持 Web 搜索结果展示
-- **账号池** - 多账号负载均衡与故障转移
-- **Docker 部署** - 开箱即用的容器化方案
+- **OpenAI 兼容** — 标准 `/v1/chat/completions` 端点，支持流式（SSE）和非流式响应
+- **三种运行模式** — Lite / Standard / Heavy，满足不同使用场景
+- **9 个 AI 模型** — Claude Sonnet/Opus、GPT-5.x、Gemini、Kimi
+- **Thinking 面板** — 所有模型均支持推理过程展示
+- **Search 面板** — 展示 Web 搜索查询和来源链接
+- **多账号池** — Round-Robin 负载均衡，带冷却故障转移
+- **内置 Web UI** — 极简设计，环境粒子动画，深色模式
+- **Docker 一键部署**
 
 ---
 
@@ -22,14 +25,15 @@ Notion2API 将 Notion AI 封装为 OpenAI 兼容的 API 接口，支持 Cherry S
 
 | 特性 | Lite | Standard | Heavy |
 |------|------|----------|-------|
-| **记忆管理** | ❌ 无记忆 | ✅ 客户端管理 | ✅ 服务器管理 |
-| **数据库** | ❌ 不需要 | ❌ 不需要 | ✅ SQLite |
-| **Thinking** | ❌ 不需要 | ✅ 专用面板 | ✅ 专用面板 |
-| **搜索结果** | ❌ 不需要 | ✅ 专用面板 | ✅ 专用面板 |
-| **速率限制** | 30/min | 25/min | 20/min |
+| **记忆** | ❌ 无 | ✅ 客户端管理 | ✅ 服务端管理 |
+| **数据库** | ❌ | ❌ | ✅ SQLite |
+| **Thinking 面板** | ❌ | ✅ | ✅ |
+| **Search 面板** | ❌ | ✅ | ✅ |
+| **速率限制** | 30/分钟 | 25/分钟 | 20/分钟 |
 | **适用场景** | 简单问答 | 中短对话 | 长期对话 |
 
-选择模式：修改 `.env` 中的 `APP_MODE` 变量即可。
+> **推荐**：`standard` — 完整上下文，无需数据库。  
+> 修改 `.env` 中的 `APP_MODE` 即可切换。
 
 ---
 
@@ -37,82 +41,72 @@ Notion2API 将 Notion AI 封装为 OpenAI 兼容的 API 接口，支持 Cherry S
 
 ### 1. 获取 Notion 凭据
 
-运行交互式登录脚本：
+根据你的情况选择适合的方式：
+
+#### 方式 A — F12（已有 Notion 网页登录时推荐）
+
+1. 打开 https://www.notion.so/ai 并登录
+2. 按 `F12` → **Application** 标签 → **Storage → Cookies → https://www.notion.so**
+3. 找到 `token_v2`，复制其 Value
+4. 切换到 **Console** 标签，粘贴并运行 `scripts/extract_notion_info.js`
+5. 脚本会输出所有必要字段 — 将结果粘贴到 `accounts.json`
+
+#### 方式 B — 浏览器辅助登录（只有Notion桌面应用，没有网页登录时）
 
 ```bash
 python login.py
 ```
 
-它会：
-1. 启动一个本地 Chrome 窗口，并开启调试端口
-2. 让你在这个浏览器里登录 Notion
-3. 通过 DevTools 从浏览器会话中读取 Notion cookies
-4. 仅在本地登录流程中使用这些 cookies 捕获 `token_v2` 并识别当前活跃的 Notion 用户
-5. 校验 token 是否有效
-6. 自动提取 `space_id`、`user_id`、`space_view_id`、`user_name`、`user_email`
-7. 如果登录态中能看到多个用户/工作区，会优先使用当前活跃的 `notion_user_id`
-8. 以命名 profile 的形式保存到 `accounts.json`
-9. 自动更新 `.env` 中的 `NOTION_ACCOUNTS`
-
-登录脚本不会提交或持久化完整的浏览器 cookie jar。浏览器 cookies 只在本地登录过程中临时使用，用于选择正确的账号和工作区。生成的 `accounts.json` 和 `.env` 包含凭据，应保持私密；这两个文件已经被 git ignore。
-
-之后如果想检查保存的登录状态，可以运行：
+会启动一个临时的 Chrome/Edge 窗口，等待你登录 Notion 后，自动提取所有凭据并写入 `accounts.json` 和 `.env`。
 
 ```bash
-python login.py --check
+python login.py --check          # 验证已保存的 profile
+python login.py --list           # 列出所有已保存的 profile
+python login.py --manual         # Chrome 不可用时手动粘贴 token_v2
+python login.py --profile work   # 以指定名称保存 profile
 ```
 
-如果你想查看所有已保存的 profile，可以运行：
+两种方式都写入 `accounts.json`。支持多账号 — 在数组中添加更多条目即可启用负载均衡。
+
+> ⚠️ `accounts.json` 和 `.env` 包含凭据，两者均已被 git 忽略 — 请妥善保管。
+
+---
+
+### 2. 配置 `.env`
 
 ```bash
-python login.py --list
-```
-
-如果只检查某个 profile，可以这样：
-
-```bash
-python login.py --check --profile work
-```
-
-如果你更喜欢原来的手动方式，也可以继续使用 `scripts/extract_notion_info.js` 自行填写 `accounts.json`。
-
-如果 Chrome 不可用，或者你想直接粘贴 token，可以运行：
-
-```bash
-python login.py --manual
-```
-
-浏览器自动提取流程默认会等待 300 秒，足够你完成登录。
-
-### 2. 配置环境变量
-
-```bash
-# 复制示例配置
 cp .env.example .env
-
-# 编辑 .env，填入你的凭据
-NOTION_ACCOUNTS='[{"profile_name":"default","token_v2":"your_token","space_id":"your_space","user_id":"your_uid","space_view_id":"your_view","user_name":"your_name","user_email":"your_email"}]'
-APP_MODE=standard  # lite / standard / heavy
 ```
 
-**⚠️ 如果使用 Heavy 模式**：
+至少需要设置：
 
-Heavy 模式需要配置 `SILICONFLOW_API_KEY`（用于对话摘要压缩）：
-1. 访问 https://siliconflow.cn 注册账号（免费）
-2. 获取 API Key
-3. 添加到 `.env` 文件：
-   ```bash
-   SILICONFLOW_API_KEY=your_api_key_here
-   APP_MODE=heavy
-   ```
+```env
+APP_MODE=standard   # lite / standard / heavy
+```
+
+如果使用 **Heavy 模式**，还需添加：
+
+```env
+SILICONFLOW_API_KEY=your_key_here
+```
+
+> Heavy 模式使用 SiliconFlow 的 LLM 来压缩长对话。前往 https://siliconflow.cn 免费注册。
+
+---
 
 ### 3. 启动服务
 
-#### Docker 部署（推荐）
+#### Docker（推荐）
 
 ```bash
-docker-compose up -d
-# 访问 http://localhost:8000
+docker-compose build --no-cache && docker-compose up -d
+```
+
+`accounts.json` 通过 volume 挂载 — 更新账号无需重新构建：
+
+```bash
+# 编辑 accounts.json 后：
+docker-compose restart
 ```
 
 #### 本地运行
@@ -122,27 +116,31 @@ pip install -r requirements.txt
 uvicorn app.server:app --host 0.0.0.0 --port 8000
 ```
 
+访问 `http://localhost:8000` 即可使用 Web UI。
+
 ---
 
 ## 支持的模型
 
 | 模型名称 | 说明 |
 |---|---|
-| `claude-sonnet4.6` | 均衡性能与速度的绝佳选择！（**最推荐**，优化最多，最稳定可靠） |
-| `claude-opus4.6` | 推理能力较强，但不建议频繁使用 |
-| `claude-opus4.7` | 最新 Claude，推理能力更强 |
-| `gpt-5.5` | 最新 GPT 模型（Beta） |
-| `gemini-2.5flash` | **原生快速**，无思考延迟，快速任务强烈推荐 |
+| `claude-sonnet4.6` | 速度与质量的最佳平衡 — **最推荐** |
+| `claude-opus4.6` | 推理能力更强，建议适量使用 |
+| `claude-opus4.7` | 最新 Claude，推理能力最强 |
+| `gpt-5.5` | 最新 GPT（Beta） |
+| `gpt-5.4` | OpenAI 模型 |
+| `gpt-5.2` | OpenAI 模型 |
+| `gemini-2.5flash` | 原生快速，无 thinking 延迟 — 快速任务首选 |
 | `gemini-3.1pro` | Google 最强推理模型 |
-| `gpt-5.2` / `gpt-5.4` | OpenAI 模型，也不错 |
-| `kimi-2.6` | Moonshot AI 模型（Beta） |
+| `kimi-2.6` | Moonshot AI（Beta） |
 
-查看完整列表：`GET http://localhost:8000/v1/models`
+完整列表：`GET http://localhost:8000/v1/models`
 
 ---
 
 ## API 使用
-本项目支持自定义API key，无格式要求。
+
+本项目接受任意字符串作为 API key，无格式要求。
 
 ### Python 示例
 
@@ -151,7 +149,7 @@ from openai import OpenAI
 
 client = OpenAI(
     base_url="http://localhost:8000/v1",
-    api_key="optional_api_key"
+    api_key="any-string"
 )
 
 response = client.chat.completions.create(
@@ -164,97 +162,121 @@ for chunk in response:
     print(chunk.choices[0].delta.content or "", end="")
 ```
 
----
+### 端点
 
-## 前端界面
-（自设计，仿照 Claude 风格，支持 Standard 和 Heavy 模式）
-
-访问 `http://localhost:8000` 可使用内置的 Web UI：
-
-- **主内容区** - 显示 AI 回复
-- **Thinking 面板** - 显示推理过程（可折叠）
-- **搜索面板** - 显示搜索来源（可折叠）
-- **Star功能** - 收藏置顶有价值的对话
+| 端点 | 方法 | 说明 |
+|---|---|---|
+| `/v1/chat/completions` | POST | 聊天补全（核心） |
+| `/v1/models` | GET | 列出可用模型 |
+| `/health` | GET | 健康检查（账号池状态、运行时间） |
+| `/` | GET | 内置 Web UI |
 
 ---
 
-## 环境变量说明
+## Web UI
+
+访问 `http://localhost:8000`，使用内置的 **Notion AI Studio** 界面：
+
+- **对话管理** — 新建、重命名、删除、收藏/置顶
+- **模型选择器** — 按服务商分组（Anthropic / OpenAI / Google / Moonshot）
+- **Thinking 面板** — 可折叠的推理过程展示，带计时器
+- **Search 面板** — 可折叠的搜索查询和来源链接
+- **环境粒子动画** — 天气效果：默认 / 雪 / 雨 / 晴天 / 夜晚
+- **主题** — 亮色/暗色模式切换
+- **响应式** — 移动端侧边栏适配
+
+> Thinking 和 Search 面板需要 `standard` 或 `heavy` 模式。
+
+---
+
+## 环境变量
 
 | 变量 | 说明 | 默认值 |
-|------|------|--------|
-| `APP_MODE` | 运行模式：lite/standard/heavy | `heavy` |
-| `NOTION_ACCOUNTS` | Notion 凭据 JSON 数组 | 必填 |
-| `API_KEY` | 客户端鉴权密钥 | 可选（建议自设定） |
+|---|---|---|
+| `NOTION_ACCOUNTS` | Notion 凭据 JSON 数组 | **必填** |
+| `APP_MODE` | `lite` / `standard` / `heavy` | `heavy` |
+| `API_KEY` | 客户端认证 Bearer Token | *(无)* |
 | `DB_PATH` | SQLite 数据库路径 | `./data/conversations.db` |
-| `HOST_PORT` | 宿主机端口 | `8000` |
-| `SILICONFLOW_API_KEY` | Heavy 模式必需，用于对早期对话进行摘要压缩 | 可选 |
+| `HOST` | 服务绑定地址 | `0.0.0.0` |
+| `PORT` | 服务端口 | `8000` |
+| `HOST_PORT` | Docker 宿主机端口 | `8000` |
+| `ALLOWED_ORIGINS` | CORS 允许的域名 | `*` |
+| `SILICONFLOW_API_KEY` | Heavy 模式压缩服务密钥 | *(无)* |
+| `DISABLE_RATE_LIMIT` | 关闭按 IP 速率限制 | `false` |
+| `NOTION_CLIENT_VERSION` | 覆盖 Notion 客户端版本号 | `23.13.20260228.0625` |
+| `LOG_LEVEL` | 日志级别 | `INFO` |
+| `TZ` | 时区 | `Asia/Shanghai` |
 
 ---
 
-## Docker 部署
-
-### 使用 docker-compose（推荐）
+## Docker 参考
 
 ```bash
-# 1. 配置 .env 文件
-cp .env.example .env
-
-# 2. 启动服务
+# 启动
 docker-compose up -d
 
-# 3. 查看日志
-docker-compose logs -f
+# 查看日志
+docker-compose logs -f --tail=50
 
-# 4. 停止服务
+# 重启（如更新 accounts.json 后）
+docker-compose restart
+
+# 更新代码并重新部署
+git pull && docker-compose down && docker-compose build --no-cache && docker-compose up -d
+
+# 停止
 docker-compose down
 ```
 
-### 自定义端口
+### Nginx 反向代理（可选）
 
-修改 `.env` 文件中的 `HOST_PORT` 变量：
-```bash
-HOST_PORT=8080  # 使用 8080 端口
+```nginx
+location / {
+    proxy_pass http://127.0.0.1:8000;
+    proxy_set_header Host $host;
+    proxy_buffering off;
+    proxy_cache off;
+    proxy_read_timeout 300s;
+}
 ```
 
 ---
 
 ## 常见问题
 
-> 详细的错误解决方案，请查看 [问题排查指南](./docs/issues_CN.md)
+**Thinking 面板不显示？**  
+请使用 `APP_MODE=standard` 或 `heavy`，Lite 模式不支持 Thinking 和 Search 面板。
 
-### 1. Thinking 面板不显示？
+**如何切换模式？**  
+修改 `.env` 中的 `APP_MODE`，然后重启：`docker-compose restart`
 
-确保使用 `APP_MODE=standard` 或 `heavy`，Lite 模式不支持 Thinking。
-
-### 2. 如何切换模式？
-
-修改 `.env` 中的 `APP_MODE`，然后重启服务：
-```bash
-APP_MODE=standard  # 改为 standard
-docker-compose restart
-```
-
-### 3. 多账号如何配置？
-（多账号增加稳定性，Beta版本）
-
-`NOTION_ACCOUNTS` 支持数组格式：
+**如何添加多账号？**  
+将 `accounts.json` 编辑为数组格式 — 账号会自动进行负载均衡：
 ```json
 [
-  {"token_v2":"token1","space_id":"space1",...},
-  {"token_v2":"token2","space_id":"space2",...}
+  {"token_v2": "token1", "space_id": "...", "user_id": "...", "space_view_id": "...", "user_name": "...", "user_email": "..."},
+  {"token_v2": "token2", "space_id": "...", "user_id": "...", "space_view_id": "...", "user_name": "...", "user_email": "..."}
 ]
 ```
 
+**收到 429 或 Notion AI 功能被暂停？**  
+Notion 可能会对请求模式异常的工作区进行限流。添加多账号有助于分散负载，Business Trial 工作区尤其容易触发。
+
+**Token 过期了？**  
+重新运行 `python login.py` 或重复 F12 步骤刷新凭据。
+
 ---
 
-## 兼容性测试
-（注意，由于notion本身调用AI的速率，通常从发出问答到给出答案有3秒延迟，因此不建议使用对延迟有高要求的客户端，如沉浸式翻译）
+## 兼容性
+
+> 由于 Notion AI 本身的调用延迟，从发出请求到收到第一个 token 通常需要约 3 秒。
 
 | 客户端 | 状态 | 备注 |
-|--------|------|------|
-| Cherry Studio | ✅ 完美支持 | 推荐 |
-| Zotero 翻译 | ✅ 完美支持 | 速度略慢，但sonnet模型准确 |
-| 沉浸式翻译 | 不推荐 | 速度很慢 |
+|---|---|---|
+| Cherry Studio | ✅ 完全支持 | 推荐 |
+| Zotero 翻译 | ✅ 完全支持 | 速度略慢，sonnet 模型最准确 |
+| 沉浸式翻译 | ⚠️ 不推荐 | 延迟过高 |
+| Claude Code | ❌ 不支持 | 使用 Anthropic 原生 API 格式 |
 
 ---
 
@@ -264,20 +286,6 @@ MIT License
 
 ---
 
-## Star History
-
 如果这个项目对你有帮助，请给个 Star ⭐
 
-## 其他
-本项目使用 Claude Code 和 Codex 辅助完成
-
-**Heavy 模式说明**：
-- 滑动窗口：默认保留最近 **8 轮**对话（16 条消息）
-- 压缩摘要：超出窗口的部分自动压缩为摘要
-- 完整归档：所有历史永久存储在 SQLite 数据库
-
-**未来改进**：
-- 如果您需要自定义滑动窗口大小（如 10 轮、20 轮），欢迎提交 Issue
-- 根据需求我们会添加环境变量配置选项
-
-欢迎 Issue 反馈问题和建议！
+*本项目使用 Claude Code 辅助完成。*
