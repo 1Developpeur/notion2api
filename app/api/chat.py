@@ -1409,20 +1409,56 @@ async def create_chat_completion(
             # 获取或创建 thread_id 以保持对话上下文
             thread_id = manager.get_conversation_thread_id(conversation_id)
 
+            # 检测用户是否在对话中途切换了模型。Notion 的 thread 会把 config 中的 model
+            # 粘在服务端 thread 对象上，复用同一 thread 即使 transcript 里写了新 model，
+            # 上游实际仍按原始模型执行。必须丢掉旧 thread 让 Notion 按新 model 新建，
+            # 对话上下文由我们自己的滑动窗口 + 压缩摘要重建，不会失忆。
+            if thread_id:
+                bound_model = manager.get_conversation_thread_model(conversation_id)
+                # bound_model 为 None 表示升级前的遗留对话，没记录过模型绑定，
+                # 无法判断 thread 当初绑的是什么模型。为避免继续踩老 bug，
+                # 一律当作"可能不匹配"处理，丢弃老 thread 重新开。
+                if not bound_model or bound_model != req_body.model:
+                    logger.info(
+                        "Recreating Notion thread: model changed or legacy binding",
+                        extra={
+                            "request_info": {
+                                "event": "thread_model_switched",
+                                "conversation_id": conversation_id,
+                                "old_model": bound_model,
+                                "new_model": req_body.model,
+                                "reason": "model_mismatch" if bound_model else "legacy_no_binding",
+                            }
+                        },
+                    )
+                    manager.clear_conversation_thread(conversation_id)
+                    thread_id = None
+
             # Pass attachments when present
-            cleaned_msgs, attachments = normalize_chat_messages([m.dict() for m in req_body.messages], getattr(req_body, "attachments", None))
+            _cleaned_msgs, attachments = normalize_chat_messages(
+                [m.dict() for m in req_body.messages],
+                getattr(req_body, "attachments", None),
+            )
             state_attachments = _request_state_attachments(request)
             if state_attachments:
                 attachments = state_attachments
             if attachments and not AttachmentPolicy.from_env().enabled:
                 openai_error("Attachments are disabled for this server.", "attachments_disabled")
 
-            stream_gen = client.stream_response(transcript, thread_id=thread_id, attachments=attachments if attachments else None)
+            stream_gen = client.stream_response(
+                transcript,
+                thread_id=thread_id,
+                attachments=attachments if attachments else None,
+            )
             first_item = next(stream_gen, None)
 
-            # 保存 thread_id（如果是新对话）
-            if not thread_id and hasattr(client, 'current_thread_id'):
-                manager.set_conversation_thread_id(conversation_id, client.current_thread_id)
+            # 保存 thread_id（如果是新对话或刚切换模型）
+            if not thread_id and hasattr(client, "current_thread_id"):
+                manager.set_conversation_thread_id(
+                    conversation_id,
+                    client.current_thread_id,
+                    model_name=req_body.model,
+                )
 
             if first_item is None:
                 raise NotionUpstreamError("Notion upstream returned empty content.", retriable=True)
