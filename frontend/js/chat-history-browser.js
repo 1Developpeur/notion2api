@@ -77,7 +77,7 @@
           <div class="chat-history-browser-layout">
             <div id="chatHistoryBrowserList" class="chat-history-browser-list"></div>
             <div id="chatHistoryBrowserPreview" class="chat-history-browser-preview">
-              <div class="chat-history-browser-markdown">Select a synced thread.</div>
+              <div class="chat-history-browser-markdown">Select a synced thread to load its full content.</div>
             </div>
           </div>
         </div>
@@ -95,6 +95,19 @@
   function setSummary(text) {
     const el = document.getElementById('chatHistoryBrowserSummary');
     if (el) el.textContent = text;
+  }
+
+  function setIdlePreview(threads) {
+    const preview = document.getElementById('chatHistoryBrowserPreview');
+    if (!preview) return;
+    const total = Array.isArray(threads) ? threads.length : 0;
+    preview.innerHTML = `
+      <div class="chat-history-browser-summary" style="padding:0 0 12px;border-bottom:0">
+        <span>Total synced threads: ${total}</span>
+        <span>Full content: loaded on selection</span>
+      </div>
+      <div class="chat-history-browser-markdown">Select a synced thread to load its markdown. The browser list only loads metadata, message counts, and previews.</div>
+    `;
   }
 
   function renderMarkdown(markdown) {
@@ -183,7 +196,7 @@
     const list = document.getElementById('chatHistoryBrowserList');
     const preview = document.getElementById('chatHistoryBrowserPreview');
     if (list) list.innerHTML = '<div class="chat-history-browser-meta">Loading...</div>';
-    if (preview) preview.innerHTML = '<div class="chat-history-browser-markdown">Select a synced thread.</div>';
+    if (preview) preview.innerHTML = '<div class="chat-history-browser-markdown">Select a synced thread to load its full content.</div>';
     setSummary('Loading synced threads...');
     try {
       const data = await fetchJson(`${THREADS_ENDPOINT}?limit=200&offset=0`);
@@ -191,7 +204,7 @@
       const hydrated = threads.filter(t => Number(t.message_count || 0) > 0).length;
       setSummary(`Total synced threads: ${threads.length} · Hydrated: ${hydrated} · Empty: ${threads.length - hydrated}`);
       renderThreadList(threads);
-      if (threads.length) selectThread(threads[0], threads);
+      setIdlePreview(threads);
     } catch (err) {
       setSummary('Failed to load chat history.');
       if (list) list.innerHTML = `<div class="chat-history-empty-warning">${esc(err?.message || String(err))}</div>`;
