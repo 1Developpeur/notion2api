@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import hashlib
 from typing import Any
 
 THREAD_MESSAGE_FIELDS = (
@@ -149,6 +150,11 @@ def _dedupe(values: list[str]) -> list[str]:
     return out
 
 
+def _synthetic_message_id(thread_id: str | None, text: str) -> str:
+    digest = hashlib.sha256(f"{thread_id or ''}\n{text}".encode("utf-8", errors="replace")).hexdigest()[:24]
+    return f"synthetic-{digest}"
+
+
 def extract_message_ids(value: dict[str, Any]) -> list[str]:
     ids: list[str] = []
     for key in THREAD_MESSAGE_FIELDS:
@@ -186,7 +192,7 @@ def normalize_message(message_id: str | None, raw: dict[str, Any], fallback_thre
     role = _first_str(value, MESSAGE_ROLE_FIELDS)
     created_at = _first_str(value, THREAD_CREATED_FIELDS)
     return {
-        "id": str(resolved_id or f"synthetic-{abs(hash((thread_id, text))) }"),
+        "id": str(resolved_id or _synthetic_message_id(thread_id, text)),
         "thread_id": thread_id,
         "role": role,
         "text": text,
