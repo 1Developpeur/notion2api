@@ -5,6 +5,7 @@ from app.chat_history.extractor import (
     extract_message_ids,
     merge_records_into_bundle,
     normalize_message,
+    normalize_thread,
 )
 
 
@@ -117,6 +118,23 @@ class ChatHistoryExtractorTests(unittest.TestCase):
         if msg is None:
             self.fail("normalize_message returned None")
         self.assertEqual(msg["text"], "Create Windows UI with hotkey")
+
+    def test_normalize_thread_preserves_numeric_notion_timestamps(self) -> None:
+        thread = normalize_thread(
+            None,
+            {
+                "id": "thread-1",
+                "title": "Study plan creation",
+                "created_at": 1779160000000,
+                "updated_at": 1779160848204,
+                "type": "workflow",
+            },
+        )
+
+        if thread is None:
+            self.fail("normalize_thread returned None")
+        self.assertEqual(thread["created_time"], "1779160000000")
+        self.assertEqual(thread["last_edited_time"], "1779160848204")
 
 
 if __name__ == "__main__":

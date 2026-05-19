@@ -69,6 +69,16 @@ def _first_str(value: dict[str, Any], keys: tuple[str, ...]) -> str | None:
     return None
 
 
+def _first_scalar_text(value: dict[str, Any], keys: tuple[str, ...]) -> str | None:
+    for key in keys:
+        candidate = value.get(key)
+        if isinstance(candidate, str) and candidate.strip():
+            return candidate.strip()
+        if isinstance(candidate, (int, float)) and not isinstance(candidate, bool):
+            return str(candidate)
+    return None
+
+
 def _coerce_text(value: Any) -> str:
     chunks: list[str] = []
     _collect_text(value, chunks)
@@ -213,16 +223,16 @@ def collect_hydration_message_ids(value: Any, depth: int = 0) -> list[str]:
 
 def normalize_thread(thread_id: str | None, raw: dict[str, Any]) -> dict[str, Any] | None:
     value = record_value(raw)
-    resolved_id = thread_id or _first_str(value, ("id", "thread_id", "threadId", "uuid"))
+    resolved_id = thread_id or _first_scalar_text(value, ("id", "thread_id", "threadId", "uuid"))
     if not resolved_id:
         return None
-    updated_at = _first_str(value, THREAD_UPDATED_FIELDS)
-    created_at = _first_str(value, THREAD_CREATED_FIELDS)
+    updated_at = _first_scalar_text(value, THREAD_UPDATED_FIELDS)
+    created_at = _first_scalar_text(value, THREAD_CREATED_FIELDS)
     return {
         "id": str(resolved_id),
-        "title": value.get("title") or value.get("name"),
-        "created_time": created_at or value.get("created_time") or value.get("createdTime"),
-        "last_edited_time": updated_at or value.get("last_edited_time") or value.get("lastEditedTime"),
+        "title": _first_scalar_text(value, THREAD_TITLE_FIELDS),
+        "created_time": created_at,
+        "last_edited_time": updated_at,
         "updated_at": updated_at,
         "alive": value.get("alive") if isinstance(value.get("alive"), bool) else None,
         "message_ids": extract_message_ids(value),

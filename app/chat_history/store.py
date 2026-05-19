@@ -96,6 +96,21 @@ def _message_ids_json(value: Any) -> str:
     return json.dumps([item for item in ids if item], ensure_ascii=False)
 
 
+def _thread_timestamp_expr(alias: str = "t") -> str:
+    return (
+        f"COALESCE("
+        f"NULLIF({alias}.last_edited_time,''),"
+        f"NULLIF({alias}.created_time,''),"
+        f"CAST(json_extract({alias}.raw_json, '$.updated_at') AS TEXT),"
+        f"CAST(json_extract({alias}.raw_json, '$.updated_time') AS TEXT),"
+        f"CAST(json_extract({alias}.raw_json, '$.last_edited_time') AS TEXT),"
+        f"CAST(json_extract({alias}.raw_json, '$.created_at') AS TEXT),"
+        f"CAST(json_extract({alias}.raw_json, '$.created_time') AS TEXT),"
+        f"{alias}.imported_at"
+        f")"
+    )
+
+
 class ChatHistoryStore:
     def __init__(self, db_path: str | None = None):
         self.db_path = db_path or get_default_chat_history_db_path()
@@ -192,7 +207,16 @@ class ChatHistoryStore:
         return result
 
     def list_threads(self, limit: int = 50, offset: int = 0, include_inactive: bool = False) -> list[dict[str, Any]]:
-        where = "" if include_inactive else "WHERE COALESCE(t.alive,1) != 0"
+        filters = [
+            """(
+              json_extract(t.raw_json, '$.type') IN ('workflow', 'markdown-chat')
+              OR json_extract(t.raw_json, '$.title') IS NOT NULL
+            )"""
+        ]
+        if not include_inactive:
+            filters.append("COALESCE(t.alive,1) != 0")
+        where = "WHERE " + " AND ".join(filters)
+        order_expr = _thread_timestamp_expr("t")
         with self._conn() as conn:
             rows = conn.execute(
                 f"""
@@ -201,7 +225,7 @@ class ChatHistoryStore:
                   t.title,
                   t.created_time,
                   t.last_edited_time,
-                  t.last_edited_time AS updated_at,
+                  {order_expr} AS updated_at,
                   t.alive,
                   COUNT(m.id) AS message_count,
                   MIN(m.created_time) AS first_message_time,
@@ -220,7 +244,7 @@ class ChatHistoryStore:
                 LEFT JOIN chat_messages m ON m.thread_id=t.id
                 {where}
                 GROUP BY t.id
-                ORDER BY COALESCE(NULLIF(t.last_edited_time,''), NULLIF(t.created_time,''), t.imported_at) DESC
+                ORDER BY {order_expr} DESC
                 LIMIT ? OFFSET ?
                 """,
                 (limit, offset),
