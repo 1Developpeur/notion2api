@@ -58,6 +58,44 @@ def _json_object(value: str | None) -> dict[str, Any]:
     return decoded if isinstance(decoded, dict) else {}
 
 
+def _is_scalar(value: Any) -> bool:
+    return value is None or isinstance(value, (str, int, float, bool))
+
+
+def _id_text(value: Any) -> str | None:
+    if isinstance(value, bool) or value is None or isinstance(value, (dict, list, tuple, set)):
+        return None
+    if isinstance(value, (str, int, float)):
+        text = str(value).strip()
+        return text or None
+    return None
+
+
+def _text(value: Any) -> str:
+    if value is None:
+        return ""
+    if _is_scalar(value):
+        return str(value)
+    try:
+        return json.dumps(value, ensure_ascii=False, default=str)
+    except TypeError:
+        return str(value)
+
+
+def _json_dumps(value: Any, fallback: Any) -> str:
+    try:
+        return json.dumps(value if value is not None else fallback, ensure_ascii=False, default=str)
+    except TypeError:
+        return json.dumps(fallback, ensure_ascii=False, default=str)
+
+
+def _message_ids_json(value: Any) -> str:
+    if not isinstance(value, list):
+        return "[]"
+    ids = [_id_text(item) for item in value]
+    return json.dumps([item for item in ids if item], ensure_ascii=False)
+
+
 class ChatHistoryStore:
     def __init__(self, db_path: str | None = None):
         self.db_path = db_path or get_default_chat_history_db_path()
@@ -74,17 +112,32 @@ class ChatHistoryStore:
     def upsert_bundle(self, bundle: dict[str, Any]) -> dict[str, int]:
         threads = bundle.get("threads", {})
         messages = bundle.get("messages", {})
-        result = {"threads": len(threads), "messages": len(messages), "threads_inserted": 0, "threads_updated": 0, "messages_inserted": 0, "messages_updated": 0}
+        result = {
+            "threads": len(threads),
+            "messages": len(messages),
+            "threads_inserted": 0,
+            "threads_updated": 0,
+            "messages_inserted": 0,
+            "messages_updated": 0,
+            "threads_skipped": 0,
+            "messages_skipped": 0,
+        }
         with self._conn() as conn:
             for t in threads.values():
-                thread_id = t["id"]
+                if not isinstance(t, dict):
+                    result["threads_skipped"] += 1
+                    continue
+                thread_id = _id_text(t.get("id"))
+                if not thread_id:
+                    result["threads_skipped"] += 1
+                    continue
                 proposed = (
-                    t.get("title"),
-                    str(t.get("created_time") or ""),
-                    str(t.get("last_edited_time") or t.get("updated_at") or ""),
+                    _text(t.get("title")),
+                    _text(t.get("created_time")),
+                    _text(t.get("last_edited_time") or t.get("updated_at")),
                     None if t.get("alive") is None else int(bool(t.get("alive"))),
-                    json.dumps(t.get("message_ids") or []),
-                    json.dumps(t.get("raw") or {}),
+                    _message_ids_json(t.get("message_ids")),
+                    _json_dumps(t.get("raw"), {}),
                 )
                 existing = conn.execute(
                     "SELECT title,created_time,last_edited_time,alive,message_ids_json,raw_json FROM chat_threads WHERE id=?",
@@ -101,13 +154,23 @@ class ChatHistoryStore:
                 elif tuple(existing) != proposed:
                     result["threads_updated"] += 1
             for m in messages.values():
-                message_id = m["id"]
+                if not isinstance(m, dict):
+                    result["messages_skipped"] += 1
+                    continue
+                message_id = _id_text(m.get("id"))
+                if not message_id:
+                    result["messages_skipped"] += 1
+                    continue
+                thread_id = _id_text(m.get("thread_id"))
+                role = _text(m.get("role"))
+                text = _text(m.get("text"))
+                created_time = _text(m.get("created_time"))
                 proposed = (
-                    m.get("thread_id"),
-                    m.get("role"),
-                    m.get("text") or "",
-                    str(m.get("created_time") or ""),
-                    json.dumps(m.get("raw") or {}),
+                    thread_id,
+                    role,
+                    text,
+                    created_time,
+                    _json_dumps(m.get("raw"), {}),
                 )
                 existing = conn.execute(
                     "SELECT thread_id,role,text,created_time,raw_json FROM chat_messages WHERE id=?",
@@ -120,7 +183,7 @@ class ChatHistoryStore:
                     (message_id, *proposed),
                 )
                 conn.execute("DELETE FROM chat_messages_fts WHERE id=?", (message_id,))
-                conn.execute("INSERT INTO chat_messages_fts(id,thread_id,role,text) VALUES(?,?,?,?)", (message_id, m.get("thread_id"), m.get("role"), m.get("text") or ""))
+                conn.execute("INSERT INTO chat_messages_fts(id,thread_id,role,text) VALUES(?,?,?,?)", (message_id, thread_id, role, text))
                 if existing is None:
                     result["messages_inserted"] += 1
                 elif tuple(existing) != proposed:
