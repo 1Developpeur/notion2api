@@ -83,11 +83,83 @@ def _collect_page_hydration_ids(page_bundle: dict[str, Any]) -> set[str]:
     return {message_id for message_id in ids if isinstance(message_id, str) and message_id.strip()}
 
 
+def hydrate_message_ids_from_notion(
+    client: NotionOpusAPI,
+    message_ids: list[str] | set[str],
+    *,
+    fallback_thread_id: str | None = None,
+    hydrate_batch_size: int = 50,
+) -> dict[str, Any]:
+    """Hydrate specific Notion thread-message IDs into a chat-history bundle."""
+    clean_ids = sorted({str(message_id).strip() for message_id in message_ids if str(message_id or "").strip()})
+    bundle: dict[str, Any] = {"threads": {}, "messages": {}, "endpoint_counts": defaultdict(int)}
+    hydration_batches = 0
+    hydrated_messages_seen = 0
+
+    for start_index in range(0, len(clean_ids), hydrate_batch_size):
+        batch = clean_ids[start_index:start_index + hydrate_batch_size]
+        hydrate_payload = {
+            "requests": [
+                {
+                    "pointer": {
+                        "table": "thread_message",
+                        "id": message_id,
+                        "spaceId": client.space_id,
+                    },
+                    "version": -1,
+                }
+                for message_id in batch
+            ]
+        }
+        hydrate_obj = _post_json(client, HYDRATE_ENDPOINT, hydrate_payload)
+        bundle["endpoint_counts"]["syncRecordValuesSpaceInitial"] += 1
+        hydration_batches += 1
+        hydrate_bundle = import_chat_object(hydrate_obj)
+        if fallback_thread_id:
+            for message in hydrate_bundle.get("messages", {}).values():
+                if not message.get("thread_id"):
+                    message["thread_id"] = fallback_thread_id
+        hydrated_messages_seen += len(hydrate_bundle.get("messages", {}))
+        _merge_bundle(bundle, hydrate_bundle)
+
+    bundle["endpoint_counts"] = dict(bundle["endpoint_counts"])
+    bundle["stats"] = {
+        "hydration_candidate_ids": len(clean_ids),
+        "hydrated_message_ids": len(clean_ids),
+        "hydration_batches": hydration_batches,
+        "hydrated_messages_seen": hydrated_messages_seen,
+        "messages": len(bundle.get("messages", {})),
+    }
+    return bundle
+
+
+def hydrate_thread_from_notion(
+    client: NotionOpusAPI,
+    thread: dict[str, Any],
+    *,
+    hydrate_batch_size: int = 50,
+) -> dict[str, Any]:
+    """Hydrate only the messages referenced by one selected archived thread."""
+    thread_id = str(thread.get("id") or "").strip() or None
+    ids: set[str] = set()
+    ids.update(collect_hydration_message_ids(thread))
+    raw = thread.get("raw") if isinstance(thread.get("raw"), dict) else None
+    if raw:
+        ids.update(collect_hydration_message_ids(raw))
+    return hydrate_message_ids_from_notion(
+        client,
+        ids,
+        fallback_thread_id=thread_id,
+        hydrate_batch_size=hydrate_batch_size,
+    )
+
+
 def sync_chat_history_from_notion(
     client: NotionOpusAPI,
     *,
     limit: int = 50,
     max_pages: int = 20,
+    hydrate: bool = False,
     hydrate_batch_size: int = 50,
 ) -> dict[str, Any]:
     """Read-only direct sync from Notion transcript RPCs into the local archive bundle."""
@@ -102,8 +174,6 @@ def sync_chat_history_from_notion(
     cursor: str | None = None
     pages_scanned = 0
     stopped_reason = "completed"
-    hydration_batches = 0
-    hydrated_messages_seen = 0
 
     while pages_scanned < max_pages:
         payload: dict[str, Any] = {
@@ -138,27 +208,20 @@ def sync_chat_history_from_notion(
         stopped_reason = "max_pages"
 
     message_ids = sorted(seen_message_ids)
-    for start_index in range(0, len(message_ids), hydrate_batch_size):
-        batch = message_ids[start_index:start_index + hydrate_batch_size]
-        hydrate_payload = {
-            "requests": [
-                {
-                    "pointer": {
-                        "table": "thread_message",
-                        "id": message_id,
-                        "spaceId": client.space_id,
-                    },
-                    "version": -1,
-                }
-                for message_id in batch
-            ]
-        }
-        hydrate_obj = _post_json(client, HYDRATE_ENDPOINT, hydrate_payload)
-        bundle["endpoint_counts"]["syncRecordValuesSpaceInitial"] += 1
-        hydration_batches += 1
-        hydrate_bundle = import_chat_object(hydrate_obj)
-        hydrated_messages_seen += len(hydrate_bundle.get("messages", {}))
+    hydration_batches = 0
+    hydrated_messages_seen = 0
+    if hydrate:
+        hydrate_bundle = hydrate_message_ids_from_notion(
+            client,
+            message_ids,
+            hydrate_batch_size=hydrate_batch_size,
+        )
         _merge_bundle(bundle, hydrate_bundle)
+        for key, value in hydrate_bundle.get("endpoint_counts", {}).items():
+            bundle["endpoint_counts"][key] += value
+        hydrate_stats = hydrate_bundle.get("stats", {})
+        hydration_batches = int(hydrate_stats.get("hydration_batches") or 0)
+        hydrated_messages_seen = int(hydrate_stats.get("hydrated_messages_seen") or 0)
 
     messages_seen = len(bundle["messages"])
     summary = {
@@ -168,6 +231,7 @@ def sync_chat_history_from_notion(
         "threads_without_messages": _threads_without_messages(bundle),
         "next_cursor": cursor,
         "stopped_reason": stopped_reason,
+        "hydrate": bool(hydrate),
         "hydration_candidate_ids": len(message_ids),
         "hydration_batches": hydration_batches,
         "hydrated_messages_seen": hydrated_messages_seen,
@@ -179,12 +243,13 @@ def sync_chat_history_from_notion(
         "pages_scanned": pages_scanned,
         "threads": len(bundle["threads"]),
         "messages": messages_seen,
-        "hydrated_message_ids": len(message_ids),
+        "hydrated_message_ids": len(message_ids) if hydrate else 0,
         "hydration_candidate_ids": len(message_ids),
         "hydration_batches": hydration_batches,
         "hydrated_messages_seen": hydrated_messages_seen,
         "threads_without_messages": summary["threads_without_messages"],
         "next_cursor": cursor,
         "stopped_reason": stopped_reason,
+        "hydrate": bool(hydrate),
     }
     return bundle
