@@ -1,4 +1,5 @@
 import os
+import json
 import threading
 import time
 import uuid
@@ -103,6 +104,94 @@ class NotionOpusAPI:
             "x-notion-active-user-header": self.user_id,
             "x-notion-space-id": self.space_id,
         }
+
+    def _build_chat_history_headers(self) -> dict[str, str]:
+        return {
+            "content-type": "application/json",
+            "accept": "application/json",
+            "cookie": f"token_v2={self.token_v2}; notion_user_id={self.user_id}",
+            "x-notion-active-user-header": self.user_id,
+            "x-notion-space-id": self.space_id,
+            "notion-client-version": NOTION_CLIENT_VERSION,
+            "origin": "https://www.notion.so",
+            "referer": "https://www.notion.so/ai",
+            "user-agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/145.0.0.0 Safari/537.36",
+        }
+
+    def fetch_chat_history(self, limit: int = 100, max_pages: int = 5) -> dict[str, Any]:
+        """Best-effort pull of Notion AI chat transcripts for the current user."""
+        endpoint = "https://www.notion.so/api/v3/getInferenceTranscriptsForUser"
+        collected: dict[str, Any] = {}
+        page_cursor: str | None = None
+
+        for page_index in range(max_pages):
+            request_id = str(uuid.uuid4())
+            candidate_payloads = [
+                {"requestId": request_id},
+                {"requestId": request_id, "limit": limit},
+                {"requestId": request_id, "pageSize": limit},
+            ]
+            if page_cursor:
+                candidate_payloads = [
+                    {"requestId": request_id, "cursor": page_cursor, "limit": limit},
+                    {"requestId": request_id, "startCursor": page_cursor, "limit": limit},
+                    {"requestId": request_id, "cursor": page_cursor, "pageSize": limit},
+                ] + candidate_payloads
+
+            response_obj = None
+            last_excerpt = ""
+            for payload in candidate_payloads:
+                try:
+                    response_obj = self._scraper.post(
+                        endpoint,
+                        headers=self._build_chat_history_headers(),
+                        json=payload,
+                        timeout=(15, 60),
+                    )
+                except Exception as exc:
+                    last_excerpt = str(exc)
+                    continue
+
+                if response_obj.status_code == 200:
+                    break
+
+                last_excerpt = (response_obj.text or "").strip().replace("\n", " ")[:300]
+                response_obj = None
+
+            if response_obj is None:
+                raise NotionUpstreamError(
+                    "Failed to fetch Notion chat history.",
+                    status_code=502,
+                    retriable=True,
+                    response_excerpt=last_excerpt,
+                )
+
+            try:
+                page_obj = response_obj.json()
+            except Exception as exc:
+                raise NotionUpstreamError(
+                    "Notion chat history response was not valid JSON.",
+                    status_code=response_obj.status_code,
+                    retriable=True,
+                    response_excerpt=(response_obj.text or "").strip()[:300],
+                ) from exc
+
+            if isinstance(page_obj, dict):
+                collected.update(page_obj)
+
+                next_cursor = (
+                    page_obj.get("nextCursor")
+                    or page_obj.get("next_cursor")
+                    or page_obj.get("cursor")
+                    or page_obj.get("nextPageCursor")
+                )
+                if isinstance(next_cursor, str) and next_cursor.strip():
+                    page_cursor = next_cursor.strip()
+                    continue
+
+            break
+
+        return collected
 
     def _create_thread(self, thread_id: str, thread_type: str) -> bool:
         payload = {

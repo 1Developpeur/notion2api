@@ -1,188 +1,329 @@
-param(
-    [string]$BaseUrl = "http://127.0.0.1:8000",
-    [string]$LauncherUrl = "http://127.0.0.1:8001",
-    [string]$ApiKey = "",
-    [string]$Model = "gpt-5.5"
-)
+function Read-ResponseText {
+    param($Response)
 
-$ErrorActionPreference = "Stop"
-$script:Failures = 0
-$BaseUrl = $BaseUrl.TrimEnd('/')
-$LauncherUrl = $LauncherUrl.TrimEnd('/')
-
-function Write-Section {
-    param([string]$Title)
-    Write-Host ""
-    Write-Host "=== $Title ==="
-}
-
-function Resolve-ApiKey {
-    if (-not [string]::IsNullOrWhiteSpace($ApiKey)) {
-        return $ApiKey
+    if ($null -eq $Response) {
+        return ''
     }
 
     try {
-        $settings = Invoke-RestMethod -Uri "$LauncherUrl/api/settings/export" -Method GET
-        if ($settings.custom_endpoint_api_key) {
-            Write-Host "Using API key from launcher settings export."
-            return [string]$settings.custom_endpoint_api_key
+        if ($Response -is [System.Net.Http.HttpResponseMessage]) {
+            return $Response.Content.ReadAsStringAsync().Result
         }
-    }
-    catch {
-        Write-Host "Launcher settings export not available at $LauncherUrl/api/settings/export. Continuing without API key."
-    }
 
-    return ""
+        $stream = $Response.GetResponseStream()
+        if ($null -eq $stream) {
+            return ''
+        }
+        try {
+            $reader = [System.IO.StreamReader]::new($stream)
+            return $reader.ReadToEnd()
+        } finally {
+            if ($reader) { $reader.Dispose() }
+            $stream.Dispose()
+        }
+    } catch {
+        return ''
+    }
 }
 
-function Get-AuthHeaders {
-    param([string]$ResolvedApiKey)
-
-    $headers = @{
-        "X-Client-Type" = "CompatTest"
-    }
-
-    if (-not [string]::IsNullOrWhiteSpace($ResolvedApiKey)) {
-        $headers["Authorization"] = "Bearer $ResolvedApiKey"
-    }
-
-    return $headers
-}
-
-function Invoke-CompatTest {
+function Invoke-CompatRequest {
     param(
-        [string]$Name,
+        [ValidateSet('GET', 'POST')]
         [string]$Method,
         [string]$Path,
-        [hashtable]$Headers = @{},
         [object]$Body = $null,
-        [scriptblock]$Validate = $null
+        [string]$AuthKey = $ApiKey
     )
 
-    Write-Section $Name
     $uri = "$BaseUrl$Path"
+    $headers = @{ Accept = 'application/json' }
+    if ($AuthKey) {
+        $headers.Authorization = "Bearer $AuthKey"
+    }
+
+    $invokeParams = @{
+        Uri         = $uri
+        Method      = $Method
+        Headers     = $headers
+        ErrorAction = 'Stop'
+    }
+
+    if ((Get-Command Invoke-WebRequest).Parameters.ContainsKey('SkipHttpErrorCheck')) {
+        $invokeParams.SkipHttpErrorCheck = $true
+    }
+
+    if ($Method -eq 'POST') {
+        $invokeParams.ContentType = 'application/json'
+        if ($null -ne $Body) {
+            $invokeParams.Body = ($Body | ConvertTo-Json -Depth 20 -Compress)
+        } else {
+            $invokeParams.Body = '{}'
+        }
+    }
 
     try {
-        $params = @{
-            Uri = $uri
-            Method = $Method
-            Headers = $Headers
+        $response = Invoke-WebRequest @invokeParams
+        $bodyText = $response.Content
+        return [pscustomobject]@{
+            Ok         = $response.StatusCode -ge 200 -and $response.StatusCode -lt 300
+            StatusCode = [int]$response.StatusCode
+            Text       = $bodyText
+            Body       = Convert-ResponseBody -Text $bodyText
+        }
+    } catch {
+        $response = $_.Exception.Response
+        if ($null -eq $response) {
+            throw
         }
 
-        if ($null -ne $Body) {
-            $params.ContentType = "application/json"
-            $params.Body = ($Body | ConvertTo-Json -Depth 20)
+        $statusCode = [int]$response.StatusCode
+        $bodyText = Read-ResponseText -Response $response
+        return [pscustomobject]@{
+            Ok         = $false
+            StatusCode = $statusCode
+            Text       = $bodyText
+            Body       = Convert-ResponseBody -Text $bodyText
+            Error      = $_.Exception.Message
         }
-
-        $result = Invoke-RestMethod @params
-
-        if ($Validate) {
-            & $Validate $result
-        }
-
-        Write-Host "PASS $Method $Path"
-        $result | ConvertTo-Json -Depth 20
-        return $result
     }
-    catch {
-        $script:Failures++
-        Write-Host "FAIL $Method $Path"
-        Write-Host $_.Exception.Message
-        if ($_.ErrorDetails.Message) {
-            Write-Host $_.ErrorDetails.Message
-        }
+}
+
+function Assert-StatusCode {
+    param(
+        [string]$Name,
+        [int]$Expected,
+        $Result
+    )
+
+    $passed = $Result.StatusCode -eq $Expected
+    $detail = "expected HTTP $Expected, got HTTP $($Result.StatusCode)"
+    Write-TestResult -Name $Name -Passed $passed -Detail $detail
+}
+
+function Assert-JsonProperty {
+    param(
+        [string]$Name,
+        $Value,
+        [string]$Detail
+    )
+
+    $passed = $null -ne $Value -and ($Value -isnot [string] -or -not [string]::IsNullOrWhiteSpace($Value))
+    Write-TestResult -Name $Name -Passed $passed -Detail $Detail
+}
+
+param(
+    [string]$BaseUrl = 'http://127.0.0.1:8000',
+    [string]$ApiKey = $(if ($env:NOTION2API_KEY) { $env:NOTION2API_KEY } else { '' })
+)
+
+Set-StrictMode -Version Latest
+$ErrorActionPreference = 'Stop'
+
+$script:Failures = 0
+
+function Write-TestResult {
+    param(
+        [string]$Name,
+        [bool]$Passed,
+        [string]$Detail = ''
+    )
+
+    if ($Passed) {
+        Write-Host "PASS  $Name" -ForegroundColor Green
+        return
+    }
+
+    Write-Host "FAIL  $Name" -ForegroundColor Red
+    if ($Detail) {
+        Write-Host "      $Detail" -ForegroundColor DarkRed
+    }
+    $script:Failures++
+}
+
+function Convert-ResponseBody {
+    param([string]$Text)
+
+    if ([string]::IsNullOrWhiteSpace($Text)) {
+        return $null
+    }
+
+    try {
+        return $Text | ConvertFrom-Json -Depth 20
+    } catch {
         return $null
     }
 }
 
-$ResolvedApiKey = Resolve-ApiKey
-$Headers = Get-AuthHeaders -ResolvedApiKey $ResolvedApiKey
+function Read-ResponseText {
+    param($Response)
 
-Write-Host "Notion2API OpenAI compatibility test"
-Write-Host "BaseUrl: $BaseUrl"
-Write-Host "Model:   $Model"
-Write-Host "API key: $(if ([string]::IsNullOrWhiteSpace($ResolvedApiKey)) { 'not set' } else { 'set' })"
+    if ($null -eq $Response) {
+        return ''
+    }
 
-Invoke-CompatTest `
-    -Name "Health" `
-    -Method GET `
-    -Path "/health" `
-    -Validate {
-        param($r)
-        if ($r.status -ne "ok") { throw "Expected status=ok from /health." }
-    } | Out-Null
+    try {
+        if ($Response -is [System.Net.Http.HttpResponseMessage]) {
+            return $Response.Content.ReadAsStringAsync().Result
+        }
 
-Invoke-CompatTest `
-    -Name "Healthz alias" `
-    -Method GET `
-    -Path "/healthz" `
-    -Validate {
-        param($r)
-        if ($r.status -ne "ok") { throw "Expected status=ok from /healthz." }
-    } | Out-Null
+        $stream = $Response.GetResponseStream()
+        if ($null -eq $stream) {
+            return ''
+        }
+        try {
+            $reader = [System.IO.StreamReader]::new($stream)
+            return $reader.ReadToEnd()
+        } finally {
+            if ($reader) { $reader.Dispose() }
+            $stream.Dispose()
+        }
+    } catch {
+        return ''
+    }
+}
 
-Invoke-CompatTest `
-    -Name "Models" `
-    -Method GET `
-    -Path "/v1/models" `
-    -Headers $Headers `
-    -Validate {
-        param($r)
-        if (-not $r.data) { throw "Expected a data array from /v1/models." }
-    } | Out-Null
+function Invoke-CompatRequest {
+    param(
+        [ValidateSet('GET', 'POST')]
+        [string]$Method,
+        [string]$Path,
+        [object]$Body = $null,
+        [string]$AuthKey = $ApiKey
+    )
 
-$ChatBody = @{
-    model = $Model
+    $uri = "$BaseUrl$Path"
+    $headers = @{ Accept = 'application/json' }
+    if ($AuthKey) {
+        $headers.Authorization = "Bearer $AuthKey"
+    }
+
+    $invokeParams = @{
+        Uri         = $uri
+        Method      = $Method
+        Headers     = $headers
+        ErrorAction = 'Stop'
+    }
+
+    if ((Get-Command Invoke-WebRequest).Parameters.ContainsKey('SkipHttpErrorCheck')) {
+        $invokeParams.SkipHttpErrorCheck = $true
+    }
+
+    if ($Method -eq 'POST') {
+        $invokeParams.ContentType = 'application/json'
+        if ($null -ne $Body) {
+            $invokeParams.Body = ($Body | ConvertTo-Json -Depth 20 -Compress)
+        } else {
+            $invokeParams.Body = '{}'
+        }
+    }
+
+    try {
+        $response = Invoke-WebRequest @invokeParams
+        $bodyText = $response.Content
+        return [pscustomobject]@{
+            Ok         = $response.StatusCode -ge 200 -and $response.StatusCode -lt 300
+            StatusCode = [int]$response.StatusCode
+            Text       = $bodyText
+            Body       = Convert-ResponseBody -Text $bodyText
+        }
+    } catch {
+        $response = $_.Exception.Response
+        if ($null -eq $response) {
+            throw
+        }
+
+        $statusCode = [int]$response.StatusCode
+        $bodyText = Read-ResponseText -Response $response
+        return [pscustomobject]@{
+            Ok         = $false
+            StatusCode = $statusCode
+            Text       = $bodyText
+            Body       = Convert-ResponseBody -Text $bodyText
+            Error      = $_.Exception.Message
+        }
+    }
+}
+
+function Assert-StatusCode {
+    param(
+        [string]$Name,
+        [int]$Expected,
+        $Result
+    )
+
+    $passed = $Result.StatusCode -eq $Expected
+    $detail = "expected HTTP $Expected, got HTTP $($Result.StatusCode)"
+    Write-TestResult -Name $Name -Passed $passed -Detail $detail
+}
+
+function Assert-JsonProperty {
+    param(
+        [string]$Name,
+        $Value,
+        [string]$Detail
+    )
+
+    $passed = $null -ne $Value -and ($Value -isnot [string] -or -not [string]::IsNullOrWhiteSpace($Value))
+    Write-TestResult -Name $Name -Passed $passed -Detail $Detail
+}
+
+Write-Host "Testing OpenAI-compatible surface at $BaseUrl"
+if (-not $ApiKey) {
+    Write-Host 'Warning: NOTION2API_KEY is empty. /v1 checks may fail if the server requires auth.' -ForegroundColor Yellow
+}
+
+$health = Invoke-CompatRequest -Method GET -Path '/health' -AuthKey ''
+Assert-StatusCode -Name '/health' -Expected 200 -Result $health
+
+$healthz = Invoke-CompatRequest -Method GET -Path '/healthz' -AuthKey ''
+Assert-StatusCode -Name '/healthz' -Expected 200 -Result $healthz
+
+$models = Invoke-CompatRequest -Method GET -Path '/v1/models'
+Assert-StatusCode -Name '/v1/models' -Expected 200 -Result $models
+Write-TestResult -Name '/v1/models object=list' -Passed ($models.Body.object -eq 'list') -Detail 'expected OpenAI-style model list object'
+Write-TestResult -Name '/v1/models data present' -Passed (($models.Body.data | Measure-Object).Count -gt 0) -Detail 'expected at least one model entry'
+
+$chatBody = @{
+    model    = 'custom:gpt-5.5'
     messages = @(
         @{
-            role = "user"
-            content = "Say only: connected"
+            role    = 'user'
+            content = 'Say only: connected'
         }
     )
-    stream = $false
 }
+$chat = Invoke-CompatRequest -Method POST -Path '/v1/chat/completions' -Body $chatBody
+Assert-StatusCode -Name '/v1/chat/completions' -Expected 200 -Result $chat
+$chatContent = $chat.Body.choices[0].message.content
+Assert-JsonProperty -Name '/v1/chat/completions message.content' -Value $chatContent -Detail 'expected choices[0].message.content to be present'
 
-Invoke-CompatTest `
-    -Name "Chat completions" `
-    -Method POST `
-    -Path "/v1/chat/completions" `
-    -Headers $Headers `
-    -Body $ChatBody `
-    -Validate {
-        param($r)
-        $text = [string]$r.choices[0].message.content
-        if ([string]::IsNullOrWhiteSpace($text)) { throw "Expected assistant text in choices[0].message.content." }
-    } | Out-Null
-
-$ResponsesBody = @{
-    model = $Model
-    input = "Say only: connected"
+$responsesBody = @{
+    model = 'custom:gpt-5.5'
+    input = 'Say only: connected'
 }
+$responses = Invoke-CompatRequest -Method POST -Path '/v1/responses' -Body $responsesBody
+Assert-StatusCode -Name '/v1/responses' -Expected 200 -Result $responses
+$responseText = $responses.Body.output[0].content[0].text
+if ([string]::IsNullOrWhiteSpace($responseText)) {
+    $responseText = $responses.Body.output_text
+}
+Assert-JsonProperty -Name '/v1/responses output text' -Value $responseText -Detail 'expected output[0].content[0].text or output_text to be present'
 
-Invoke-CompatTest `
-    -Name "Responses API" `
-    -Method POST `
-    -Path "/v1/responses" `
-    -Headers $Headers `
-    -Body $ResponsesBody `
-    -Validate {
-        param($r)
-        if ($r.object -ne "response") { throw "Expected object=response." }
-        if ([string]::IsNullOrWhiteSpace([string]$r.output_text)) { throw "Expected assistant text in output_text." }
-        if (-not $r.output -or -not $r.output[0].content) { throw "Expected output[0].content response payload." }
-    } | Out-Null
+$badKeyChat = Invoke-CompatRequest -Method POST -Path '/v1/chat/completions' -Body $chatBody -AuthKey 'definitely-wrong-key'
+Write-TestResult -Name '/v1/chat/completions bad key status' -Passed ($badKeyChat.StatusCode -eq 401) -Detail "expected HTTP 401, got HTTP $($badKeyChat.StatusCode)"
+Write-TestResult -Name '/v1/chat/completions bad key code' -Passed ($badKeyChat.Body.error.code -eq 'invalid_api_key') -Detail 'expected OpenAI-style invalid_api_key error'
 
-Write-Section "Summary"
+$badKeyResponses = Invoke-CompatRequest -Method POST -Path '/v1/responses' -Body $responsesBody -AuthKey 'definitely-wrong-key'
+Write-TestResult -Name '/v1/responses bad key status' -Passed ($badKeyResponses.StatusCode -eq 401) -Detail "expected HTTP 401, got HTTP $($badKeyResponses.StatusCode)"
+Write-TestResult -Name '/v1/responses bad key code' -Passed ($badKeyResponses.Body.error.code -eq 'invalid_api_key') -Detail 'expected OpenAI-style invalid_api_key error'
+
+Write-Host ''
 if ($script:Failures -eq 0) {
-    Write-Host "All compatibility checks passed."
-}
-else {
-    Write-Host "$script:Failures compatibility check(s) failed."
+    Write-Host 'All compatibility checks passed.' -ForegroundColor Green
+} else {
+    Write-Host "$script:Failures compatibility check(s) failed." -ForegroundColor Red
 }
 
 Pause
-
-if ($script:Failures -gt 0) {
-    exit 1
-}
-exit 0
+exit ([int]($script:Failures -gt 0))
+>>>>>>> 8c45681 (feat: add read-only Notion chat-history sync)

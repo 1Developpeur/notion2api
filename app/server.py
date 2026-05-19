@@ -1,6 +1,6 @@
 import time
 import os
-from fastapi import FastAPI, Request
+from fastapi import FastAPI, HTTPException, Request
 from fastapi.responses import JSONResponse, Response
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.staticfiles import StaticFiles
@@ -13,6 +13,7 @@ from app.api.chat import router as chat_router
 from app.api.models import router as models_router
 from app.api.chat_history import router as chat_history_router
 from app.api.responses import router as responses_router
+from app.core.errors import openai_error_payload
 from app.logger import logger
 from app.limiter import limiter
 
@@ -64,6 +65,13 @@ def custom_rate_limit_exceeded_handler(request: Request, exc: RateLimitExceeded)
         content={"error": "Too many requests, please try again later"}
     )
 app.add_exception_handler(RateLimitExceeded, custom_rate_limit_exceeded_handler)
+
+
+@app.exception_handler(HTTPException)
+async def http_exception_handler(request: Request, exc: HTTPException):
+    if isinstance(exc.detail, dict):
+        return JSONResponse(status_code=exc.status_code, content=exc.detail)
+    return JSONResponse(status_code=exc.status_code, content={"detail": exc.detail})
 
 
 @app.exception_handler(Exception)
@@ -136,13 +144,11 @@ async def api_key_auth(request: Request, call_next):
             if not auth_header.startswith("Bearer ") or auth_header.split(" ")[1] != API_KEY:
                 return JSONResponse(
                     status_code=401,
-                    content={
-                        "error": {
-                            "message": "Error: API KEY doesn't match.",
-                            "type": "invalid_request_error",
-                            "code": "invalid_api_key"
-                        }
-                    }
+                    content=openai_error_payload(
+                        message="Error: API KEY doesn't match.",
+                        code="invalid_api_key",
+                        status_code=401,
+                    ),
                 )
     return await call_next(request)
 

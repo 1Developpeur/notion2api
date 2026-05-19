@@ -1,3 +1,6 @@
+from app.core.models import normalize_model_id
+
+
 MODEL_MAP: dict[str, str] = {
     "claude-opus4.6": "avocado-froyo-medium",
     "claude-opus4.7": "apricot-sorbet-high",
@@ -41,7 +44,8 @@ DEFAULT_MODEL = "claude-sonnet4.6"
 
 
 def get_notion_model(model_name: str) -> str:
-    return MODEL_MAP.get(model_name, MODEL_MAP[DEFAULT_MODEL])
+    normalized_name = get_standard_model(model_name)
+    return MODEL_MAP.get(normalized_name, MODEL_MAP[DEFAULT_MODEL])
 
 
 # 需要走 markdown-chat 的 Notion 内部代号（vertex- 前缀的模型）
@@ -73,6 +77,9 @@ def get_thread_type(model_name: str) -> str:
 
 
 def get_standard_model(model_name: str) -> str:
+    model_name = normalize_model_id(model_name)
+    if not model_name:
+        return DEFAULT_MODEL
     if model_name in MODEL_MAP:
         return model_name
     return NOTION_MODEL_REVERSE_MAP.get(model_name, DEFAULT_MODEL)
@@ -83,7 +90,8 @@ def list_available_models() -> list[str]:
 
 
 def is_supported_model(model_name: str) -> bool:
-    return model_name in MODEL_MAP
+    normalized_name = normalize_model_id(model_name)
+    return bool(normalized_name and normalized_name in MODEL_MAP)
 
 
 def get_display_name(model_name: str) -> str:

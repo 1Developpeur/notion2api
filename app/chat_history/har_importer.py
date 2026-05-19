@@ -145,6 +145,12 @@ def _merge_records(bundle: dict[str, Any], obj: Any) -> None:
             }
 
 
+def import_chat_object(obj: Any) -> dict[str, Any]:
+    bundle = {"threads": {}, "messages": {}, "endpoint_counts": {}}
+    _merge_records(bundle, obj)
+    return bundle
+
+
 def import_har_object(har: dict[str, Any]) -> dict[str, Any]:
     bundle = {"threads": {}, "messages": {}, "endpoint_counts": {}}
     counts: Counter[str] = Counter()

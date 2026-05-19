@@ -5,8 +5,10 @@ from typing import Any
 from fastapi import APIRouter, HTTPException, Query, Request
 from fastapi.responses import PlainTextResponse
 
-from app.chat_history.har_importer import import_har_object
+from app.chat_history.har_importer import import_chat_object, import_har_object
+from app.chat_history.notion_sync import sync_chat_history_from_notion
 from app.chat_history.store import ChatHistoryStore, get_default_chat_history_db_path
+from app.notion_client import NotionUpstreamError
 
 router = APIRouter(prefix="/chat-history", tags=["chat-history"])
 
@@ -20,7 +22,7 @@ def status() -> dict[str, Any]:
     return {
         "status": "ok",
         "db_path": get_default_chat_history_db_path(),
-        "capabilities": ["har_import", "local_archive", "local_search", "markdown_export"],
+        "capabilities": ["har_import", "notion_direct_sync", "local_archive", "local_search", "markdown_export"],
     }
 
 
@@ -39,6 +41,63 @@ async def import_har(request: Request) -> dict[str, Any]:
     bundle = import_har_object(har)
     imported = _store().upsert_bundle(bundle)
     return {"imported": imported, "endpoint_counts": bundle.get("endpoint_counts", {})}
+
+
+@router.post("/sync/notion")
+@router.post("/import/notion")
+async def sync_from_notion(request: Request) -> dict[str, Any]:
+    """Pull chat history directly from the configured Notion account into the local archive."""
+    try:
+        payload = await request.json()
+    except Exception:
+        payload = {}
+
+    if not isinstance(payload, dict):
+        payload = {}
+
+    account_index = payload.get("account_index", 0)
+    limit = payload.get("limit", 100)
+    max_pages = payload.get("max_pages", 5)
+
+    try:
+        account_index = int(account_index)
+        limit = max(1, min(int(limit), 500))
+        max_pages = max(1, min(int(max_pages), 20))
+    except Exception as exc:
+        raise HTTPException(status_code=400, detail="Invalid import parameters") from exc
+
+    pool = request.app.state.account_pool
+    clients = getattr(pool, "clients", [])
+    if not clients:
+        raise HTTPException(status_code=503, detail="No configured Notion accounts are available")
+    if account_index < 0 or account_index >= len(clients):
+        raise HTTPException(status_code=400, detail="account_index is out of range")
+
+    client = clients[account_index]
+    try:
+        bundle = sync_chat_history_from_notion(client, limit=limit, max_pages=max_pages)
+    except NotionUpstreamError as exc:
+        raise HTTPException(
+            status_code=503,
+            detail={
+                "error": {
+                    "message": "Unable to fetch chat history from Notion.",
+                    "type": "upstream_error",
+                    "param": None,
+                    "code": "upstream_error",
+                    "detail": exc.response_excerpt,
+                }
+            },
+        ) from exc
+
+    imported = _store().upsert_bundle(bundle)
+    return {
+        "imported": imported,
+        "endpoint_counts": bundle.get("endpoint_counts", {}),
+        "source": "notion_direct_sync",
+        "account_index": account_index,
+        "stats": bundle.get("stats", {}),
+    }
 
 
 @router.get("/threads")

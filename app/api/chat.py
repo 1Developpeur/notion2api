@@ -9,6 +9,8 @@ from typing import Any, Dict, Generator, Iterable, List, Tuple
 from fastapi import APIRouter, BackgroundTasks, HTTPException, Request, Response
 from fastapi.responses import JSONResponse, StreamingResponse
 
+from app.core.errors import openai_error
+from app.core.models import normalize_model_id
 from app.conversation import compress_round_if_needed, compress_sliding_window_round, build_lite_transcript
 from app.config import is_lite_mode
 from app.limiter import limiter
@@ -95,6 +97,7 @@ def _build_error_response(
     code: str,
     message: str,
     error_type: str = "server_error",
+    param: str | None = None,
     suggestion: str = "",
     detail: str = "",
 ) -> JSONResponse:
@@ -103,6 +106,7 @@ def _build_error_response(
         "error": {
             "message": message,
             "type": error_type,
+            "param": param,
             "code": code,
         }
     }
@@ -124,6 +128,19 @@ def _upstream_error_response(exc: NotionUpstreamError) -> JSONResponse:
         suggestion=info.get("suggestion", ""),
         detail=exc.response_excerpt or "",
     )
+
+
+def _resolve_request_model(model: str | None) -> str:
+    normalized_model = normalize_model_id(model)
+    if not normalized_model:
+        openai_error("The 'model' field is required.", "model_required")
+    if not is_supported_model(normalized_model):
+        available_models = list_available_models()
+        openai_error(
+            f"Unsupported model '{normalized_model}'. Available models: {', '.join(available_models)}",
+            "model_not_found",
+        )
+    return normalized_model
 
 
 RECALL_INTENT_KEYWORDS = [
@@ -827,16 +844,10 @@ async def _handle_lite_request(
     """处理 Lite 模式请求（无记忆，单轮问答）"""
     pool = request.app.state.account_pool
 
+    req_body.model = _resolve_request_model(req_body.model)
+
     # 提取用户问题
     user_prompt = _prepare_messages_lite(req_body)
-
-    # 验证模型
-    if not is_supported_model(req_body.model):
-        available_models = list_available_models()
-        raise HTTPException(
-            status_code=400,
-            detail=f"Unsupported model '{req_body.model}'. Available models: {', '.join(available_models)}",
-        )
 
     response_id = f"chatcmpl-{uuid.uuid4().hex}"
     max_retries = max(3, len(pool.clients))
@@ -1002,13 +1013,7 @@ async def _handle_standard_request(
 
     pool = request.app.state.account_pool
 
-    # 验证模型
-    if not is_supported_model(req_body.model):
-        available_models = list_available_models()
-        raise HTTPException(
-            status_code=400,
-            detail=f"Unsupported model '{req_body.model}'. Available models: {', '.join(available_models)}",
-        )
+    req_body.model = _resolve_request_model(req_body.model)
 
     response_id = f"chatcmpl-{uuid.uuid4().hex}"
     max_retries = max(3, len(pool.clients))
@@ -1217,6 +1222,8 @@ async def create_chat_completion(
     """
     from app.config import is_standard_mode
 
+    req_body.model = _resolve_request_model(req_body.model)
+
     # Lite 模式：单轮问答，无记忆
     if is_lite_mode():
         return await _handle_lite_request(request, req_body, response)
@@ -1231,13 +1238,6 @@ async def create_chat_completion(
 
     user_prompt, history_messages, raw_user_prompt = _prepare_messages(req_body)
     recall_query = _extract_recall_query(raw_user_prompt) if _contains_recall_intent(raw_user_prompt) else None
-
-    if not is_supported_model(req_body.model):
-        available_models = list_available_models()
-        raise HTTPException(
-            status_code=400,
-            detail=f"Unsupported model '{req_body.model}'. Available models: {', '.join(available_models)}",
-        )
 
     conversation_id = req_body.conversation_id.strip() if req_body.conversation_id else ""
     restore_history = False

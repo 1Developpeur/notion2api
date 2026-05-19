@@ -4,10 +4,12 @@ import time
 import uuid
 from typing import Any
 
-from fastapi import APIRouter, BackgroundTasks, HTTPException, Request, Response
+from fastapi import APIRouter, BackgroundTasks, Request, Response
 from fastapi.responses import JSONResponse, StreamingResponse
 
 from app.api.chat import create_chat_completion
+from app.core.errors import openai_error
+from app.core.models import normalize_model_id
 from app.schemas import ChatCompletionRequest, ChatMessage
 
 router = APIRouter()
@@ -36,7 +38,7 @@ def _responses_input_to_messages(input_value: Any) -> list[ChatMessage]:
         return [ChatMessage(role="user", content=input_value)]
 
     if not isinstance(input_value, list):
-        raise HTTPException(status_code=400, detail="Responses API input must be a string or list.")
+        openai_error("Responses API input must be a string or list.", "invalid_input")
 
     messages: list[ChatMessage] = []
     for item in input_value:
@@ -46,8 +48,10 @@ def _responses_input_to_messages(input_value: Any) -> list[ChatMessage]:
         if not isinstance(item, dict):
             continue
 
-        role = str(item.get("role") or "user")
-        if role not in {"system", "user", "assistant"}:
+        role = str(item.get("role") or "user").lower()
+        if role == "developer":
+            role = "system"
+        elif role not in {"system", "user", "assistant"}:
             role = "user"
 
         if item.get("type") == "message" and "content" in item:
@@ -63,7 +67,7 @@ def _responses_input_to_messages(input_value: Any) -> list[ChatMessage]:
             messages.append(ChatMessage(role=role, content=text))
 
     if not messages:
-        raise HTTPException(status_code=400, detail="Responses API input did not contain any text messages.")
+        openai_error("Responses API input did not contain any text messages.", "invalid_input")
     return messages
 
 
@@ -120,7 +124,9 @@ async def create_response(
     response: Response,
 ):
     """Minimal OpenAI Responses API compatibility shim backed by /v1/chat/completions."""
-    model = str(payload.get("model") or "claude-opus4.6")
+    model = normalize_model_id(payload.get("model"))
+    if not model:
+        openai_error("The 'model' field is required.", "model_required")
     messages = _responses_input_to_messages(payload.get("input"))
     stream = bool(payload.get("stream", False))
 
