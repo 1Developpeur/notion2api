@@ -3,6 +3,7 @@ from __future__ import annotations
 from collections import defaultdict
 from typing import Any
 
+from app.chat_history.extractor import collect_hydration_message_ids
 from app.chat_history.har_importer import import_chat_object
 from app.notion_client import NotionOpusAPI, NotionUpstreamError
 
@@ -67,6 +68,21 @@ def _threads_without_messages(bundle: dict[str, Any]) -> int:
     return count
 
 
+def _collect_page_hydration_ids(page_bundle: dict[str, Any]) -> set[str]:
+    ids: set[str] = set()
+    for thread in page_bundle.get("threads", {}).values():
+        ids.update(collect_hydration_message_ids(thread))
+        raw = thread.get("raw") if isinstance(thread, dict) else None
+        if raw:
+            ids.update(collect_hydration_message_ids(raw))
+    for message in page_bundle.get("messages", {}).values():
+        ids.update(collect_hydration_message_ids(message))
+        raw = message.get("raw") if isinstance(message, dict) else None
+        if raw:
+            ids.update(collect_hydration_message_ids(raw))
+    return {message_id for message_id in ids if isinstance(message_id, str) and message_id.strip()}
+
+
 def sync_chat_history_from_notion(
     client: NotionOpusAPI,
     *,
@@ -86,6 +102,8 @@ def sync_chat_history_from_notion(
     cursor: str | None = None
     pages_scanned = 0
     stopped_reason = "completed"
+    hydration_batches = 0
+    hydrated_messages_seen = 0
 
     while pages_scanned < max_pages:
         payload: dict[str, Any] = {
@@ -101,14 +119,8 @@ def sync_chat_history_from_notion(
         bundle["endpoint_counts"]["getInferenceTranscriptsForUser"] += 1
 
         page_bundle = import_chat_object(page_obj)
-        before_threads = len(bundle["threads"])
-        before_messages = len(bundle["messages"])
         _merge_bundle(bundle, page_bundle)
-
-        for thread in page_bundle["threads"].values():
-            for message_id in thread.get("message_ids") or []:
-                if isinstance(message_id, str) and message_id.strip():
-                    seen_message_ids.add(message_id.strip())
+        seen_message_ids.update(_collect_page_hydration_ids(page_bundle))
 
         if not page_bundle.get("threads") and not page_bundle.get("messages"):
             stopped_reason = "empty_page"
@@ -143,7 +155,9 @@ def sync_chat_history_from_notion(
         }
         hydrate_obj = _post_json(client, HYDRATE_ENDPOINT, hydrate_payload)
         bundle["endpoint_counts"]["syncRecordValuesSpaceInitial"] += 1
+        hydration_batches += 1
         hydrate_bundle = import_chat_object(hydrate_obj)
+        hydrated_messages_seen += len(hydrate_bundle.get("messages", {}))
         _merge_bundle(bundle, hydrate_bundle)
 
     messages_seen = len(bundle["messages"])
@@ -154,6 +168,9 @@ def sync_chat_history_from_notion(
         "threads_without_messages": _threads_without_messages(bundle),
         "next_cursor": cursor,
         "stopped_reason": stopped_reason,
+        "hydration_candidate_ids": len(message_ids),
+        "hydration_batches": hydration_batches,
+        "hydrated_messages_seen": hydrated_messages_seen,
     }
     bundle["endpoint_counts"] = dict(bundle["endpoint_counts"])
     bundle["sync_summary"] = summary
@@ -163,6 +180,9 @@ def sync_chat_history_from_notion(
         "threads": len(bundle["threads"]),
         "messages": messages_seen,
         "hydrated_message_ids": len(message_ids),
+        "hydration_candidate_ids": len(message_ids),
+        "hydration_batches": hydration_batches,
+        "hydrated_messages_seen": hydrated_messages_seen,
         "threads_without_messages": summary["threads_without_messages"],
         "next_cursor": cursor,
         "stopped_reason": stopped_reason,
