@@ -1,21 +1,38 @@
-import time
+import hmac
 import os
+import time
+from contextlib import asynccontextmanager
+
 from fastapi import FastAPI, HTTPException, Request
-from fastapi.responses import JSONResponse, Response
 from fastapi.middleware.cors import CORSMiddleware
+from fastapi.responses import JSONResponse, Response
 from fastapi.staticfiles import StaticFiles
 from slowapi.errors import RateLimitExceeded
-from contextlib import asynccontextmanager
-from app.config import ACCOUNTS, API_KEY, ALLOWED_ORIGINS, is_lite_mode, is_standard_mode
+
 from app.account_pool import AccountPool
-from app.conversation import ConversationManager
 from app.api.chat import router as chat_router
-from app.api.models import router as models_router
 from app.api.chat_history import router as chat_history_router
+from app.api.models import router as models_router
 from app.api.responses import router as responses_router
+from app.config import ACCOUNTS, ALLOWED_ORIGINS, API_KEY, is_lite_mode, is_standard_mode
+from app.conversation import ConversationManager
 from app.core.errors import openai_error_payload
-from app.logger import logger
 from app.limiter import limiter
+from app.logger import logger
+
+
+def _valid_bearer_token(auth_header: str, expected_key: str) -> bool:
+    """Return whether an Authorization header contains the expected bearer token."""
+    if not expected_key:
+        return True
+    scheme, separator, token = str(auth_header or "").partition(" ")
+    if not separator or scheme.lower() != "bearer":
+        return False
+    token = token.strip()
+    if not token or any(char.isspace() for char in token):
+        return False
+    return hmac.compare_digest(token, expected_key)
+
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
@@ -39,11 +56,12 @@ async def lifespan(app: FastAPI):
     # 关闭时清理
     logger.info("Service shutting down", extra={"request_info": {"event": "shutdown"}})
 
+
 app = FastAPI(
     title="Notion Opus API",
     description="A FastAPI wrapper providing an OpenAI-compatible interface for Notion's Claude Opus backend.",
     version="1.0.0",
-    lifespan=lifespan
+    lifespan=lifespan,
 )
 
 # 允许跨域（配合本地前端）
@@ -62,7 +80,7 @@ app.state.limiter = limiter
 def custom_rate_limit_exceeded_handler(request: Request, exc: RateLimitExceeded):
     return JSONResponse(
         status_code=429,
-        content={"error": "Too many requests, please try again later"}
+        content={"error": "Too many requests, please try again later"},
     )
 app.add_exception_handler(RateLimitExceeded, custom_rate_limit_exceeded_handler)
 
@@ -141,7 +159,7 @@ async def api_key_auth(request: Request, call_next):
         # 跳过 OPTIONS 请求和非受保护的静态路由（如果以后有的话）
         if request.url.path.startswith("/v1") and request.method != "OPTIONS":
             auth_header = request.headers.get("Authorization", "")
-            if not auth_header.startswith("Bearer ") or auth_header.split(" ")[1] != API_KEY:
+            if not _valid_bearer_token(auth_header, API_KEY):
                 return JSONResponse(
                     status_code=401,
                     content=openai_error_payload(
