@@ -201,7 +201,9 @@ function Update-CouncilSettings {
     )
     $settingsPath = Join-Path $CouncilRootPath "data\settings.json"
     $settingsDir = Split-Path $settingsPath -Parent
-    New-Item -ItemType Directory -Force -Path $settingsDir | Out-Null
+    if (-not (Test-Path $settingsDir)) {
+        New-Item -ItemType Directory -Force -Path $settingsDir | Out-Null
+    }
 
     $settings = if (Test-Path $settingsPath) {
         try {
@@ -214,29 +216,29 @@ function Update-CouncilSettings {
         [pscustomobject]@{}
     }
 
-    $settings.custom_endpoint_name = "Notion2API"
-    $settings.custom_endpoint_url = "http://127.0.0.1:$NotionPort/v1"
-    $settings.custom_endpoint_api_key = $NotionApiKey
+    # Use Add-Member -Force for robust property creation/update
+    $settings | Add-Member -MemberType NoteProperty -Name "custom_endpoint_name" -Value "Notion2API" -Force
+    $settings | Add-Member -MemberType NoteProperty -Name "custom_endpoint_url" -Value "http://127.0.0.1:$NotionPort/v1" -Force
+    $settings | Add-Member -MemberType NoteProperty -Name "custom_endpoint_api_key" -Value $NotionApiKey -Force
 
-    if (-not $settings.enabled_providers) {
+    if ($null -eq $settings.enabled_providers) {
         $settings | Add-Member -MemberType NoteProperty -Name "enabled_providers" -Value ([pscustomobject]@{}) -Force
     }
     $settings.enabled_providers | Add-Member -MemberType NoteProperty -Name "custom" -Value $true -Force
 
-    # Set defaults if they don't exist
-    if (-not $settings.council_models -or $settings.council_models.Count -lt 2) {
-        $settings | Add-Member -MemberType NoteProperty -Name "council_models" -Value @(
-            "custom:gpt-5.5",
-            "custom:claude-opus4.7",
-            "custom:gemini-3.1pro",
-            "custom:kimi-2.6"
-        ) -Force
-    }
-    if (-not $settings.chairman_model) {
-        $settings | Add-Member -MemberType NoteProperty -Name "chairman_model" -Value "custom:claude-opus4.7" -Force
-    }
+    # Set preferred models
+    $models = @(
+        "custom:gpt-5.5",
+        "custom:claude-opus4.7",
+        "custom:gemini-3.1pro",
+        "custom:kimi-2.6"
+    )
+    $settings | Add-Member -MemberType NoteProperty -Name "council_models" -Value $models -Force
+    $settings | Add-Member -MemberType NoteProperty -Name "chairman_model" -Value "custom:claude-opus4.7" -Force
 
-    $settings | ConvertTo-Json -Depth 20 | Set-Content -Path $settingsPath -Encoding UTF8
+    # Save using [System.IO.File]::WriteAllText to avoid UTF-8 BOM issues (Python JSON loader fails with BOM)
+    $json = $settings | ConvertTo-Json -Depth 20
+    [System.IO.File]::WriteAllText($settingsPath, $json)
 }
 
 function Start-CouncilFrontend {

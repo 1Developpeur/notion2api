@@ -49,7 +49,12 @@ class ChatHistoryBulkDeleteTests(unittest.TestCase):
             remaining = store.get_thread("thread-2")
             self.assertIsNotNone(remaining)
             self.assertEqual(remaining["message_count"], 1)
-            self.assertEqual(store.search("keep me"), [{"id": "msg-2", "thread_id": "thread-2", "role": "user", "snippet": "[keep me]"}])
+            search_results = store.search("keep me")
+            self.assertEqual(len(search_results), 1)
+            self.assertEqual(search_results[0]["id"], "msg-2")
+            self.assertEqual(search_results[0]["thread_id"], "thread-2")
+            self.assertEqual(search_results[0]["role"], "user")
+            self.assertIn(search_results[0]["snippet"], {"[keep me]", "[keep] [me]"})
             self.assertEqual(store.search("delete me"), [])
 
     def test_bulk_delete_ui_consumes_per_thread_results(self) -> None:

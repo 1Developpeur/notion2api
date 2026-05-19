@@ -225,7 +225,7 @@ def chat_history_main_js():
 
 
 @app.get("/", include_in_schema=False)
-def frontend_index():
+def frontend_index(request: Request):
     index_path = os.path.join(frontend_dir, "index.html")
     if not os.path.exists(index_path):
         return Response(content=b"", media_type="text/html", status_code=404)
@@ -239,6 +239,26 @@ def frontend_index():
     missing_tags = [tag for tag in script_tags if tag not in html]
     if missing_tags:
         html = html.replace("</body>", "\n".join(missing_tags) + "\n</body>")
+
+    # Auto-populate API key in WebUI if request is local (127.0.0.1 or ::1) and API_KEY is set
+    client_ip = request.client.host if request.client else ""
+    if API_KEY and client_ip in ("127.0.0.1", "::1"):
+        injection = f"""
+<script>
+  (function() {{
+    const serverKey = {repr(API_KEY)};
+    const currentKey = localStorage.getItem('claude_api_key');
+    if (currentKey !== serverKey) {{
+      localStorage.setItem('claude_api_key', serverKey);
+      if (window.NotionAI && window.NotionAI.Core && window.NotionAI.Core.State) {{
+        window.NotionAI.Core.State._state.apiKey = serverKey;
+      }}
+    }}
+  }})();
+</script>
+"""
+        html = html.replace("</body>", injection + "\n</body>")
+
     return Response(content=html, media_type="text/html")
 
 # 挂载静态前端到根目录
