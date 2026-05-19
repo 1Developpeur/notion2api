@@ -5,7 +5,7 @@ from typing import Any
 from fastapi import APIRouter, HTTPException, Query, Request
 from fastapi.responses import PlainTextResponse
 
-from app.chat_history.har_importer import import_chat_object, import_har_object
+from app.chat_history.har_importer import import_har_object
 from app.chat_history.notion_sync import hydrate_thread_from_notion, sync_chat_history_from_notion
 from app.chat_history.store import ChatHistoryStore, get_default_chat_history_db_path
 from app.notion_client import NotionUpstreamError
@@ -64,6 +64,7 @@ def status() -> dict[str, Any]:
             "metadata_only_sync",
             "selected_thread_hydration",
             "bulk_remote_delete",
+            "bulk_delete_partial_results",
             "hydration_diagnostics",
             "thread_debug",
             "local_archive",
@@ -158,7 +159,7 @@ def list_threads(limit: int = Query(50, ge=1, le=200), offset: int = Query(0, ge
 
 @router.delete("/threads")
 async def delete_threads(request: Request) -> dict[str, Any]:
-    """Bulk-delete remote Notion chat threads and remove them from the local archive."""
+    """Bulk-delete remote Notion chat threads and remove confirmed successes from the local archive."""
     try:
         payload = await request.json()
     except Exception as exc:
@@ -180,35 +181,66 @@ async def delete_threads(request: Request) -> dict[str, Any]:
     except Exception as exc:
         raise HTTPException(status_code=400, detail="Invalid delete parameters") from exc
 
-    remote_result: dict[str, Any] = {"remote_deleted": 0, "remote_failed": 0, "failed_ids": []}
+    store = _store()
+    existing_ids = store.existing_thread_ids(thread_ids)
+    results: dict[str, Any] = {"success": [], "failed": []}
+
+    for thread_id in thread_ids:
+        if thread_id not in existing_ids:
+            results["failed"].append(
+                {
+                    "thread_id": thread_id,
+                    "stage": "local_auth",
+                    "error": "Thread ID not found in the local archive.",
+                }
+            )
+
+    known_ids = [thread_id for thread_id in thread_ids if thread_id in existing_ids]
+
     if remote:
         client = _get_account_client(request, account_index)
-        try:
-            remote_result = client.delete_threads(thread_ids)
-        except NotionUpstreamError as exc:
-            raise HTTPException(
-                status_code=503,
-                detail={
-                    "error": {
-                        "message": "Unable to delete remote chat history from Notion.",
-                        "type": "upstream_error",
-                        "param": None,
-                        "code": "upstream_error",
-                        "detail": exc.response_excerpt,
+        for thread_id in known_ids:
+            try:
+                remote_result = client.delete_threads([thread_id])
+            except NotionUpstreamError as exc:
+                results["failed"].append(
+                    {
+                        "thread_id": thread_id,
+                        "stage": "remote",
+                        "error": exc.response_excerpt or str(exc),
                     }
-                },
-            ) from exc
+                )
+                continue
+            accepted = int(remote_result.get("remote_deleted", 0) or remote_result.get("remote_accepted", 0) or 0) > 0
+            if accepted:
+                results["success"].append(thread_id)
+            else:
+                results["failed"].append(
+                    {
+                        "thread_id": thread_id,
+                        "stage": "remote",
+                        "error": "Remote delete transaction was not accepted.",
+                    }
+                )
+    else:
+        results["success"].extend(known_ids)
 
     local_result: dict[str, int] = {"threads_deleted": 0, "messages_deleted": 0, "fts_deleted": 0}
-    if local:
-        local_result = _store().delete_threads(thread_ids)
+    if local and results["success"]:
+        local_result = store.delete_threads(results["success"])
 
     return {
         "requested": len(thread_ids),
         "remote": remote,
         "local": local,
-        "remote_result": remote_result,
+        "results": results,
+        "remote_result": {
+            "remote_accepted": len(results["success"]) if remote else 0,
+            "remote_failed": len([item for item in results["failed"] if item.get("stage") == "remote"]),
+            "failed_ids": [item.get("thread_id") for item in results["failed"] if item.get("stage") == "remote"],
+        },
         "local_result": local_result,
+        "message": f"Processed {len(thread_ids)} thread(s): {len(results['success'])} succeeded, {len(results['failed'])} failed.",
     }
 
 
