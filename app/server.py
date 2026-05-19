@@ -168,7 +168,28 @@ def health_check(request: Request):
         "uptime": int(uptime)
     }
 
-# 挂载静态前端到根目录
 frontend_dir = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "frontend")
+
+@app.get("/chat-history-import.js", include_in_schema=False)
+def chat_history_import_js():
+    script_path = os.path.join(frontend_dir, "js", "chat-history-import.js")
+    if not os.path.exists(script_path):
+        return Response(content=b"", media_type="application/javascript", status_code=404)
+    with open(script_path, "rb") as f:
+        return Response(content=f.read(), media_type="application/javascript")
+
+@app.get("/", include_in_schema=False)
+def frontend_index():
+    index_path = os.path.join(frontend_dir, "index.html")
+    if not os.path.exists(index_path):
+        return Response(content=b"", media_type="text/html", status_code=404)
+    with open(index_path, "r", encoding="utf-8") as f:
+        html = f.read()
+    script_tag = '<script src="/chat-history-import.js"></script>'
+    if script_tag not in html:
+        html = html.replace("</body>", f"{script_tag}\n</body>")
+    return Response(content=html, media_type="text/html")
+
+# 挂载静态前端到根目录
 if os.path.exists(frontend_dir):
     app.mount("/", StaticFiles(directory=frontend_dir, html=True), name="frontend")
