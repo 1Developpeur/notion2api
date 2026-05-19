@@ -11,6 +11,7 @@ from app.account_pool import AccountPool
 from app.conversation import ConversationManager
 from app.api.chat import router as chat_router
 from app.api.models import router as models_router
+from app.api.chat_history import router as chat_history_router
 from app.logger import logger
 from app.limiter import limiter
 
@@ -147,6 +148,7 @@ async def api_key_auth(request: Request, call_next):
 # 挂载路由，前缀统一为 /v1
 app.include_router(chat_router, prefix="/v1")
 app.include_router(models_router, prefix="/v1")
+app.include_router(chat_history_router, prefix="/v1")
 
 # 挂载健康检查
 @app.get("/favicon.ico", include_in_schema=False)
