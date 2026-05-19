@@ -63,8 +63,6 @@
       .chat-history-main-meta{font-size:10px;color:var(--text-tertiary);overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
       .chat-history-main-dot{width:7px;height:7px;border-radius:999px;margin-top:6px;flex-shrink:0;background:var(--text-tertiary);opacity:.7}
       .chat-history-main-dot.hydrated{background:#2e7d32;opacity:1}
-      .chat-history-main-load{width:calc(100% - 24px);margin:6px 12px;padding:6px 8px;border-radius:4px;font-size:12px;color:var(--text-secondary);background:transparent;text-align:left}
-      .chat-history-main-load:hover{background:var(--bg-hover);color:var(--text)}
       .chat-history-main-empty{font-size:12px;color:var(--text-tertiary);padding:8px 12px;line-height:1.4}
       .chat-history-main-status{max-width:720px;margin:32px auto;padding:0 24px;color:var(--text-secondary);font-size:14px;line-height:1.6}
       .chat-history-steps{max-width:720px;margin:18px auto;color:var(--text-secondary);font-size:13px}
@@ -263,7 +261,6 @@
 
   async function selectFilteredRemoteThreads() {
     if (state.loading || state.deleting) return;
-    if (state.hasMore) await loadAllRemoteThreads();
     const visibleThreads = getVisibleThreads();
     for (const thread of visibleThreads) {
       if (thread?.id) state.selectedIds.add(thread.id);
@@ -390,15 +387,14 @@
 
     const summary = document.createElement('div');
     summary.className = 'chat-history-main-summary';
-    const loadedText = state.hasMore ? `${state.threads.length}+ loaded` : `${state.threads.length} loaded`;
     const filterText = state.filterText.trim() ? `${visibleCount} matched` : `${visibleCount} visible`;
-    summary.textContent = `${filterText}; ${loadedText}; ${selectedCount} selected`;
+    summary.textContent = `${filterText}; ${state.threads.length} loaded; ${selectedCount} selected`;
 
     const selectBtn = document.createElement('button');
     selectBtn.type = 'button';
-    selectBtn.textContent = state.filterText.trim() ? 'Select filtered' : 'Select all';
-    selectBtn.disabled = state.deleting || state.loading || (!state.threads.length && !state.hasMore);
-    selectBtn.title = state.hasMore ? 'Loads all archived pages first, then selects every matching conversation.' : 'Select every currently matching conversation.';
+    selectBtn.textContent = 'Select filtered';
+    selectBtn.disabled = state.deleting || state.loading || !state.threads.length;
+    selectBtn.title = 'Select every currently matching conversation. With no filter, every loaded conversation matches.';
     selectBtn.addEventListener('click', event => {
       event.stopPropagation();
       selectFilteredRemoteThreads();
@@ -436,7 +432,7 @@
       loading.className = 'chat-history-main-status';
       loading.style.margin = '8px 12px';
       loading.style.padding = '0';
-      loading.textContent = 'Loading...';
+      loading.textContent = 'Loading all remote chats...';
       chatList.appendChild(loading);
       return;
     }
@@ -445,7 +441,7 @@
       const empty = document.createElement('div');
       empty.className = 'chat-history-main-empty';
       empty.textContent = state.filterText.trim()
-        ? 'No loaded remote chats match this filter. Use “Load more” or “Select filtered” to search older loaded pages before selecting.'
+        ? 'No remote chats match this filter.'
         : 'No remote chats are loaded.';
       chatList.appendChild(empty);
     }
@@ -498,49 +494,10 @@
       item.appendChild(dot);
       chatList.appendChild(item);
     });
-
-    if (state.hasMore) {
-      const more = document.createElement('button');
-      more.type = 'button';
-      more.className = 'chat-history-main-load';
-      more.textContent = state.loading
-        ? 'Loading...'
-        : state.filterText.trim()
-          ? 'Load more to search older remote chats'
-          : 'Load more remote chats';
-      more.disabled = state.loading;
-      more.addEventListener('click', event => {
-        event.stopPropagation();
-        refresh({ append: true });
-      });
-      chatList.appendChild(more);
-    }
   }
 
-  async function refresh(options = {}) {
-    const append = Boolean(options.append);
-    if (state.loading) return;
-    state.loading = true;
-    if (!append) {
-      state.threads = [];
-      state.offset = 0;
-      state.hasMore = false;
-    }
-    window.NotionAI?.Chat?.Manager?.renderChatList?.();
-    try {
-      const data = await fetchJson(`${THREADS_ENDPOINT}?limit=${PAGE_SIZE}&offset=${state.offset}`);
-      const page = Array.isArray(data?.threads) ? data.threads : [];
-      state.threads = append ? state.threads.concat(page) : page;
-      state.offset += page.length;
-      state.hasMore = page.length === PAGE_SIZE;
-      pruneSelectionToLoadedThreads();
-    } catch (err) {
-      console.warn('Unable to load remote chat history', err);
-      if (!append) state.threads = [];
-    } finally {
-      state.loading = false;
-      window.NotionAI?.Chat?.Manager?.renderChatList?.();
-    }
+  async function refresh() {
+    await loadAllRemoteThreads();
   }
 
   function patchChatManager() {
