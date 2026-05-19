@@ -261,6 +261,7 @@
       thread.message_count = selectedCount;
       thread.hydrated = selectedHydrated;
       updateThreadListItem(thread.id, { message_count: selectedCount, hydrated: selectedHydrated });
+      window.NotionAI?.ChatHistoryMain?.refresh?.();
       preview.innerHTML = `<div class="chat-history-browser-markdown">Loading ${esc(thread.title || thread.id)}...</div>`;
       const markdown = await fetchText(`${THREADS_ENDPOINT}/${encodeURIComponent(thread.id)}/markdown`);
       const warning = selectedCount === 0

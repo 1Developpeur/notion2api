@@ -1,3 +1,4 @@
+# pylint: disable=broad-exception-caught, protected-access
 import asyncio
 from difflib import SequenceMatcher
 import json
@@ -13,7 +14,6 @@ from app.core.errors import openai_error
 from app.core.models import normalize_model_id
 from app.conversation import compress_round_if_needed, compress_sliding_window_round, build_lite_transcript
 from app.config import is_lite_mode
-from app.limiter import limiter
 from app.logger import logger
 from app.model_registry import is_supported_model, list_available_models
 from app.notion_client import NotionUpstreamError
@@ -31,7 +31,6 @@ router = APIRouter()
 def _classify_upstream_error(exc: NotionUpstreamError) -> dict[str, Any]:
     """将 NotionUpstreamError 分类为结构化错误信息，前端可直接展示。"""
     sc = exc.status_code
-    excerpt = exc.response_excerpt or ""
 
     if sc == 401:
         return {
@@ -540,7 +539,7 @@ def _create_lite_stream_generator(
             extra={"request_info": {"event": "lite_stream_cancelled"}},
         )
         raise
-    except BaseException as exc:
+    except Exception as exc:
         if _is_client_disconnect_error(exc):
             logger.info(
                 "Lite streaming connection closed by client",
@@ -689,7 +688,7 @@ def _create_standard_stream_generator(
             extra={"request_info": {"event": "standard_stream_cancelled"}},
         )
         raise
-    except BaseException as exc:
+    except Exception as exc:
         if _is_client_disconnect_error(exc):
             logger.info(
                 "Standard streaming connection closed by client",
@@ -788,12 +787,12 @@ def _persist_round(
     )
 
     # 异步预压缩：当窗口快满时提前压缩
-    WINDOW_ROUNDS = 8  # 与 conversation.py 保持一致
-    PRECOMPRESS_THRESHOLD = WINDOW_ROUNDS // 2  # 在第 4 轮时开始预压缩
+    window_rounds = 8  # 与 conversation.py 保持一致
+    precompress_threshold = window_rounds // 2  # 在第 4 轮时开始预压缩
 
-    if round_index >= PRECOMPRESS_THRESHOLD:
+    if round_index >= precompress_threshold:
         # 计算需要压缩的轮次（滑出窗口的轮次）
-        round_to_compress = round_index - WINDOW_ROUNDS + 1
+        round_to_compress = round_index - window_rounds + 1
         if round_to_compress >= 0:
             background_tasks.add_task(
                 compress_sliding_window_round,
@@ -839,12 +838,12 @@ def _is_client_disconnect_error(exc: BaseException) -> bool:
 async def _handle_lite_request(
     request: Request,
     req_body: ChatCompletionRequest,
-    response: Response,
-) -> JSONResponse | StreamingResponse:
+) -> JSONResponse | StreamingResponse | ChatCompletionResponse:
     """处理 Lite 模式请求（无记忆，单轮问答）"""
     pool = request.app.state.account_pool
 
     req_body.model = _resolve_request_model(req_body.model)
+    assert req_body.model is not None
 
     # 提取用户问题
     user_prompt = _prepare_messages_lite(req_body)
@@ -998,8 +997,7 @@ async def _handle_lite_request(
 async def _handle_standard_request(
     request: Request,
     req_body: ChatCompletionRequest,
-    response: Response,
-) -> JSONResponse | StreamingResponse:
+) -> JSONResponse | StreamingResponse | ChatCompletionResponse:
     """
     处理 Standard 模式请求（完整上下文，支持 thinking 和搜索）
 
@@ -1009,11 +1007,11 @@ async def _handle_standard_request(
     3. 保留搜索结果输出
     """
     from app.conversation import build_standard_transcript
-    from app.config import is_standard_mode
 
     pool = request.app.state.account_pool
 
     req_body.model = _resolve_request_model(req_body.model)
+    assert req_body.model is not None
 
     response_id = f"chatcmpl-{uuid.uuid4().hex}"
     max_retries = max(3, len(pool.clients))
@@ -1223,14 +1221,15 @@ async def create_chat_completion(
     from app.config import is_standard_mode
 
     req_body.model = _resolve_request_model(req_body.model)
+    assert req_body.model is not None
 
     # Lite 模式：单轮问答，无记忆
     if is_lite_mode():
-        return await _handle_lite_request(request, req_body, response)
+        return await _handle_lite_request(request, req_body)
 
     # Standard 模式：完整上下文，支持 thinking 和搜索
     if is_standard_mode():
-        return await _handle_standard_request(request, req_body, response)
+        return await _handle_standard_request(request, req_body)
 
     # Heavy 模式：完整会话管理
     pool = request.app.state.account_pool
@@ -1448,7 +1447,7 @@ async def create_chat_completion(
                         },
                     )
                     raise
-                except BaseException as exc:
+                except Exception as exc:
                     if _is_client_disconnect_error(exc):
                         logger.info(
                             "Streaming connection closed by downstream client",
@@ -1461,7 +1460,7 @@ async def create_chat_completion(
                             },
                         )
                         return
-                    if isinstance(exc, NotionUpstreamError) and client is not None and exc.retriable:
+                    if isinstance(exc, NotionUpstreamError) and client is not None and getattr(exc, 'retriable', False):
                         pool.mark_failed(client)
                     log_method = logger.warning if isinstance(exc, NotionUpstreamError) else logger.error
                     log_method(
@@ -1726,6 +1725,9 @@ async def create_chat_completion(
 
 @router.delete("/conversations/{conversation_id}", tags=["chat"])
 async def delete_conversation(conversation_id: str, request: Request):
+    """
+    Delete a conversation by its ID.
+    """
     manager = request.app.state.conversation_manager
     deleted = manager.delete_conversation(conversation_id)
     if not deleted:

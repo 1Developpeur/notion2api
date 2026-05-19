@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from typing import Any
+from typing import Any, NoReturn
 
 from fastapi import HTTPException
 from fastapi.responses import JSONResponse
@@ -29,7 +29,7 @@ def openai_error(
     status_code: int = 400,
     error_type: str = "invalid_request_error",
     param: str | None = None,
-) -> None:
+) -> NoReturn:
     raise HTTPException(
         status_code=status_code,
         detail=openai_error_payload(

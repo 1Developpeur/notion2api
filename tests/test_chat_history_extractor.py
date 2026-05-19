@@ -136,6 +136,41 @@ class ChatHistoryExtractorTests(unittest.TestCase):
         self.assertEqual(thread["created_time"], "1779160000000")
         self.assertEqual(thread["last_edited_time"], "1779160848204")
 
+    def test_agent_inference_uses_visible_text_only(self) -> None:
+        msg = normalize_message(
+            "msg-1",
+            {
+                "type": "agent-inference",
+                "thread_id": "thread-1",
+                "startedAt": 1779160892191,
+                "value": [
+                    {"type": "thinking", "content": "internal reasoning"},
+                    {"type": "text", "content": '<lang primary="en-US"/>'},
+                    {"type": "text", "content": "Visible assistant answer"},
+                    {"type": "tool_use", "name": "create-pages", "content": '{"pages":[]}'},
+                ],
+            },
+        )
+
+        if msg is None:
+            self.fail("normalize_message returned None")
+        self.assertEqual(msg["role"], "assistant")
+        self.assertEqual(msg["text"], "Visible assistant answer")
+        self.assertEqual(msg["created_time"], "1779160892191")
+
+    def test_tool_result_records_are_not_visible_messages(self) -> None:
+        self.assertIsNone(
+            normalize_message(
+                "tool-1",
+                {
+                    "type": "agent-tool-result",
+                    "toolName": "create-pages",
+                    "error": "Cannot create page",
+                    "startedAt": 1779160892191,
+                },
+            )
+        )
+
 
 if __name__ == "__main__":
     unittest.main()

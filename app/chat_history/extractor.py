@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import hashlib
+import re
 from typing import Any
 
 THREAD_MESSAGE_FIELDS = (
@@ -21,9 +22,17 @@ MESSAGE_TEXT_FIELDS = ("content", "text", "markdown", "message", "body")
 MESSAGE_TEXT_NESTED_FIELDS = ("data", "properties")
 THREAD_ID_FIELDS = ("thread_id", "threadId", "parent_id", "parentId", "conversation_id", "conversationId")
 THREAD_UPDATED_FIELDS = ("updated_at", "updatedAt", "updated_time", "updatedTime", "last_edited_time", "lastEditedTime", "last_updated_time", "lastUpdatedTime")
-THREAD_CREATED_FIELDS = ("created_time", "createdTime", "created_at", "createdAt")
+THREAD_CREATED_FIELDS = ("created_time", "createdTime", "created_at", "createdAt", "created_at_ms", "createdAtMs", "startedAt")
 SECRET_KEY_FRAGMENTS = ("token", "cookie", "authorization", "api_key", "apikey", "secret", "password", "session")
 THREAD_TITLE_FIELDS = ("title", "name", "subject")
+HIDDEN_MESSAGE_TYPES = {
+    "agent-instruction-state",
+    "agent-search-query-generation",
+    "agent-tool-result",
+    "agent-turn-full-record-map",
+    "thinking",
+    "title",
+}
 HYDRATION_SCAN_FIELDS = (
     "recordMap",
     "body",
@@ -90,6 +99,45 @@ def _coerce_text(value: Any) -> str:
             seen.add(key)
             unique.append(str(chunk).strip())
     return "\n".join(unique)
+
+
+def _strip_internal_markup(text: str) -> str:
+    return re.sub(r"<lang\b[^>]*/>", "", text or "").strip()
+
+
+def visible_message_text(value: dict[str, Any]) -> str:
+    """Return only the text Notion shows as chat content, excluding thinking/tool bookkeeping."""
+    message_type = str(value.get("type") or "").strip()
+    if message_type == "agent-inference" and isinstance(value.get("value"), list):
+        chunks: list[str] = []
+        for part in value["value"]:
+            if not isinstance(part, dict):
+                continue
+            part_type = str(part.get("type") or "").strip()
+            content = part.get("content")
+            if part_type == "text" and isinstance(content, str):
+                text = _strip_internal_markup(content)
+                if text:
+                    chunks.append(text)
+        return "\n\n".join(chunks).strip()
+    if message_type in HIDDEN_MESSAGE_TYPES:
+        return ""
+    text = _coerce_text({key: value.get(key) for key in MESSAGE_TEXT_FIELDS if key in value}) or _coerce_text(value)
+    return _strip_internal_markup(text)
+
+
+def visible_message_role(value: dict[str, Any]) -> str | None:
+    message_type = str(value.get("type") or "").strip()
+    if message_type == "agent-inference":
+        return "assistant"
+    if message_type == "user":
+        return "user"
+    role = _first_str(value, MESSAGE_ROLE_FIELDS)
+    if role == "agent-inference":
+        return "assistant"
+    if role in HIDDEN_MESSAGE_TYPES:
+        return None
+    return role
 
 
 def _collect_text(value: Any, out: list[str], depth: int = 0) -> None:
@@ -243,19 +291,23 @@ def normalize_thread(thread_id: str | None, raw: dict[str, Any]) -> dict[str, An
 def normalize_message(message_id: str | None, raw: dict[str, Any], fallback_thread_id: str | None = None) -> dict[str, Any] | None:
     value = record_value(raw)
     resolved_id = message_id or _first_str(value, MESSAGE_ID_FIELDS)
-    text = _coerce_text({key: value.get(key) for key in MESSAGE_TEXT_FIELDS if key in value}) or _coerce_text(value)
+    text = visible_message_text(value)
     if not text:
         for key in MESSAGE_TEXT_NESTED_FIELDS:
             nested = value.get(key)
             if isinstance(nested, dict):
-                text = _coerce_text(nested)
+                text = visible_message_text(nested)
                 if text:
                     break
     if not resolved_id and not text:
         return None
+    if not text:
+        return None
     thread_id = _first_str(value, THREAD_ID_FIELDS) or fallback_thread_id
-    role = _first_str(value, MESSAGE_ROLE_FIELDS)
-    created_at = _first_str(value, THREAD_CREATED_FIELDS)
+    role = visible_message_role(value)
+    if role is None:
+        return None
+    created_at = _first_scalar_text(value, THREAD_CREATED_FIELDS)
     return {
         "id": str(resolved_id or _synthetic_message_id(thread_id, text)),
         "thread_id": thread_id,
@@ -346,6 +398,7 @@ def merge_records_into_bundle(bundle: dict[str, Any], obj: Any) -> None:
                 message = normalize_message(None, value, fallback_thread_id=fallback_thread_id)
                 if message:
                     bundle["messages"][message["id"]] = message
+                    return
 
             for nested in value.values():
                 if isinstance(nested, (dict, list)):

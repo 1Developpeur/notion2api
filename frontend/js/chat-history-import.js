@@ -200,6 +200,7 @@
         throw new Error(typeof message === 'string' ? message : JSON.stringify(message));
       }
       setStatus(resultText(hydrate ? 'Full pull complete.' : 'Metadata pull complete.', data));
+      window.NotionAI?.ChatHistoryMain?.refresh?.();
     } catch (err) {
       setStatus(err?.message || String(err), true);
     } finally {
@@ -242,6 +243,7 @@
         throw new Error(typeof message === 'string' ? message : JSON.stringify(message));
       }
       setStatus(resultText('HAR import complete.', data));
+      window.NotionAI?.ChatHistoryMain?.refresh?.();
     } catch (err) {
       setStatus(err?.message || String(err), true);
     } finally {

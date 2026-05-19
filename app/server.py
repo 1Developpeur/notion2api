@@ -201,6 +201,11 @@ def chat_history_browser_js():
     return _frontend_js_response("chat-history-browser.js")
 
 
+@app.get("/chat-history-main.js", include_in_schema=False)
+def chat_history_main_js():
+    return _frontend_js_response("chat-history-main.js")
+
+
 @app.get("/", include_in_schema=False)
 def frontend_index():
     index_path = os.path.join(frontend_dir, "index.html")
@@ -211,6 +216,7 @@ def frontend_index():
     script_tags = [
         '<script src="/chat-history-import.js"></script>',
         '<script src="/chat-history-browser.js"></script>',
+        '<script src="/chat-history-main.js"></script>',
     ]
     missing_tags = [tag for tag in script_tags if tag not in html]
     if missing_tags:

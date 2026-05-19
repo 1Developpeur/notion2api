@@ -5,7 +5,7 @@ import os
 import sqlite3
 from typing import Any
 
-from app.chat_history.extractor import describe_thread_record
+from app.chat_history.extractor import describe_thread_record, visible_message_role, visible_message_text
 
 DDL = """
 CREATE TABLE IF NOT EXISTS chat_threads (
@@ -109,6 +109,107 @@ def _thread_timestamp_expr(alias: str = "t") -> str:
         f"{alias}.imported_at"
         f")"
     )
+
+
+def _time_sort_value(value: Any) -> tuple[int, str]:
+    text = str(value or "").strip()
+    if not text:
+        return (0, "")
+    if text.isdigit():
+        return (int(text), text)
+    try:
+        from datetime import datetime
+
+        normalized = text.replace("Z", "+00:00")
+        return (int(datetime.fromisoformat(normalized).timestamp() * 1000), text)
+    except Exception:
+        return (0, text)
+
+
+def _display_message(message: dict[str, Any]) -> dict[str, Any] | None:
+    raw = message.get("raw") if isinstance(message.get("raw"), dict) else {}
+    text = visible_message_text(raw) if raw else str(message.get("text") or "").strip()
+    if not text:
+        return None
+    role = visible_message_role(raw) if raw else str(message.get("role") or "").strip()
+    if not role:
+        return None
+    if role not in {"user", "assistant"}:
+        if role == "text":
+            role = "assistant"
+        else:
+            return None
+    created_time = str(message.get("created_time") or "").strip()
+    if not created_time and raw:
+        created_time = _text(raw.get("createdAt") or raw.get("created_time") or raw.get("startedAt"))
+    out = dict(message)
+    out["role"] = role
+    out["text"] = text
+    out["created_time"] = created_time
+    return out
+
+
+def _visible_messages(messages: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    visible: list[dict[str, Any]] = []
+    seen: set[tuple[str, str]] = set()
+    for message in messages:
+        display = _display_message(message)
+        if not display:
+            continue
+        dedupe_key = (str(display.get("role") or ""), " ".join(str(display.get("text") or "").split()))
+        if dedupe_key in seen:
+            continue
+        seen.add(dedupe_key)
+        visible.append(display)
+    return sorted(visible, key=lambda item: (_time_sort_value(item.get("created_time")), str(item.get("id") or "")))
+
+
+def _process_steps(messages: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    steps: list[dict[str, Any]] = []
+    seen: set[str] = set()
+    inference_step_ids = {
+        str((message.get("raw") or {}).get("id"))
+        for message in messages
+        if isinstance(message.get("raw"), dict) and (message.get("raw") or {}).get("type") == "agent-inference"
+    }
+    for message in messages:
+        raw = message.get("raw") if isinstance(message.get("raw"), dict) else {}
+        raw_type = str(raw.get("type") or "").strip()
+        label = ""
+        detail = ""
+        if raw_type == "agent-tool-result":
+            if str(raw.get("agentStepId") or "") in inference_step_ids:
+                continue
+            label = str(raw.get("toolName") or raw.get("toolType") or "Tool result").strip()
+            detail = str(raw.get("error") or raw.get("state") or "").strip()
+        elif raw_type == "agent-inference" and isinstance(raw.get("value"), list):
+            for part in raw["value"]:
+                if not isinstance(part, dict):
+                    continue
+                if part.get("type") == "tool_use":
+                    label = str(part.get("name") or "Tool use").strip()
+                    break
+        elif raw_type == "agent-search-query-generation":
+            label = "Search query generation"
+        if not label:
+            continue
+        key = f"{raw_type}:{label}:{detail}:{raw.get('id') or message.get('id')}"
+        if key in seen:
+            continue
+        seen.add(key)
+        created_time = str(message.get("created_time") or "").strip()
+        if not created_time:
+            created_time = _text(raw.get("createdAt") or raw.get("created_time") or raw.get("startedAt"))
+        steps.append(
+            {
+                "id": str(raw.get("id") or message.get("id") or ""),
+                "type": raw_type,
+                "label": label,
+                "detail": detail,
+                "created_time": created_time,
+            }
+        )
+    return sorted(steps, key=lambda item: (_time_sort_value(item.get("created_time")), str(item.get("id") or "")))
 
 
 class ChatHistoryStore:
@@ -273,7 +374,8 @@ class ChatHistoryStore:
             message = dict(row)
             message["raw"] = _json_object(message.pop("raw_json") or "{}")
             messages.append(message)
-        out["messages"] = messages
+        out["messages"] = _visible_messages(messages)
+        out["steps"] = _process_steps(messages)
         out["message_count"] = len(out["messages"])
         out["hydrated"] = out["message_count"] > 0
         out["first_message_preview"] = _preview(out["messages"][0].get("text") if out["messages"] else "")
