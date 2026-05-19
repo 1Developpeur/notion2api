@@ -1,5 +1,12 @@
 (() => {
   const THREADS_ENDPOINT = '/v1/chat-history/threads';
+  const PAGE_SIZE = 50;
+  const browserState = {
+    threads: [],
+    offset: 0,
+    hasMore: false,
+    loading: false
+  };
 
   function getBaseUrl() {
     if (window.NotionAI?.Core?.State?.get) {
@@ -39,6 +46,7 @@
       .chat-history-browser-layout{flex:1;min-height:0;display:grid;grid-template-columns:340px 1fr}
       .chat-history-browser-list{border-right:1px solid var(--border);overflow:auto;padding:12px}
       .chat-history-browser-preview{overflow:auto;padding:24px}
+      .chat-history-browser-day{font-size:11px;font-weight:700;color:var(--text-secondary);text-transform:uppercase;letter-spacing:0;margin:14px 0 8px}
       .chat-history-browser-item{width:100%;text-align:left;border:1px solid var(--border);border-radius:8px;padding:10px 12px;margin-bottom:8px;background:var(--card-bg);color:var(--text);display:block}
       .chat-history-browser-item:hover{border-color:var(--border-hover);background:var(--bg-hover)}
       .chat-history-browser-item.active{border-color:var(--border-active)}
@@ -46,6 +54,7 @@
       .chat-history-browser-meta{font-size:11px;color:var(--text-tertiary);line-height:1.5}
       .chat-history-hydrated-yes{color:#2e7d32}
       .chat-history-hydrated-no{color:#a94442}
+      .chat-history-browser-load-more{width:100%;margin:8px 0 4px}
       .chat-history-empty-warning{border:1px solid #f0ad4e;background:rgba(240,173,78,.12);border-radius:8px;padding:10px 12px;margin:12px 0;color:var(--text-secondary);font-size:13px;line-height:1.5}
       .chat-history-browser-markdown{font-size:14px;line-height:1.65;color:var(--text);white-space:normal}
       .chat-history-browser-markdown pre{white-space:pre-wrap;word-break:break-word;background:var(--bg-secondary);border:1px solid var(--border);border-radius:8px;padding:12px}
@@ -120,6 +129,29 @@
     return `<pre>${esc(markdown || '')}</pre>`;
   }
 
+  function threadTimestamp(thread) {
+    const value = thread.updated_at || thread.last_edited_time || thread.created_time || '';
+    if (typeof value === 'number') return value;
+    const text = String(value || '').trim();
+    if (/^\d+$/.test(text)) return Number(text);
+    const parsed = Date.parse(text);
+    return Number.isFinite(parsed) ? parsed : 0;
+  }
+
+  function dayLabel(thread) {
+    const ts = threadTimestamp(thread);
+    if (!ts) return 'Unknown date';
+    const date = new Date(ts);
+    if (Number.isNaN(date.getTime())) return 'Unknown date';
+    const today = new Date();
+    const startToday = new Date(today.getFullYear(), today.getMonth(), today.getDate()).getTime();
+    const startDate = new Date(date.getFullYear(), date.getMonth(), date.getDate()).getTime();
+    const diffDays = Math.round((startToday - startDate) / 86400000);
+    if (diffDays === 0) return 'Today';
+    if (diffDays === 1) return 'Yesterday';
+    return date.toLocaleDateString(undefined, { year: 'numeric', month: 'short', day: 'numeric' });
+  }
+
   async function fetchJson(path) {
     const response = await fetch(`${getBaseUrl()}${path}`, { headers: getHeaders() });
     const data = await response.json().catch(() => null);
@@ -151,6 +183,24 @@
     return data || {};
   }
 
+  function updateThreadListItem(threadId, updates) {
+    const thread = browserState.threads.find(item => item.id === threadId);
+    if (thread) Object.assign(thread, updates);
+    const btn = Array.from(document.querySelectorAll('.chat-history-browser-item')).find(item => item.dataset.threadId === threadId);
+    if (!btn) return;
+    const count = Number(updates.message_count ?? thread?.message_count ?? 0);
+    const hydrated = Boolean(updates.hydrated ?? thread?.hydrated ?? count > 0);
+    const countEl = btn.querySelector('[data-chat-history-count]');
+    const hydratedEl = btn.querySelector('[data-chat-history-hydrated]');
+    if (countEl) countEl.textContent = String(count);
+    if (hydratedEl) {
+      hydratedEl.textContent = hydrated ? 'yes' : 'no';
+      hydratedEl.className = hydrated ? 'chat-history-hydrated-yes' : 'chat-history-hydrated-no';
+    }
+    const hydratedCount = browserState.threads.filter(item => Number(item.message_count || 0) > 0).length;
+    setSummary(`Loaded threads: ${browserState.threads.length}${browserState.hasMore ? '+' : ''} · Hydrated: ${hydratedCount} · Empty: ${browserState.threads.length - hydratedCount}`);
+  }
+
   function renderThreadList(threads) {
     const list = document.getElementById('chatHistoryBrowserList');
     if (!list) return;
@@ -159,7 +209,16 @@
       list.innerHTML = '<div class="chat-history-empty-warning">No synced threads found. Use Import chats → Pull from Notion first.</div>';
       return;
     }
+    let currentDay = '';
     for (const thread of threads) {
+      const label = dayLabel(thread);
+      if (label !== currentDay) {
+        currentDay = label;
+        const header = document.createElement('div');
+        header.className = 'chat-history-browser-day';
+        header.textContent = label;
+        list.appendChild(header);
+      }
       const btn = document.createElement('button');
       btn.type = 'button';
       btn.className = 'chat-history-browser-item';
@@ -169,13 +228,22 @@
       btn.innerHTML = `
         <div class="chat-history-browser-title">${esc(thread.title || thread.id)}</div>
         <div class="chat-history-browser-meta">
-          Messages: ${count} · Hydrated: <span class="${hydrated ? 'chat-history-hydrated-yes' : 'chat-history-hydrated-no'}">${hydrated ? 'yes' : 'no'}</span><br>
+          Messages: <span data-chat-history-count>${count}</span> · Hydrated: <span data-chat-history-hydrated class="${hydrated ? 'chat-history-hydrated-yes' : 'chat-history-hydrated-no'}">${hydrated ? 'yes' : 'no'}</span><br>
           Updated: ${esc(thread.updated_at || thread.last_edited_time || thread.created_time || 'Unknown date')}<br>
           ${esc(thread.first_message_preview || thread.last_message_preview || '')}
         </div>
       `;
       btn.addEventListener('click', () => selectThread(thread, threads));
       list.appendChild(btn);
+    }
+    if (browserState.hasMore) {
+      const loadMore = document.createElement('button');
+      loadMore.type = 'button';
+      loadMore.className = 'btn-secondary chat-history-browser-load-more';
+      loadMore.textContent = browserState.loading ? 'Loading...' : 'Load more';
+      loadMore.disabled = browserState.loading;
+      loadMore.addEventListener('click', () => loadThreads({ append: true }));
+      list.appendChild(loadMore);
     }
   }
 
@@ -190,6 +258,9 @@
       const hydration = await postJson(`${THREADS_ENDPOINT}/${encodeURIComponent(thread.id)}/hydrate`);
       const selectedCount = Number(hydration?.thread?.message_count ?? count);
       const selectedHydrated = Boolean(hydration?.thread?.hydrated || selectedCount > 0);
+      thread.message_count = selectedCount;
+      thread.hydrated = selectedHydrated;
+      updateThreadListItem(thread.id, { message_count: selectedCount, hydrated: selectedHydrated });
       preview.innerHTML = `<div class="chat-history-browser-markdown">Loading ${esc(thread.title || thread.id)}...</div>`;
       const markdown = await fetchText(`${THREADS_ENDPOINT}/${encodeURIComponent(thread.id)}/markdown`);
       const warning = selectedCount === 0
@@ -209,20 +280,35 @@
     }
   }
 
-  async function loadThreads() {
+  async function loadThreads(options = {}) {
+    const append = Boolean(options.append);
+    if (browserState.loading) return;
+    browserState.loading = true;
     const list = document.getElementById('chatHistoryBrowserList');
     const preview = document.getElementById('chatHistoryBrowserPreview');
-    if (list) list.innerHTML = '<div class="chat-history-browser-meta">Loading...</div>';
-    if (preview) preview.innerHTML = '<div class="chat-history-browser-markdown">Select a synced thread to load its full content.</div>';
-    setSummary('Loading synced threads...');
+    if (!append) {
+      browserState.threads = [];
+      browserState.offset = 0;
+      browserState.hasMore = false;
+      if (list) list.innerHTML = '<div class="chat-history-browser-meta">Loading...</div>';
+      if (preview) preview.innerHTML = '<div class="chat-history-browser-markdown">Select a synced thread to load its full content.</div>';
+      setSummary('Loading synced threads...');
+    } else {
+      renderThreadList(browserState.threads);
+    }
     try {
-      const data = await fetchJson(`${THREADS_ENDPOINT}?limit=200&offset=0`);
-      const threads = Array.isArray(data?.threads) ? data.threads : [];
-      const hydrated = threads.filter(t => Number(t.message_count || 0) > 0).length;
-      setSummary(`Total synced threads: ${threads.length} · Hydrated: ${hydrated} · Empty: ${threads.length - hydrated}`);
-      renderThreadList(threads);
-      setIdlePreview(threads);
+      const data = await fetchJson(`${THREADS_ENDPOINT}?limit=${PAGE_SIZE}&offset=${browserState.offset}`);
+      const page = Array.isArray(data?.threads) ? data.threads : [];
+      browserState.threads = append ? browserState.threads.concat(page) : page;
+      browserState.offset += page.length;
+      browserState.hasMore = page.length === PAGE_SIZE;
+      browserState.loading = false;
+      const hydrated = browserState.threads.filter(t => Number(t.message_count || 0) > 0).length;
+      setSummary(`Loaded threads: ${browserState.threads.length}${browserState.hasMore ? '+' : ''} · Hydrated: ${hydrated} · Empty: ${browserState.threads.length - hydrated}`);
+      renderThreadList(browserState.threads);
+      setIdlePreview(browserState.threads);
     } catch (err) {
+      browserState.loading = false;
       setSummary('Failed to load chat history.');
       if (list) list.innerHTML = `<div class="chat-history-empty-warning">${esc(err?.message || String(err))}</div>`;
     }
