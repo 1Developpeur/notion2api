@@ -12,6 +12,7 @@ from app.conversation import ConversationManager
 from app.api.chat import router as chat_router
 from app.api.models import router as models_router
 from app.api.chat_history import router as chat_history_router
+from app.api.responses import router as responses_router
 from app.logger import logger
 from app.limiter import limiter
 
@@ -94,7 +95,7 @@ async def log_requests_middleware(request: Request, call_next):
     start_time = time.time()
     
     # 跳过高频且不重要的日志打印，避免刷屏
-    skip_logging = request.url.path in ["/health", "/favicon.ico"]
+    skip_logging = request.url.path in ["/health", "/healthz", "/favicon.ico"]
     
     try:
         response = await call_next(request)
@@ -149,6 +150,7 @@ async def api_key_auth(request: Request, call_next):
 app.include_router(chat_router, prefix="/v1")
 app.include_router(models_router, prefix="/v1")
 app.include_router(chat_history_router, prefix="/v1")
+app.include_router(responses_router, prefix="/v1")
 
 # 挂载健康检查
 @app.get("/favicon.ico", include_in_schema=False)
@@ -167,6 +169,10 @@ def health_check(request: Request):
         "accounts_cooling": status["cooling"],
         "uptime": int(uptime)
     }
+
+@app.get("/healthz", tags=["system"])
+def healthz(request: Request):
+    return health_check(request)
 
 frontend_dir = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "frontend")
 
