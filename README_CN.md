@@ -37,19 +37,52 @@ Notion2API 将 Notion AI 封装为 OpenAI 兼容的 API 接口，支持 Cherry S
 
 ### 1. 获取 Notion 凭据
 
-打开 https://www.notion.so/ai 并登录，然后按 `F12` 打开开发者工具：
+运行交互式登录脚本：
 
-**步骤 1：获取 token_v2**
-1. 切换到 **Application** 标签
-2. 左侧展开 **Storage → Cookies → https://www.notion.so**
-3. 找到 `token_v2`，复制其 Value
+```bash
+python login.py
+```
 
-**步骤 2：获取其他信息**
-1. 切换到 **Console** 标签
-2. 复制并粘贴 `scripts/extract_notion_info.js` 中的代码，回车运行
-3. 脚本会自动获取 `space_id`、`user_id` 等其他 5 个字段
-4. 复制输出的内容，将 `YOUR_TOKEN_V2_HERE` 替换为步骤 1 获取的 token_v2
-5. 粘贴到 `.env` 文件
+它会：
+1. 启动一个本地 Chrome 窗口，并开启调试端口
+2. 让你在这个浏览器里登录 Notion
+3. 通过 DevTools 从浏览器会话中读取 Notion cookies
+4. 仅在本地登录流程中使用这些 cookies 捕获 `token_v2` 并识别当前活跃的 Notion 用户
+5. 校验 token 是否有效
+6. 自动提取 `space_id`、`user_id`、`space_view_id`、`user_name`、`user_email`
+7. 如果登录态中能看到多个用户/工作区，会优先使用当前活跃的 `notion_user_id`
+8. 以命名 profile 的形式保存到 `accounts.json`
+9. 自动更新 `.env` 中的 `NOTION_ACCOUNTS`
+
+登录脚本不会提交或持久化完整的浏览器 cookie jar。浏览器 cookies 只在本地登录过程中临时使用，用于选择正确的账号和工作区。生成的 `accounts.json` 和 `.env` 包含凭据，应保持私密；这两个文件已经被 git ignore。
+
+之后如果想检查保存的登录状态，可以运行：
+
+```bash
+python login.py --check
+```
+
+如果你想查看所有已保存的 profile，可以运行：
+
+```bash
+python login.py --list
+```
+
+如果只检查某个 profile，可以这样：
+
+```bash
+python login.py --check --profile work
+```
+
+如果你更喜欢原来的手动方式，也可以继续使用 `scripts/extract_notion_info.js` 自行填写 `accounts.json`。
+
+如果 Chrome 不可用，或者你想直接粘贴 token，可以运行：
+
+```bash
+python login.py --manual
+```
+
+浏览器自动提取流程默认会等待 300 秒，足够你完成登录。
 
 ### 2. 配置环境变量
 
@@ -58,7 +91,7 @@ Notion2API 将 Notion AI 封装为 OpenAI 兼容的 API 接口，支持 Cherry S
 cp .env.example .env
 
 # 编辑 .env，填入你的凭据
-NOTION_ACCOUNTS='[{"token_v2":"your_token","space_id":"your_space","user_id":"your_uid","space_view_id":"your_view","user_name":"your_name","user_email":"your_email"}]'
+NOTION_ACCOUNTS='[{"profile_name":"default","token_v2":"your_token","space_id":"your_space","user_id":"your_uid","space_view_id":"your_view","user_name":"your_name","user_email":"your_email"}]'
 APP_MODE=standard  # lite / standard / heavy
 ```
 

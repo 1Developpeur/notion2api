@@ -1,11 +1,13 @@
 (() => {
   const THREADS_ENDPOINT = '/v1/chat-history/threads';
   const DELETE_ENDPOINT = '/v1/chat-history/threads/delete';
-  const PAGE_SIZE = 50;
+  const PAGE_SIZE = 200;
+  const BULK_DELETE_SIZE = 200;
   const REMOTE_ID_PREFIX = 'remote-chat-history:';
   const state = {
     threads: [],
     selectedIds: new Set(),
+    filterText: '',
     offset: 0,
     hasMore: false,
     loading: false,
@@ -51,6 +53,9 @@
       .chat-history-main-toolbar button{border:1px solid var(--border);background:transparent;color:var(--text-secondary);border-radius:4px;font-size:11px;padding:4px 6px;line-height:1.1}
       .chat-history-main-toolbar button:hover:not(:disabled){background:var(--bg-hover);color:var(--text)}
       .chat-history-main-toolbar button:disabled{opacity:.45;cursor:not-allowed}
+      .chat-history-main-filter{width:100%;box-sizing:border-box;border:1px solid var(--border);border-radius:4px;background:transparent;color:var(--text);font-size:12px;padding:6px 8px;outline:none}
+      .chat-history-main-filter:focus{border-color:var(--accent,#7c3aed)}
+      .chat-history-main-summary{width:100%;font-size:10px;color:var(--text-tertiary);padding:0 1px}
       .chat-history-main-delete{color:#a94442!important;border-color:#a94442!important}
       .chat-item.chat-history-main-item{align-items:flex-start;gap:8px;padding-top:7px;padding-bottom:7px}
       .chat-history-main-checkbox{margin-top:4px;flex-shrink:0}
@@ -58,8 +63,7 @@
       .chat-history-main-meta{font-size:10px;color:var(--text-tertiary);overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
       .chat-history-main-dot{width:7px;height:7px;border-radius:999px;margin-top:6px;flex-shrink:0;background:var(--text-tertiary);opacity:.7}
       .chat-history-main-dot.hydrated{background:#2e7d32;opacity:1}
-      .chat-history-main-load{width:calc(100% - 24px);margin:6px 12px;padding:6px 8px;border-radius:4px;font-size:12px;color:var(--text-secondary);background:transparent;text-align:left}
-      .chat-history-main-load:hover{background:var(--bg-hover);color:var(--text)}
+      .chat-history-main-empty{font-size:12px;color:var(--text-tertiary);padding:8px 12px;line-height:1.4}
       .chat-history-main-status{max-width:720px;margin:32px auto;padding:0 24px;color:var(--text-secondary);font-size:14px;line-height:1.6}
       .chat-history-steps{max-width:720px;margin:18px auto;color:var(--text-secondary);font-size:13px}
       .chat-history-steps summary{cursor:pointer;display:flex;align-items:center;gap:8px;width:max-content;list-style:none}
@@ -191,14 +195,74 @@
     if (thread) Object.assign(thread, updates);
   }
 
+  function pruneSelectionToLoadedThreads() {
+    const loadedIds = new Set(state.threads.map(thread => thread.id));
+    for (const id of Array.from(state.selectedIds)) {
+      if (!loadedIds.has(id)) state.selectedIds.delete(id);
+    }
+  }
+
+  function matchesFilter(thread) {
+    const query = state.filterText.trim().toLowerCase();
+    if (!query) return true;
+    const haystack = [
+      thread?.id,
+      thread?.title,
+      thread?.first_message_preview,
+      thread?.last_message_preview,
+      thread?.created_time,
+      thread?.last_edited_time,
+      thread?.updated_at
+    ].map(value => String(value || '').toLowerCase()).join('\n');
+    return haystack.includes(query);
+  }
+
+  function getVisibleThreads() {
+    return state.threads.filter(matchesFilter);
+  }
+
   function selectRemoteCheckbox(threadId, checked) {
     if (checked) state.selectedIds.add(threadId);
     else state.selectedIds.delete(threadId);
     window.NotionAI?.Chat?.Manager?.renderChatList?.();
   }
 
-  function selectLoadedRemoteThreads() {
-    for (const thread of state.threads) {
+  async function loadAllRemoteThreads() {
+    if (state.loading) return;
+    state.loading = true;
+    window.NotionAI?.Chat?.Manager?.renderChatList?.();
+    try {
+      const allThreads = [];
+      const seen = new Set();
+      let offset = 0;
+      while (true) {
+        const data = await fetchJson(`${THREADS_ENDPOINT}?limit=${PAGE_SIZE}&offset=${offset}`);
+        const page = Array.isArray(data?.threads) ? data.threads : [];
+        for (const thread of page) {
+          if (!thread?.id || seen.has(thread.id)) continue;
+          seen.add(thread.id);
+          allThreads.push(thread);
+        }
+        offset += page.length;
+        if (page.length < PAGE_SIZE) break;
+      }
+      state.threads = allThreads;
+      state.offset = allThreads.length;
+      state.hasMore = false;
+      pruneSelectionToLoadedThreads();
+    } catch (err) {
+      console.warn('Unable to load all remote chat history', err);
+      renderStatus(`Unable to load all remote chats: ${err?.message || String(err)}`);
+    } finally {
+      state.loading = false;
+      window.NotionAI?.Chat?.Manager?.renderChatList?.();
+    }
+  }
+
+  async function selectFilteredRemoteThreads() {
+    if (state.loading || state.deleting) return;
+    const visibleThreads = getVisibleThreads();
+    for (const thread of visibleThreads) {
       if (thread?.id) state.selectedIds.add(thread.id);
     }
     window.NotionAI?.Chat?.Manager?.renderChatList?.();
@@ -217,19 +281,23 @@
 
     state.deleting = true;
     window.NotionAI?.Chat?.Manager?.renderChatList?.();
+    const successIds = [];
+    const failed = [];
     try {
-      const result = await postJson(DELETE_ENDPOINT, {
-        thread_ids: ids,
-        account_index: 0,
-        remote: true,
-        local: true
-      });
-      const successIds = Array.isArray(result?.results?.success) ? result.results.success : [];
-      const failed = Array.isArray(result?.results?.failed) ? result.results.failed : [];
-      const successSet = new Set(successIds);
+      for (let index = 0; index < ids.length; index += BULK_DELETE_SIZE) {
+        const batch = ids.slice(index, index + BULK_DELETE_SIZE);
+        const result = await postJson(DELETE_ENDPOINT, {
+          thread_ids: batch,
+          account_index: 0,
+          remote: true,
+          local: true
+        });
+        if (Array.isArray(result?.results?.success)) successIds.push(...result.results.success);
+        if (Array.isArray(result?.results?.failed)) failed.push(...result.results.failed);
+      }
 
+      const successSet = new Set(successIds);
       state.threads = state.threads.filter(thread => !successSet.has(thread.id));
-      for (const id of successIds) state.selectedIds.delete(id);
       state.selectedIds.clear();
       for (const failedItem of failed) {
         if (failedItem?.thread_id) state.selectedIds.add(failedItem.thread_id);
@@ -239,7 +307,7 @@
         renderStatus('Deleted selected archived chat.');
       }
       const suffix = failed.length ? ` ${failed.length} failed and remain selected.` : '';
-      console.info(`Deleted ${successIds.length} remote chat(s).${suffix}`, result);
+      console.info(`Deleted ${successIds.length} remote chat(s).${suffix}`, { successIds, failed });
     } catch (err) {
       console.warn('Unable to delete selected remote chats', err);
       renderStatus(`Bulk delete failed: ${err?.message || String(err)}`);
@@ -286,12 +354,9 @@
 
   function renderRemoteChats(chatList) {
     if (!chatList) return;
-    const searchValue = (document.getElementById('searchInput')?.value || '').trim().toLowerCase();
-    const threads = searchValue
-      ? state.threads.filter(thread => String(thread.title || thread.id).toLowerCase().includes(searchValue))
-      : state.threads;
+    const threads = getVisibleThreads();
 
-    if (!threads.length && !state.loading) return;
+    if (!state.threads.length && !state.loading && !state.filterText) return;
 
     const header = document.createElement('div');
     header.className = 'chat-section-header';
@@ -300,23 +365,51 @@
 
     const toolbar = document.createElement('div');
     toolbar.className = 'chat-history-main-toolbar';
+
+    const filter = document.createElement('input');
+    filter.type = 'search';
+    filter.className = 'chat-history-main-filter';
+    filter.placeholder = 'Filter remote chat history by title, id, preview, or date';
+    filter.value = state.filterText;
+    filter.addEventListener('click', event => event.stopPropagation());
+    filter.addEventListener('input', event => {
+      state.filterText = String(event.target.value || '');
+      window.NotionAI?.Chat?.Manager?.renderChatList?.();
+      const nextFilter = document.querySelector('.chat-history-main-filter');
+      if (nextFilter) {
+        nextFilter.focus();
+        nextFilter.setSelectionRange(nextFilter.value.length, nextFilter.value.length);
+      }
+    });
+
     const selectedCount = state.selectedIds.size;
+    const visibleCount = threads.length;
+
+    const summary = document.createElement('div');
+    summary.className = 'chat-history-main-summary';
+    const filterText = state.filterText.trim() ? `${visibleCount} matched` : `${visibleCount} visible`;
+    summary.textContent = `${filterText}; ${state.threads.length} loaded; ${selectedCount} selected`;
+
     const selectBtn = document.createElement('button');
     selectBtn.type = 'button';
-    selectBtn.textContent = 'Select loaded';
-    selectBtn.disabled = state.deleting || !state.threads.length;
+    selectBtn.textContent = 'Select filtered';
+    selectBtn.disabled = state.deleting || state.loading || !state.threads.length;
+    selectBtn.title = 'Select every currently matching conversation. With no filter, every loaded conversation matches.';
     selectBtn.addEventListener('click', event => {
       event.stopPropagation();
-      selectLoadedRemoteThreads();
+      selectFilteredRemoteThreads();
     });
+
     const clearBtn = document.createElement('button');
     clearBtn.type = 'button';
     clearBtn.textContent = 'Clear';
-    clearBtn.disabled = state.deleting || !selectedCount;
+    clearBtn.disabled = state.deleting || (!selectedCount && !state.filterText);
     clearBtn.addEventListener('click', event => {
       event.stopPropagation();
+      if (state.filterText) state.filterText = '';
       clearSelectedRemoteThreads();
     });
+
     const deleteBtn = document.createElement('button');
     deleteBtn.type = 'button';
     deleteBtn.className = 'chat-history-main-delete';
@@ -326,6 +419,9 @@
       event.stopPropagation();
       deleteSelectedRemoteThreads();
     });
+
+    toolbar.appendChild(filter);
+    toolbar.appendChild(summary);
     toolbar.appendChild(selectBtn);
     toolbar.appendChild(clearBtn);
     toolbar.appendChild(deleteBtn);
@@ -336,9 +432,18 @@
       loading.className = 'chat-history-main-status';
       loading.style.margin = '8px 12px';
       loading.style.padding = '0';
-      loading.textContent = 'Loading...';
+      loading.textContent = 'Loading all remote chats...';
       chatList.appendChild(loading);
       return;
+    }
+
+    if (!threads.length) {
+      const empty = document.createElement('div');
+      empty.className = 'chat-history-main-empty';
+      empty.textContent = state.filterText.trim()
+        ? 'No remote chats match this filter.'
+        : 'No remote chats are loaded.';
+      chatList.appendChild(empty);
     }
 
     let currentDay = '';
@@ -389,48 +494,10 @@
       item.appendChild(dot);
       chatList.appendChild(item);
     });
-
-    if (state.hasMore && !searchValue) {
-      const more = document.createElement('button');
-      more.type = 'button';
-      more.className = 'chat-history-main-load';
-      more.textContent = state.loading ? 'Loading...' : 'Load more remote chats';
-      more.disabled = state.loading;
-      more.addEventListener('click', event => {
-        event.stopPropagation();
-        refresh({ append: true });
-      });
-      chatList.appendChild(more);
-    }
   }
 
-  async function refresh(options = {}) {
-    const append = Boolean(options.append);
-    if (state.loading) return;
-    state.loading = true;
-    if (!append) {
-      state.threads = [];
-      state.offset = 0;
-      state.hasMore = false;
-    }
-    window.NotionAI?.Chat?.Manager?.renderChatList?.();
-    try {
-      const data = await fetchJson(`${THREADS_ENDPOINT}?limit=${PAGE_SIZE}&offset=${state.offset}`);
-      const page = Array.isArray(data?.threads) ? data.threads : [];
-      state.threads = append ? state.threads.concat(page) : page;
-      state.offset += page.length;
-      state.hasMore = page.length === PAGE_SIZE;
-      const loadedIds = new Set(state.threads.map(thread => thread.id));
-      for (const id of Array.from(state.selectedIds)) {
-        if (!loadedIds.has(id)) state.selectedIds.delete(id);
-      }
-    } catch (err) {
-      console.warn('Unable to load remote chat history', err);
-      if (!append) state.threads = [];
-    } finally {
-      state.loading = false;
-      window.NotionAI?.Chat?.Manager?.renderChatList?.();
-    }
+  async function refresh() {
+    await loadAllRemoteThreads();
   }
 
   function patchChatManager() {
@@ -471,7 +538,8 @@
     refresh,
     clearRemoteSelection,
     deleteSelectedRemoteThreads,
-    clearSelectedRemoteThreads
+    clearSelectedRemoteThreads,
+    selectFilteredRemoteThreads
   };
 
   if (document.readyState === 'loading') {

@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import contextlib
 import json
 import os
 import sqlite3
@@ -27,7 +28,7 @@ CREATE TABLE IF NOT EXISTS chat_messages (
   raw_json TEXT NOT NULL DEFAULT '{}',
   imported_at INTEGER NOT NULL DEFAULT (strftime('%s','now'))
 );
-CREATE VIRTUAL TABLE IF NOT EXISTS chat_messages_fts USING fts5(id UNINDEXED, thread_id UNINDEXED, role UNINDEXED, text);
+CREATE VIRTUAL TABLE IF NOT EXISTS chat_messages_fts USING fts5(id UNINDEXED, thread_id UNINDEXED, role UNINDEXED, text, tokenize='unicode61');
 """
 
 
@@ -234,10 +235,15 @@ class ChatHistoryStore:
             conn.executescript(DDL)
             conn.commit()
 
-    def _conn(self) -> sqlite3.Connection:
+    @contextlib.contextmanager
+    def _conn(self):
         conn = sqlite3.connect(self.db_path, timeout=10)
         conn.row_factory = sqlite3.Row
-        return conn
+        try:
+            with conn:
+                yield conn
+        finally:
+            conn.close()
 
     def upsert_bundle(self, bundle: dict[str, Any]) -> dict[str, int]:
         threads = bundle.get("threads", {})

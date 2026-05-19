@@ -1,6 +1,21 @@
 # accounts.json 使用说明
 
-## 添加新账号（3 步）
+## 推荐方式：使用登录脚本
+
+运行：
+
+```bash
+python login.py
+```
+
+脚本会打开一个临时 Chrome/Edge 调试窗口，让你登录 Notion，然后从本地浏览器会话中临时读取 Notion cookies。它会使用这些 cookies 捕获 `token_v2`、识别当前活跃的 `notion_user_id`，并自动提取 `space_id`、`user_id`、`space_view_id`、`user_name`、`user_email`。
+
+注意：
+- 完整的浏览器 cookie jar 不会写入仓库，也不应该提交。
+- `accounts.json` 和 `.env` 包含凭据，已经被 `.gitignore` 忽略。
+- 如果 token 失效，重新运行 `python login.py` 刷新即可。
+
+## 手动方式：添加新账号（3 步）
 
 ### 第 1 步：获取 token_v2
 1. 浏览器登录 https://www.notion.so/ai

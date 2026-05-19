@@ -37,19 +37,52 @@ To switch modes: change the `APP_MODE` variable in `.env`.
 
 ### 1. Get Notion Credentials
 
-Open https://www.notion.so/ai and log in, then press `F12` to open DevTools:
+Run the interactive login helper:
 
-**Step 1: Get token_v2**
-1. Switch to the **Application** tab
-2. Expand **Storage → Cookies → https://www.notion.so** on the left
-3. Find `token_v2` and copy its Value
+```bash
+python login.py
+```
 
-**Step 2: Get other information**
-1. Switch to the **Console** tab
-2. Copy and paste the code from `scripts/extract_notion_info.js`, then press Enter
-3. The script will automatically retrieve `space_id`, `user_id`, and 5 other fields
-4. Copy the output, replace `YOUR_TOKEN_V2_HERE` with the token_v2 from Step 1
-5. Paste into the `.env` file
+It will:
+1. Launch a local Chrome window on a debug port.
+2. Let you sign in to Notion in that browser.
+3. Read the Notion browser session cookies via DevTools.
+4. Use those cookies locally to capture `token_v2` and identify the active Notion user.
+5. Validate the token against Notion.
+6. Extract `space_id`, `user_id`, `space_view_id`, `user_name`, and `user_email`.
+7. Prefer the active `notion_user_id` cookie when multiple users/workspaces are visible.
+8. Save the result into `accounts.json` as a named profile.
+9. Update `.env` with the refreshed `NOTION_ACCOUNTS` value.
+
+The helper does not commit or store the full browser cookie jar. Browser cookies are only used during the local login flow to select the correct account/workspace. Keep generated `accounts.json` and `.env` files private; both are ignored by git because they contain credentials.
+
+To verify the saved login later, run:
+
+```bash
+python login.py --check
+```
+
+To inspect all saved profiles, run:
+
+```bash
+python login.py --list
+```
+
+To check a specific profile, pass its name:
+
+```bash
+python login.py --check --profile work
+```
+
+If you prefer the old manual flow, you can still use `scripts/extract_notion_info.js` and fill `accounts.json` yourself.
+
+If Chrome is unavailable or you want to paste a token directly, use:
+
+```bash
+python login.py --manual
+```
+
+The browser-assisted flow waits up to 300 seconds by default so you have time to finish signing in.
 
 ### 2. Configure Environment Variables
 
@@ -57,8 +90,9 @@ Open https://www.notion.so/ai and log in, then press `F12` to open DevTools:
 # Copy example config
 cp .env.example .env
 
-# Edit .env and fill in your credentials
-NOTION_ACCOUNTS='[{"token_v2":"your_token","space_id":"your_space","user_id":"your_uid","space_view_id":"your_view","user_name":"your_name","user_email":"your_email"}]'
+# If you used login.py, accounts.json is already populated.
+# You can still override the account pool through .env if needed.
+NOTION_ACCOUNTS='[{"profile_name":"default","token_v2":"your_token","space_id":"your_space","user_id":"your_uid","space_view_id":"your_view","user_name":"your_name","user_email":"your_email"}]'
 APP_MODE=standard  # lite / standard / heavy
 ```
 
@@ -133,6 +167,18 @@ response = client.chat.completions.create(
 for chunk in response:
     print(chunk.choices[0].delta.content or "", end="")
 ```
+
+### Use with LLM Council Plus
+
+`llm-council-plus` supports any OpenAI-compatible endpoint. Point it at this service and use the `/v1` prefix:
+
+1. Start Notion2API locally or on your server.
+2. In `llm-council-plus`, open **LLM API Keys** → **Custom OpenAI-Compatible Endpoint**.
+3. Set **Base URL** to `http://localhost:8000/v1`.
+4. Set **API Key** only if `API_KEY` is enabled on this service. If `API_KEY` is unset, leave it blank.
+5. Click **Connect** to verify. The app will call `GET /v1/models` for discovery and `POST /v1/chat/completions` for chat.
+
+If you run Notion2API behind a reverse proxy, replace `http://localhost:8000` with your public origin and keep the `/v1` suffix.
 
 ---
 

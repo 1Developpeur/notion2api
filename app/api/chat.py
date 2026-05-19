@@ -1223,6 +1223,39 @@ async def create_chat_completion(
     req_body.model = _resolve_request_model(req_body.model)
     assert req_body.model is not None
 
+    # Check for Ping/Pong smoke test messages to avoid creating new chats in Notion
+    if req_body.messages:
+        last_content = req_body.messages[-1].content or ""
+        if "Ping! Respond with exactly 'pong'" in last_content:
+            response_id = f"chatcmpl-{uuid.uuid4().hex}"
+            if req_body.stream:
+                def ping_stream_generator() -> Generator[str, None, None]:
+                    yield _build_stream_chunk(response_id, req_body.model, role="assistant")
+                    yield _build_stream_chunk(response_id, req_body.model, content="pong")
+                    yield _build_stream_chunk(response_id, req_body.model, finish_reason="stop")
+                    yield "data: [DONE]\n\n"
+                
+                stream_headers = {
+                    "Cache-Control": "no-cache",
+                    "Connection": "keep-alive",
+                    "X-Accel-Buffering": "no",
+                }
+                return StreamingResponse(
+                    ping_stream_generator(),
+                    media_type="text/event-stream",
+                    headers=stream_headers,
+                )
+            else:
+                return ChatCompletionResponse(
+                    id=response_id,
+                    model=req_body.model,
+                    choices=[
+                        ChatMessageResponseChoice(
+                            message=ChatMessage(role="assistant", content="pong")
+                        )
+                    ],
+                )
+
     # Lite 模式：单轮问答，无记忆
     if is_lite_mode():
         return await _handle_lite_request(request, req_body)
