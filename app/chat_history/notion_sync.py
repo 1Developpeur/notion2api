@@ -54,6 +54,19 @@ def _post_json(client: NotionOpusAPI, url: str, payload: dict[str, Any]) -> dict
     return body
 
 
+def _threads_without_messages(bundle: dict[str, Any]) -> int:
+    messages_by_thread: dict[str, int] = defaultdict(int)
+    for message in bundle.get("messages", {}).values():
+        thread_id = message.get("thread_id")
+        if isinstance(thread_id, str) and thread_id.strip():
+            messages_by_thread[thread_id] += 1
+    count = 0
+    for thread_id, thread in bundle.get("threads", {}).items():
+        if not thread.get("message_ids") and not messages_by_thread.get(thread_id):
+            count += 1
+    return count
+
+
 def sync_chat_history_from_notion(
     client: NotionOpusAPI,
     *,
@@ -71,9 +84,10 @@ def sync_chat_history_from_notion(
     bundle: dict[str, Any] = {"threads": {}, "messages": {}, "endpoint_counts": defaultdict(int)}
     seen_message_ids: set[str] = set()
     cursor: str | None = None
-    pages_fetched = 0
+    pages_scanned = 0
+    stopped_reason = "completed"
 
-    while pages_fetched < max_pages:
+    while pages_scanned < max_pages:
         payload: dict[str, Any] = {
             "threadParentPointer": thread_parent_pointer,
             "limit": limit,
@@ -83,10 +97,12 @@ def sync_chat_history_from_notion(
             payload["cursor"] = cursor
 
         page_obj = _post_json(client, TRANSCRIPTS_ENDPOINT, payload)
-        pages_fetched += 1
+        pages_scanned += 1
         bundle["endpoint_counts"]["getInferenceTranscriptsForUser"] += 1
 
         page_bundle = import_chat_object(page_obj)
+        before_threads = len(bundle["threads"])
+        before_messages = len(bundle["messages"])
         _merge_bundle(bundle, page_bundle)
 
         for thread in page_bundle["threads"].values():
@@ -94,12 +110,20 @@ def sync_chat_history_from_notion(
                 if isinstance(message_id, str) and message_id.strip():
                     seen_message_ids.add(message_id.strip())
 
+        if not page_bundle.get("threads") and not page_bundle.get("messages"):
+            stopped_reason = "empty_page"
+
         next_cursor = page_obj.get("nextCursor") or page_obj.get("next_cursor")
         has_more = bool(page_obj.get("hasMore"))
         if isinstance(next_cursor, str) and next_cursor.strip() and has_more:
             cursor = next_cursor.strip()
             continue
+        cursor = next_cursor if isinstance(next_cursor, str) else None
+        if stopped_reason != "empty_page":
+            stopped_reason = "no_next_cursor" if not cursor else "has_more_false"
         break
+    else:
+        stopped_reason = "max_pages"
 
     message_ids = sorted(seen_message_ids)
     for start_index in range(0, len(message_ids), hydrate_batch_size):
@@ -122,11 +146,25 @@ def sync_chat_history_from_notion(
         hydrate_bundle = import_chat_object(hydrate_obj)
         _merge_bundle(bundle, hydrate_bundle)
 
+    messages_seen = len(bundle["messages"])
+    summary = {
+        "pages_scanned": pages_scanned,
+        "threads_seen": len(bundle["threads"]),
+        "messages_seen": messages_seen,
+        "threads_without_messages": _threads_without_messages(bundle),
+        "next_cursor": cursor,
+        "stopped_reason": stopped_reason,
+    }
     bundle["endpoint_counts"] = dict(bundle["endpoint_counts"])
+    bundle["sync_summary"] = summary
     bundle["stats"] = {
-        "pages_fetched": pages_fetched,
+        "pages_fetched": pages_scanned,
+        "pages_scanned": pages_scanned,
         "threads": len(bundle["threads"]),
-        "messages": len(bundle["messages"]),
+        "messages": messages_seen,
         "hydrated_message_ids": len(message_ids),
+        "threads_without_messages": summary["threads_without_messages"],
+        "next_cursor": cursor,
+        "stopped_reason": stopped_reason,
     }
     return bundle
