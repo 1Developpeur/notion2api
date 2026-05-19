@@ -220,6 +220,18 @@ class ChatHistoryStore:
             conn.commit()
         return result
 
+    def existing_thread_ids(self, thread_ids: list[Any]) -> set[str]:
+        ids = _clean_ids(thread_ids)
+        if not ids:
+            return set()
+        existing: set[str] = set()
+        with self._conn() as conn:
+            for thread_id in ids:
+                row = conn.execute("SELECT id FROM chat_threads WHERE id=?", (thread_id,)).fetchone()
+                if row:
+                    existing.add(str(row["id"]))
+        return existing
+
     def delete_threads(self, thread_ids: list[Any]) -> dict[str, int]:
         ids = _clean_ids(thread_ids)
         result = {
