@@ -2,6 +2,8 @@
 
 from app.chat_history.extractor import (
     THREAD_MESSAGE_FIELDS,
+    describe_thread_record,
+    extract_chat_bundle,
     merge_records_into_bundle,
     normalize_message,
     normalize_thread,
@@ -14,6 +16,8 @@ from app.chat_history.store import ChatHistoryStore, get_default_chat_history_db
 __all__ = [
     "ChatHistoryStore",
     "THREAD_MESSAGE_FIELDS",
+    "describe_thread_record",
+    "extract_chat_bundle",
     "get_default_chat_history_db_path",
     "import_chat_object",
     "import_har_object",

@@ -5,10 +5,7 @@ import os
 import sqlite3
 from typing import Any
 
-from app.chat_history.extractor import (
-    THREAD_MESSAGE_FIELDS,
-    redact_secrets,
-)
+from app.chat_history.extractor import describe_thread_record
 
 DDL = """
 CREATE TABLE IF NOT EXISTS chat_threads (
@@ -53,6 +50,14 @@ def _preview(text: str | None, limit: int = 180) -> str:
     return value[: limit - 1].rstrip() + "…"
 
 
+def _json_object(value: str | None) -> dict[str, Any]:
+    try:
+        decoded = json.loads(value or "{}")
+    except json.JSONDecodeError:
+        return {}
+    return decoded if isinstance(decoded, dict) else {}
+
+
 class ChatHistoryStore:
     def __init__(self, db_path: str | None = None):
         self.db_path = db_path or get_default_chat_history_db_path()
@@ -72,31 +77,54 @@ class ChatHistoryStore:
         result = {"threads": len(threads), "messages": len(messages), "threads_inserted": 0, "threads_updated": 0, "messages_inserted": 0, "messages_updated": 0}
         with self._conn() as conn:
             for t in threads.values():
-                existed = conn.execute("SELECT 1 FROM chat_threads WHERE id=?", (t["id"],)).fetchone() is not None
+                thread_id = t["id"]
+                proposed = (
+                    t.get("title"),
+                    str(t.get("created_time") or ""),
+                    str(t.get("last_edited_time") or t.get("updated_at") or ""),
+                    None if t.get("alive") is None else int(bool(t.get("alive"))),
+                    json.dumps(t.get("message_ids") or []),
+                    json.dumps(t.get("raw") or {}),
+                )
+                existing = conn.execute(
+                    "SELECT title,created_time,last_edited_time,alive,message_ids_json,raw_json FROM chat_threads WHERE id=?",
+                    (thread_id,),
+                ).fetchone()
                 conn.execute(
                     """INSERT INTO chat_threads(id,title,created_time,last_edited_time,alive,message_ids_json,raw_json)
                     VALUES(?,?,?,?,?,?,?)
                     ON CONFLICT(id) DO UPDATE SET title=excluded.title,last_edited_time=excluded.last_edited_time,alive=excluded.alive,message_ids_json=excluded.message_ids_json,raw_json=excluded.raw_json""",
-                    (t["id"], t.get("title"), str(t.get("created_time") or ""), str(t.get("last_edited_time") or t.get("updated_at") or ""), None if t.get("alive") is None else int(bool(t.get("alive"))), json.dumps(t.get("message_ids") or []), json.dumps(t.get("raw") or {})),
+                    (thread_id, *proposed),
                 )
-                if existed:
-                    result["threads_updated"] += 1
-                else:
+                if existing is None:
                     result["threads_inserted"] += 1
+                elif tuple(existing) != proposed:
+                    result["threads_updated"] += 1
             for m in messages.values():
-                existed = conn.execute("SELECT 1 FROM chat_messages WHERE id=?", (m["id"],)).fetchone() is not None
+                message_id = m["id"]
+                proposed = (
+                    m.get("thread_id"),
+                    m.get("role"),
+                    m.get("text") or "",
+                    str(m.get("created_time") or ""),
+                    json.dumps(m.get("raw") or {}),
+                )
+                existing = conn.execute(
+                    "SELECT thread_id,role,text,created_time,raw_json FROM chat_messages WHERE id=?",
+                    (message_id,),
+                ).fetchone()
                 conn.execute(
                     """INSERT INTO chat_messages(id,thread_id,role,text,created_time,raw_json)
                     VALUES(?,?,?,?,?,?)
                     ON CONFLICT(id) DO UPDATE SET thread_id=excluded.thread_id,role=excluded.role,text=excluded.text,created_time=excluded.created_time,raw_json=excluded.raw_json""",
-                    (m["id"], m.get("thread_id"), m.get("role"), m.get("text") or "", str(m.get("created_time") or ""), json.dumps(m.get("raw") or {})),
+                    (message_id, *proposed),
                 )
-                conn.execute("DELETE FROM chat_messages_fts WHERE id=?", (m["id"],))
-                conn.execute("INSERT INTO chat_messages_fts(id,thread_id,role,text) VALUES(?,?,?,?)", (m["id"], m.get("thread_id"), m.get("role"), m.get("text") or ""))
-                if existed:
-                    result["messages_updated"] += 1
-                else:
+                conn.execute("DELETE FROM chat_messages_fts WHERE id=?", (message_id,))
+                conn.execute("INSERT INTO chat_messages_fts(id,thread_id,role,text) VALUES(?,?,?,?)", (message_id, m.get("thread_id"), m.get("role"), m.get("text") or ""))
+                if existing is None:
                     result["messages_inserted"] += 1
+                elif tuple(existing) != proposed:
+                    result["messages_updated"] += 1
             conn.commit()
         return result
 
@@ -149,11 +177,16 @@ class ChatHistoryStore:
             t = conn.execute("SELECT * FROM chat_threads WHERE id=?", (thread_id,)).fetchone()
             if not t:
                 return None
-            msgs = conn.execute("SELECT id,thread_id,role,text,created_time FROM chat_messages WHERE thread_id=? ORDER BY created_time,id", (thread_id,)).fetchall()
+            msgs = conn.execute("SELECT id,thread_id,role,text,created_time,raw_json FROM chat_messages WHERE thread_id=? ORDER BY created_time,id", (thread_id,)).fetchall()
         out = dict(t)
         out["message_ids"] = json.loads(out.pop("message_ids_json") or "[]")
-        out["raw"] = json.loads(out.pop("raw_json") or "{}")
-        out["messages"] = [dict(r) for r in msgs]
+        out["raw"] = _json_object(out.pop("raw_json") or "{}")
+        messages: list[dict[str, Any]] = []
+        for row in msgs:
+            message = dict(row)
+            message["raw"] = _json_object(message.pop("raw_json") or "{}")
+            messages.append(message)
+        out["messages"] = messages
         out["message_count"] = len(out["messages"])
         out["hydrated"] = out["message_count"] > 0
         out["first_message_preview"] = _preview(out["messages"][0].get("text") if out["messages"] else "")
@@ -165,22 +198,7 @@ class ChatHistoryStore:
         thread = self.get_thread(thread_id)
         if not thread:
             return {"thread_exists": False, "message_count": 0, "raw_fields_seen": [], "known_message_fields_found": [], "sample": {}}
-        raw = thread.get("raw") if isinstance(thread.get("raw"), dict) else {}
-        raw_fields = sorted(str(key) for key in raw.keys())
-        known_fields = [field for field in THREAD_MESSAGE_FIELDS if field in raw]
-        sample = {
-            "thread": redact_secrets({key: raw.get(key) for key in raw_fields[:40]}),
-            "message_ids": thread.get("message_ids", [])[:20],
-            "messages": [redact_secrets(message) for message in thread.get("messages", [])[:3]],
-        }
-        return {
-            "thread_exists": True,
-            "message_count": thread.get("message_count", 0),
-            "hydrated": thread.get("hydrated", False),
-            "raw_fields_seen": raw_fields,
-            "known_message_fields_found": known_fields,
-            "sample": sample,
-        }
+        return describe_thread_record(thread, thread.get("messages") or [])
 
     def search(self, query: str, limit: int = 25) -> list[dict[str, Any]]:
         query = str(query or "").strip()

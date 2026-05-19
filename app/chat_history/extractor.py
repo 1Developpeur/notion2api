@@ -22,6 +22,7 @@ THREAD_ID_FIELDS = ("thread_id", "threadId", "parent_id", "parentId", "conversat
 THREAD_UPDATED_FIELDS = ("updated_at", "updatedAt", "last_edited_time", "lastEditedTime", "last_updated_time", "lastUpdatedTime")
 THREAD_CREATED_FIELDS = ("created_time", "createdTime", "created_at", "createdAt")
 SECRET_KEY_FRAGMENTS = ("token", "cookie", "authorization", "api_key", "apikey", "secret", "password", "session")
+THREAD_TITLE_FIELDS = ("title", "name", "subject")
 
 
 def record_value(record: Any) -> dict[str, Any]:
@@ -242,6 +243,14 @@ def _merge_thread_candidate(bundle: dict[str, Any], fallback_id: str | None, can
     bundle["threads"][thread_id] = thread
 
 
+def _has_thread_shape(value: dict[str, Any]) -> bool:
+    return any(field in value for field in THREAD_TITLE_FIELDS) and any(field in value for field in ("id", "thread_id", "threadId", "uuid"))
+
+
+def _has_message_shape(value: dict[str, Any]) -> bool:
+    return any(field in value for field in MESSAGE_TEXT_FIELDS + MESSAGE_ROLE_FIELDS + THREAD_ID_FIELDS)
+
+
 def merge_records_into_bundle(bundle: dict[str, Any], obj: Any) -> None:
     for record_map in record_maps(obj):
         for thread_id, record in (record_map.get("thread") or {}).items():
@@ -261,6 +270,34 @@ def merge_records_into_bundle(bundle: dict[str, Any], obj: Any) -> None:
             if message:
                 bundle["messages"][message["id"]] = message
 
+    def walk(value: Any, fallback_thread_id: str | None = None) -> None:
+        if isinstance(value, dict):
+            next_thread_id = fallback_thread_id
+            if _has_thread_shape(value):
+                thread = normalize_thread(None, value)
+                if thread:
+                    _merge_thread_candidate(bundle, thread["id"], value)
+                    next_thread_id = thread["id"]
+            elif _has_message_shape(value):
+                message = normalize_message(None, value, fallback_thread_id=fallback_thread_id)
+                if message:
+                    bundle["messages"][message["id"]] = message
+
+            for nested in value.values():
+                if isinstance(nested, (dict, list)):
+                    walk(nested, next_thread_id)
+        elif isinstance(value, list):
+            for item in value:
+                walk(item, fallback_thread_id)
+
+    walk(obj)
+
+
+def extract_chat_bundle(obj: Any) -> dict[str, Any]:
+    bundle: dict[str, Any] = {"threads": {}, "messages": {}}
+    merge_records_into_bundle(bundle, obj)
+    return bundle
+
 
 def redact_secrets(value: Any, depth: int = 0) -> Any:
     if depth > 6:
@@ -277,3 +314,32 @@ def redact_secrets(value: Any, depth: int = 0) -> Any:
     if isinstance(value, list):
         return [redact_secrets(item, depth + 1) for item in value[:20]]
     return value
+
+
+def describe_thread_record(thread: dict[str, Any] | None, messages: list[dict[str, Any]] | None = None) -> dict[str, Any]:
+    thread = thread or {}
+    messages = messages or []
+    thread_raw = thread.get("raw") if isinstance(thread.get("raw"), dict) else {}
+
+    raw_fields = {str(key) for key in thread_raw.keys()}
+    for message in messages:
+        message_raw = message.get("raw") if isinstance(message.get("raw"), dict) else {}
+        raw_fields.update(str(key) for key in message_raw.keys())
+
+    known_fields = [field for field in THREAD_MESSAGE_FIELDS if field in thread_raw]
+    if messages:
+        for field in ("id", "thread_id", "role", "text", "created_time", "raw"):
+            if any(message.get(field) not in (None, "", []) for message in messages):
+                known_fields.append(field)
+
+    return {
+        "thread_exists": bool(thread),
+        "message_count": len(messages),
+        "hydrated": bool(messages),
+        "raw_fields_seen": sorted(raw_fields),
+        "known_message_fields_found": _dedupe(known_fields),
+        "sample": {
+            "thread": redact_secrets(thread),
+            "messages": [redact_secrets(message) for message in messages[:3]],
+        },
+    }
