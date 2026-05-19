@@ -22,7 +22,15 @@ def status() -> dict[str, Any]:
     return {
         "status": "ok",
         "db_path": get_default_chat_history_db_path(),
-        "capabilities": ["har_import", "notion_direct_sync", "local_archive", "local_search", "markdown_export"],
+        "capabilities": [
+            "har_import",
+            "notion_direct_sync",
+            "hydration_diagnostics",
+            "thread_debug",
+            "local_archive",
+            "local_search",
+            "markdown_export",
+        ],
     }
 
 
@@ -91,12 +99,22 @@ async def sync_from_notion(request: Request) -> dict[str, Any]:
         ) from exc
 
     imported = _store().upsert_bundle(bundle)
+    summary = dict(bundle.get("sync_summary", {}))
+    summary.update(
+        {
+            "threads_inserted": imported.get("threads_inserted", 0),
+            "threads_updated": imported.get("threads_updated", 0),
+            "messages_inserted": imported.get("messages_inserted", 0),
+            "messages_updated": imported.get("messages_updated", 0),
+        }
+    )
     return {
         "imported": imported,
         "endpoint_counts": bundle.get("endpoint_counts", {}),
         "source": "notion_direct_sync",
         "account_index": account_index,
         "stats": bundle.get("stats", {}),
+        "sync_summary": summary,
     }
 
 
@@ -111,6 +129,11 @@ def get_thread(thread_id: str) -> dict[str, Any]:
     if not thread:
         raise HTTPException(status_code=404, detail="Thread not found")
     return thread
+
+
+@router.get("/threads/{thread_id}/debug")
+def debug_thread(thread_id: str) -> dict[str, Any]:
+    return _store().debug_thread(thread_id)
 
 
 @router.get("/threads/{thread_id}/markdown", response_class=PlainTextResponse)
