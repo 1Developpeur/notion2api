@@ -64,4 +64,7 @@ def export_markdown(thread_id: str) -> str:
 
 @router.get("/search")
 def search(q: str = Query(..., min_length=1), limit: int = Query(25, ge=1, le=100)) -> dict[str, Any]:
-    return {"results": _store().search(q, limit=limit)}
+    try:
+        return {"results": _store().search(q, limit=limit)}
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
