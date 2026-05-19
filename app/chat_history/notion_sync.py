@@ -133,6 +133,25 @@ def hydrate_message_ids_from_notion(
     return bundle
 
 
+def hydrate_thread_record_from_notion(client: NotionOpusAPI, thread_id: str) -> dict[str, Any]:
+    payload = {
+        "requests": [
+            {
+                "pointer": {
+                    "table": "thread",
+                    "id": thread_id,
+                    "spaceId": client.space_id,
+                },
+                "version": -1,
+            }
+        ]
+    }
+    hydrate_obj = _post_json(client, HYDRATE_ENDPOINT, payload)
+    bundle = import_chat_object(hydrate_obj)
+    bundle["endpoint_counts"] = {"syncRecordValuesSpaceInitial": 1}
+    return bundle
+
+
 def hydrate_thread_from_notion(
     client: NotionOpusAPI,
     thread: dict[str, Any],
@@ -146,6 +165,15 @@ def hydrate_thread_from_notion(
     raw = thread.get("raw") if isinstance(thread.get("raw"), dict) else None
     if raw:
         ids.update(collect_hydration_message_ids(raw))
+    thread_bundle: dict[str, Any] = {"threads": {}, "messages": {}, "endpoint_counts": {}}
+    if thread_id:
+        thread_bundle = hydrate_thread_record_from_notion(client, thread_id)
+        hydrated_thread = thread_bundle.get("threads", {}).get(thread_id)
+        if hydrated_thread:
+            ids.update(collect_hydration_message_ids(hydrated_thread))
+            hydrated_raw = hydrated_thread.get("raw") if isinstance(hydrated_thread.get("raw"), dict) else None
+            if hydrated_raw:
+                ids.update(collect_hydration_message_ids(hydrated_raw))
     if not ids and thread_id:
         ids.add(thread_id)
 
@@ -155,6 +183,12 @@ def hydrate_thread_from_notion(
         fallback_thread_id=thread_id,
         hydrate_batch_size=hydrate_batch_size,
     )
+    if thread_bundle.get("threads"):
+        _merge_bundle(bundle, {"threads": thread_bundle.get("threads", {}), "messages": {}})
+        for key, value in thread_bundle.get("endpoint_counts", {}).items():
+            bundle["endpoint_counts"][key] = bundle["endpoint_counts"].get(key, 0) + value
+        if "stats" in bundle:
+            bundle["stats"]["hydration_batches"] = bundle["stats"].get("hydration_batches", 0) + sum(thread_bundle.get("endpoint_counts", {}).values())
     fallback_text = str(thread.get("title") or thread.get("first_message_preview") or thread.get("last_message_preview") or "").strip()
     if thread_id and fallback_text:
         for message in bundle.get("messages", {}).values():

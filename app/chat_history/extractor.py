@@ -20,7 +20,7 @@ MESSAGE_ROLE_FIELDS = ("role", "author_role", "authorRole", "type")
 MESSAGE_TEXT_FIELDS = ("content", "text", "markdown", "message", "body")
 MESSAGE_TEXT_NESTED_FIELDS = ("data", "properties")
 THREAD_ID_FIELDS = ("thread_id", "threadId", "parent_id", "parentId", "conversation_id", "conversationId")
-THREAD_UPDATED_FIELDS = ("updated_at", "updatedAt", "last_edited_time", "lastEditedTime", "last_updated_time", "lastUpdatedTime")
+THREAD_UPDATED_FIELDS = ("updated_at", "updatedAt", "updated_time", "updatedTime", "last_edited_time", "lastEditedTime", "last_updated_time", "lastUpdatedTime")
 THREAD_CREATED_FIELDS = ("created_time", "createdTime", "created_at", "createdAt")
 SECRET_KEY_FRAGMENTS = ("token", "cookie", "authorization", "api_key", "apikey", "secret", "password", "session")
 THREAD_TITLE_FIELDS = ("title", "name", "subject")
@@ -230,7 +230,7 @@ def normalize_thread(thread_id: str | None, raw: dict[str, Any]) -> dict[str, An
     created_at = _first_scalar_text(value, THREAD_CREATED_FIELDS)
     return {
         "id": str(resolved_id),
-        "title": _first_scalar_text(value, THREAD_TITLE_FIELDS),
+        "title": _first_scalar_text(value, THREAD_TITLE_FIELDS) or (value.get("data") if isinstance(value.get("data"), dict) else {}).get("title"),
         "created_time": created_at,
         "last_edited_time": updated_at,
         "updated_at": updated_at,
