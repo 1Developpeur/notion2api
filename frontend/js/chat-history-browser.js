@@ -259,7 +259,7 @@
   async function deleteSelectedThreads() {
     const ids = Array.from(browserState.selectedIds);
     if (!ids.length) return;
-    const confirmed = window.confirm(`Delete ${ids.length} selected remote chat(s)? This also removes them from the local archive.`);
+    const confirmed = window.confirm(`Delete ${ids.length} selected remote chat(s)? This also removes confirmed deletions from the local archive.`);
     if (!confirmed) return;
 
     const deleteBtn = document.getElementById('deleteChatHistoryBrowserBtn');
@@ -277,16 +277,26 @@
         remote: true,
         local: true
       });
-      const idSet = new Set(ids);
-      browserState.threads = browserState.threads.filter(thread => !idSet.has(thread.id));
+      const successIds = Array.isArray(result?.results?.success) ? result.results.success : [];
+      const failed = Array.isArray(result?.results?.failed) ? result.results.failed : [];
+      const successSet = new Set(successIds);
+      browserState.threads = browserState.threads.filter(thread => !successSet.has(thread.id));
       browserState.selectedIds.clear();
+      for (const failedItem of failed) {
+        if (failedItem?.thread_id) browserState.selectedIds.add(failedItem.thread_id);
+      }
       renderThreadList(browserState.threads);
       updateSelectionControls();
+      window.NotionAI?.ChatHistoryMain?.refresh?.();
+      const failureHtml = failed.length
+        ? `<br>${failed.length} chat(s) were not removed and remain selected.<br><pre>${esc(failed.map(item => `${item.thread_id}: ${item.error || item.stage || 'failed'}`).join('\n'))}</pre>`
+        : '';
       if (preview) {
         preview.innerHTML = `
           <div class="chat-history-empty-warning">
-            Deleted ${esc(result?.remote_result?.remote_deleted ?? ids.length)} remote chat(s).<br>
+            Removed ${esc(successIds.length)} confirmed remote chat(s).<br>
             Local archive removed ${esc(result?.local_result?.threads_deleted ?? 0)} thread row(s) and ${esc(result?.local_result?.messages_deleted ?? 0)} message row(s).
+            ${failureHtml}
           </div>
         `;
       }
