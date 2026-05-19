@@ -24,6 +24,22 @@ THREAD_UPDATED_FIELDS = ("updated_at", "updatedAt", "last_edited_time", "lastEdi
 THREAD_CREATED_FIELDS = ("created_time", "createdTime", "created_at", "createdAt")
 SECRET_KEY_FRAGMENTS = ("token", "cookie", "authorization", "api_key", "apikey", "secret", "password", "session")
 THREAD_TITLE_FIELDS = ("title", "name", "subject")
+HYDRATION_SCAN_FIELDS = (
+    "recordMap",
+    "body",
+    "data",
+    "result",
+    "results",
+    "properties",
+    "value",
+    "values",
+    "transcripts",
+    "threads",
+    "thread_messages",
+    "threadMessages",
+    "children",
+    "blocks",
+)
 
 
 def record_value(record: Any) -> dict[str, Any]:
@@ -116,7 +132,7 @@ def _extract_id(candidate: Any) -> str | None:
 
 
 def _extract_ids(candidate: Any, depth: int = 0) -> list[str]:
-    if depth > 5:
+    if depth > 6:
         return []
     direct = _extract_id(candidate)
     if direct:
@@ -134,7 +150,7 @@ def _extract_ids(candidate: Any, depth: int = 0) -> list[str]:
         record_map = candidate.get("recordMap")
         if isinstance(record_map, dict):
             ids.extend(_extract_ids(record_map, depth + 1))
-        for key in ("records", "items", "messages", "value", "values"):
+        for key in THREAD_MESSAGE_FIELDS + ("value", "values"):
             nested = candidate.get(key)
             if isinstance(nested, (list, dict)):
                 ids.extend(_extract_ids(nested, depth + 1))
@@ -162,6 +178,36 @@ def extract_message_ids(value: dict[str, Any]) -> list[str]:
     for key in THREAD_MESSAGE_FIELDS:
         if key in value:
             ids.extend(_extract_ids(value.get(key)))
+    return _dedupe(ids)
+
+
+def collect_hydration_message_ids(value: Any, depth: int = 0) -> list[str]:
+    """Collect nested Notion thread-message IDs without treating container IDs as messages."""
+    if depth > 8:
+        return []
+    ids: list[str] = []
+    if isinstance(value, list):
+        for item in value:
+            ids.extend(collect_hydration_message_ids(item, depth + 1))
+        return _dedupe(ids)
+    if not isinstance(value, dict):
+        return []
+
+    for key in THREAD_MESSAGE_FIELDS:
+        if key in value:
+            ids.extend(_extract_ids(value.get(key)))
+
+    record_map = value.get("recordMap")
+    if isinstance(record_map, dict):
+        thread_message_map = record_map.get("thread_message")
+        if isinstance(thread_message_map, dict):
+            ids.extend(str(key) for key in thread_message_map.keys() if str(key).strip())
+
+    for key in HYDRATION_SCAN_FIELDS:
+        nested = value.get(key)
+        if isinstance(nested, (dict, list)):
+            ids.extend(collect_hydration_message_ids(nested, depth + 1))
+
     return _dedupe(ids)
 
 
