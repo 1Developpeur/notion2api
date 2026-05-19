@@ -40,6 +40,7 @@
       .chat-history-panel.hidden{display:none!important}
       .chat-history-inline-grid{display:grid;grid-template-columns:1fr 1fr 1fr;gap:8px}
       .chat-history-inline-grid input{width:100%}
+      .chat-history-checkbox-row{display:flex;align-items:center;gap:8px;margin-top:10px;font-size:12px;color:var(--text-secondary)}
     `;
     document.head.appendChild(style);
   }
@@ -67,7 +68,7 @@
 
           <div id="chatHistoryPullPanel" class="chat-history-panel">
             <div class="chat-history-import-warning">
-              Pull chat history directly from the configured Notion account. This uses the server-side token already loaded by notion2api and only calls read-only transcript endpoints.
+              Pull chat-history metadata directly from the configured Notion account. Full chat content is hydrated later only when a specific chat is selected, unless you enable full-content hydration below.
             </div>
             <div class="chat-history-inline-grid">
               <div class="form-group">
@@ -83,6 +84,10 @@
                 <input id="chatHistorySyncPages" type="number" min="1" max="20" step="1" value="2">
               </div>
             </div>
+            <label class="chat-history-checkbox-row">
+              <input id="chatHistoryHydrateAll" type="checkbox">
+              Hydrate full content for all synced chats now. Slower.
+            </label>
           </div>
 
           <div id="chatHistoryHarPanel" class="chat-history-panel hidden">
@@ -144,7 +149,9 @@
     lines.push(`Threads imported: ${imported.threads ?? stats.threads ?? 0}`);
     lines.push(`Messages imported: ${imported.messages ?? stats.messages ?? 0}`);
     if (stats.pages_fetched !== undefined) lines.push(`Pages fetched: ${stats.pages_fetched}`);
+    if (stats.hydration_candidate_ids !== undefined) lines.push(`Hydration candidates: ${stats.hydration_candidate_ids}`);
     if (stats.hydrated_message_ids !== undefined) lines.push(`Message IDs hydrated: ${stats.hydrated_message_ids}`);
+    if (stats.hydration_batches !== undefined) lines.push(`Hydration batches: ${stats.hydration_batches}`);
     return lines.join('\n');
   }
 
@@ -168,10 +175,11 @@
     const accountIndex = Number.parseInt(document.getElementById('chatHistoryAccountIndex')?.value || '0', 10);
     const limit = Number.parseInt(document.getElementById('chatHistorySyncLimit')?.value || '50', 10);
     const maxPages = Number.parseInt(document.getElementById('chatHistorySyncPages')?.value || '2', 10);
+    const hydrate = Boolean(document.getElementById('chatHistoryHydrateAll')?.checked);
 
     btn.disabled = true;
-    btn.textContent = 'Pulling...';
-    setStatus('Pulling Notion chat history into the local archive...');
+    btn.textContent = hydrate ? 'Pulling full content...' : 'Pulling metadata...';
+    setStatus(hydrate ? 'Pulling and hydrating full Notion chat history. This can take a while...' : 'Pulling Notion chat metadata into the local archive...');
 
     try {
       const response = await fetch(`${getBaseUrl()}${NOTION_SYNC_ENDPOINT}`, {
@@ -180,7 +188,8 @@
         body: JSON.stringify({
           account_index: Number.isFinite(accountIndex) ? accountIndex : 0,
           limit: Number.isFinite(limit) ? limit : 50,
-          max_pages: Number.isFinite(maxPages) ? maxPages : 2
+          max_pages: Number.isFinite(maxPages) ? maxPages : 2,
+          hydrate
         })
       });
       let data = null;
@@ -190,7 +199,7 @@
         const message = detail?.error?.message || detail || data?.error?.message || `Pull failed with HTTP ${response.status}`;
         throw new Error(typeof message === 'string' ? message : JSON.stringify(message));
       }
-      setStatus(resultText('Pull complete.', data));
+      setStatus(resultText(hydrate ? 'Full pull complete.' : 'Metadata pull complete.', data));
     } catch (err) {
       setStatus(err?.message || String(err), true);
     } finally {
