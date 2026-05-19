@@ -37,6 +37,10 @@ def get_default_chat_history_db_path() -> str:
     return os.path.join(os.path.dirname(os.path.abspath(base)), "chat_history.db")
 
 
+def _quote_fts_phrase(query: str) -> str:
+    return '"' + query.replace('"', '""') + '"'
+
+
 class ChatHistoryStore:
     def __init__(self, db_path: str | None = None):
         self.db_path = db_path or get_default_chat_history_db_path()
@@ -92,8 +96,18 @@ class ChatHistoryStore:
         return out
 
     def search(self, query: str, limit: int = 25) -> list[dict[str, Any]]:
+        query = str(query or "").strip()
+        if not query:
+            return []
+        sql = "SELECT id,thread_id,role,snippet(chat_messages_fts,3,'[',']',' ... ',16) AS snippet FROM chat_messages_fts WHERE chat_messages_fts MATCH ? LIMIT ?"
         with self._conn() as conn:
-            rows = conn.execute("SELECT id,thread_id,role,snippet(chat_messages_fts,3,'[',']',' ... ',16) AS snippet FROM chat_messages_fts WHERE chat_messages_fts MATCH ? LIMIT ?", (query, limit)).fetchall()
+            try:
+                rows = conn.execute(sql, (query, limit)).fetchall()
+            except sqlite3.OperationalError:
+                try:
+                    rows = conn.execute(sql, (_quote_fts_phrase(query), limit)).fetchall()
+                except sqlite3.OperationalError as exc:
+                    raise ValueError("Invalid chat-history search query") from exc
             return [dict(r) for r in rows]
 
     def thread_to_markdown(self, thread_id: str) -> str | None:
