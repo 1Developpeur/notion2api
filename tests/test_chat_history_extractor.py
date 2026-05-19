@@ -81,7 +81,7 @@ class ChatHistoryExtractorTests(unittest.TestCase):
 
     def test_describe_thread_record_includes_message_raw_fields(self) -> None:
         description = describe_thread_record(
-            {"id": "thread-1", "raw": {"token_v2": "secret-token", "title": "Thread One"}},
+            {"id": "thread-1", "raw": {"token_v2": "secret-token", "title": "Thread One"}, "messages": [{"id": "not-in-thread-sample"}]},
             [
                 {
                     "id": "msg-1",
@@ -97,8 +97,26 @@ class ChatHistoryExtractorTests(unittest.TestCase):
         self.assertEqual(description["message_count"], 1)
         self.assertIn("token_v2", description["raw_fields_seen"])
         self.assertIn("authorization", description["raw_fields_seen"])
+        self.assertNotIn("messages", description["sample"]["thread"])
         self.assertEqual(description["sample"]["thread"]["raw"]["token_v2"], "[redacted]")
         self.assertEqual(description["sample"]["messages"][0]["raw"]["authorization"], "[redacted]")
+
+    def test_normalize_message_uses_nested_data_title_as_text_fallback(self) -> None:
+        msg = normalize_message(
+            "msg-1",
+            {
+                "parent_id": "thread-1",
+                "type": "workflow",
+                "data": {
+                    "icon": "/icons/chat_lightgray.svg",
+                    "title": "Create Windows UI with hotkey",
+                },
+            },
+        )
+
+        if msg is None:
+            self.fail("normalize_message returned None")
+        self.assertEqual(msg["text"], "Create Windows UI with hotkey")
 
 
 if __name__ == "__main__":

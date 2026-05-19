@@ -18,6 +18,7 @@ THREAD_MESSAGE_FIELDS = (
 MESSAGE_ID_FIELDS = ("id", "message_id", "messageId", "uuid")
 MESSAGE_ROLE_FIELDS = ("role", "author_role", "authorRole", "type")
 MESSAGE_TEXT_FIELDS = ("content", "text", "markdown", "message", "body")
+MESSAGE_TEXT_NESTED_FIELDS = ("data", "properties")
 THREAD_ID_FIELDS = ("thread_id", "threadId", "parent_id", "parentId", "conversation_id", "conversationId")
 THREAD_UPDATED_FIELDS = ("updated_at", "updatedAt", "last_edited_time", "lastEditedTime", "last_updated_time", "lastUpdatedTime")
 THREAD_CREATED_FIELDS = ("created_time", "createdTime", "created_at", "createdAt")
@@ -187,6 +188,13 @@ def normalize_message(message_id: str | None, raw: dict[str, Any], fallback_thre
     value = record_value(raw)
     resolved_id = message_id or _first_str(value, MESSAGE_ID_FIELDS)
     text = _coerce_text({key: value.get(key) for key in MESSAGE_TEXT_FIELDS if key in value}) or _coerce_text(value)
+    if not text:
+        for key in MESSAGE_TEXT_NESTED_FIELDS:
+            nested = value.get(key)
+            if isinstance(nested, dict):
+                text = _coerce_text(nested)
+                if text:
+                    break
     if not resolved_id and not text:
         return None
     thread_id = _first_str(value, THREAD_ID_FIELDS) or fallback_thread_id
@@ -332,6 +340,8 @@ def describe_thread_record(thread: dict[str, Any] | None, messages: list[dict[st
             if any(message.get(field) not in (None, "", []) for message in messages):
                 known_fields.append(field)
 
+    thread_sample = {key: value for key, value in thread.items() if key != "messages"}
+
     return {
         "thread_exists": bool(thread),
         "message_count": len(messages),
@@ -339,7 +349,7 @@ def describe_thread_record(thread: dict[str, Any] | None, messages: list[dict[st
         "raw_fields_seen": sorted(raw_fields),
         "known_message_fields_found": _dedupe(known_fields),
         "sample": {
-            "thread": redact_secrets(thread),
+            "thread": redact_secrets(thread_sample),
             "messages": [redact_secrets(message) for message in messages[:3]],
         },
     }
