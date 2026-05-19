@@ -137,6 +137,20 @@
     return text;
   }
 
+  async function postJson(path, body = {}) {
+    const response = await fetch(`${getBaseUrl()}${path}`, {
+      method: 'POST',
+      headers: { ...getHeaders(), 'Content-Type': 'application/json' },
+      body: JSON.stringify(body)
+    });
+    const data = await response.json().catch(() => null);
+    if (!response.ok) {
+      const message = data?.detail || data?.error?.message || `HTTP ${response.status}`;
+      throw new Error(typeof message === 'string' ? message : JSON.stringify(message));
+    }
+    return data || {};
+  }
+
   function renderThreadList(threads) {
     const list = document.getElementById('chatHistoryBrowserList');
     if (!list) return;
@@ -171,18 +185,21 @@
     const preview = document.getElementById('chatHistoryBrowserPreview');
     if (!preview) return;
     const count = Number(thread.message_count || 0);
-    const hydrated = Boolean(thread.hydrated || count > 0);
-    preview.innerHTML = `<div class="chat-history-browser-markdown">Loading ${esc(thread.title || thread.id)}...</div>`;
+    preview.innerHTML = `<div class="chat-history-browser-markdown">Hydrating ${esc(thread.title || thread.id)}...</div>`;
     try {
+      const hydration = await postJson(`${THREADS_ENDPOINT}/${encodeURIComponent(thread.id)}/hydrate`);
+      const selectedCount = Number(hydration?.thread?.message_count ?? count);
+      const selectedHydrated = Boolean(hydration?.thread?.hydrated || selectedCount > 0);
+      preview.innerHTML = `<div class="chat-history-browser-markdown">Loading ${esc(thread.title || thread.id)}...</div>`;
       const markdown = await fetchText(`${THREADS_ENDPOINT}/${encodeURIComponent(thread.id)}/markdown`);
-      const warning = count === 0
+      const warning = selectedCount === 0
         ? '<div class="chat-history-empty-warning"><strong>Empty hydrated message set.</strong><br>This thread record exists, but no message rows are attached yet. Run a larger sync, then check the debug endpoint for raw message fields.</div>'
         : '';
       preview.innerHTML = `
         <div class="chat-history-browser-summary" style="padding:0 0 12px;border-bottom:0">
           <span>Total synced threads: ${threads.length}</span>
-          <span>Selected messages: ${count}</span>
-          <span>Hydrated: ${hydrated ? 'yes' : 'no'}</span>
+          <span>Selected messages: ${selectedCount}</span>
+          <span>Hydrated: ${selectedHydrated ? 'yes' : 'no'}</span>
         </div>
         ${warning}
         <div class="chat-history-browser-markdown">${renderMarkdown(markdown)}</div>
