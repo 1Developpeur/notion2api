@@ -5,6 +5,11 @@ import os
 import sqlite3
 from typing import Any
 
+from app.chat_history.extractor import (
+    THREAD_MESSAGE_FIELDS,
+    redact_secrets,
+)
+
 DDL = """
 CREATE TABLE IF NOT EXISTS chat_threads (
   id TEXT PRIMARY KEY,
@@ -41,6 +46,13 @@ def _quote_fts_phrase(query: str) -> str:
     return '"' + query.replace('"', '""') + '"'
 
 
+def _preview(text: str | None, limit: int = 180) -> str:
+    value = " ".join(str(text or "").split())
+    if len(value) <= limit:
+        return value
+    return value[: limit - 1].rstrip() + "…"
+
+
 class ChatHistoryStore:
     def __init__(self, db_path: str | None = None):
         self.db_path = db_path or get_default_chat_history_db_path()
@@ -57,15 +69,22 @@ class ChatHistoryStore:
     def upsert_bundle(self, bundle: dict[str, Any]) -> dict[str, int]:
         threads = bundle.get("threads", {})
         messages = bundle.get("messages", {})
+        result = {"threads": len(threads), "messages": len(messages), "threads_inserted": 0, "threads_updated": 0, "messages_inserted": 0, "messages_updated": 0}
         with self._conn() as conn:
             for t in threads.values():
+                existed = conn.execute("SELECT 1 FROM chat_threads WHERE id=?", (t["id"],)).fetchone() is not None
                 conn.execute(
                     """INSERT INTO chat_threads(id,title,created_time,last_edited_time,alive,message_ids_json,raw_json)
                     VALUES(?,?,?,?,?,?,?)
                     ON CONFLICT(id) DO UPDATE SET title=excluded.title,last_edited_time=excluded.last_edited_time,alive=excluded.alive,message_ids_json=excluded.message_ids_json,raw_json=excluded.raw_json""",
-                    (t["id"], t.get("title"), str(t.get("created_time") or ""), str(t.get("last_edited_time") or ""), None if t.get("alive") is None else int(bool(t.get("alive"))), json.dumps(t.get("message_ids") or []), json.dumps(t.get("raw") or {})),
+                    (t["id"], t.get("title"), str(t.get("created_time") or ""), str(t.get("last_edited_time") or t.get("updated_at") or ""), None if t.get("alive") is None else int(bool(t.get("alive"))), json.dumps(t.get("message_ids") or []), json.dumps(t.get("raw") or {})),
                 )
+                if existed:
+                    result["threads_updated"] += 1
+                else:
+                    result["threads_inserted"] += 1
             for m in messages.values():
+                existed = conn.execute("SELECT 1 FROM chat_messages WHERE id=?", (m["id"],)).fetchone() is not None
                 conn.execute(
                     """INSERT INTO chat_messages(id,thread_id,role,text,created_time,raw_json)
                     VALUES(?,?,?,?,?,?)
@@ -74,14 +93,56 @@ class ChatHistoryStore:
                 )
                 conn.execute("DELETE FROM chat_messages_fts WHERE id=?", (m["id"],))
                 conn.execute("INSERT INTO chat_messages_fts(id,thread_id,role,text) VALUES(?,?,?,?)", (m["id"], m.get("thread_id"), m.get("role"), m.get("text") or ""))
+                if existed:
+                    result["messages_updated"] += 1
+                else:
+                    result["messages_inserted"] += 1
             conn.commit()
-        return {"threads": len(threads), "messages": len(messages)}
+        return result
 
     def list_threads(self, limit: int = 50, offset: int = 0, include_inactive: bool = False) -> list[dict[str, Any]]:
-        where = "" if include_inactive else "WHERE COALESCE(alive,1) != 0"
+        where = "" if include_inactive else "WHERE COALESCE(t.alive,1) != 0"
         with self._conn() as conn:
-            rows = conn.execute(f"SELECT id,title,created_time,last_edited_time,alive FROM chat_threads {where} ORDER BY last_edited_time DESC LIMIT ? OFFSET ?", (limit, offset)).fetchall()
-            return [dict(r) for r in rows]
+            rows = conn.execute(
+                f"""
+                SELECT
+                  t.id,
+                  t.title,
+                  t.created_time,
+                  t.last_edited_time,
+                  t.last_edited_time AS updated_at,
+                  t.alive,
+                  COUNT(m.id) AS message_count,
+                  MIN(m.created_time) AS first_message_time,
+                  MAX(m.created_time) AS last_message_time,
+                  (
+                    SELECT m1.text FROM chat_messages m1
+                    WHERE m1.thread_id=t.id
+                    ORDER BY m1.created_time, m1.id LIMIT 1
+                  ) AS first_message_text,
+                  (
+                    SELECT m2.text FROM chat_messages m2
+                    WHERE m2.thread_id=t.id
+                    ORDER BY m2.created_time DESC, m2.id DESC LIMIT 1
+                  ) AS last_message_text
+                FROM chat_threads t
+                LEFT JOIN chat_messages m ON m.thread_id=t.id
+                {where}
+                GROUP BY t.id
+                ORDER BY COALESCE(NULLIF(t.last_edited_time,''), NULLIF(t.created_time,''), t.imported_at) DESC
+                LIMIT ? OFFSET ?
+                """,
+                (limit, offset),
+            ).fetchall()
+            out: list[dict[str, Any]] = []
+            for row in rows:
+                item = dict(row)
+                item["message_count"] = int(item.get("message_count") or 0)
+                item["hydrated"] = item["message_count"] > 0
+                item["first_message_preview"] = _preview(item.pop("first_message_text", ""))
+                item["last_message_preview"] = _preview(item.pop("last_message_text", ""))
+                out.append(item)
+            return out
 
     def get_thread(self, thread_id: str) -> dict[str, Any] | None:
         with self._conn() as conn:
@@ -93,7 +154,33 @@ class ChatHistoryStore:
         out["message_ids"] = json.loads(out.pop("message_ids_json") or "[]")
         out["raw"] = json.loads(out.pop("raw_json") or "{}")
         out["messages"] = [dict(r) for r in msgs]
+        out["message_count"] = len(out["messages"])
+        out["hydrated"] = out["message_count"] > 0
+        out["first_message_preview"] = _preview(out["messages"][0].get("text") if out["messages"] else "")
+        out["last_message_preview"] = _preview(out["messages"][-1].get("text") if out["messages"] else "")
+        out["updated_at"] = out.get("last_edited_time") or out.get("created_time") or ""
         return out
+
+    def debug_thread(self, thread_id: str) -> dict[str, Any]:
+        thread = self.get_thread(thread_id)
+        if not thread:
+            return {"thread_exists": False, "message_count": 0, "raw_fields_seen": [], "known_message_fields_found": [], "sample": {}}
+        raw = thread.get("raw") if isinstance(thread.get("raw"), dict) else {}
+        raw_fields = sorted(str(key) for key in raw.keys())
+        known_fields = [field for field in THREAD_MESSAGE_FIELDS if field in raw]
+        sample = {
+            "thread": redact_secrets({key: raw.get(key) for key in raw_fields[:40]}),
+            "message_ids": thread.get("message_ids", [])[:20],
+            "messages": [redact_secrets(message) for message in thread.get("messages", [])[:3]],
+        }
+        return {
+            "thread_exists": True,
+            "message_count": thread.get("message_count", 0),
+            "hydrated": thread.get("hydrated", False),
+            "raw_fields_seen": raw_fields,
+            "known_message_fields_found": known_fields,
+            "sample": sample,
+        }
 
     def search(self, query: str, limit: int = 25) -> list[dict[str, Any]]:
         query = str(query or "").strip()
@@ -114,7 +201,9 @@ class ChatHistoryStore:
         thread = self.get_thread(thread_id)
         if not thread:
             return None
-        lines = [f"# {thread.get('title') or thread.get('id')}", "", f"Thread ID: `{thread.get('id')}`", ""]
+        lines = [f"# {thread.get('title') or thread.get('id')}", "", f"Thread ID: `{thread.get('id')}`", "", f"Messages: {thread.get('message_count', 0)}", ""]
+        if not thread.get("messages"):
+            lines += ["> This thread exists in the archive, but no message records are hydrated yet.", ""]
         for msg in thread.get("messages", []):
             lines += [f"## {str(msg.get('role') or 'message').title()}", "", str(msg.get("text") or ""), ""]
         return "\n".join(lines)
