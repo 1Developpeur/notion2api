@@ -182,13 +182,24 @@ def healthz(request: Request):
 
 frontend_dir = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "frontend")
 
-@app.get("/chat-history-import.js", include_in_schema=False)
-def chat_history_import_js():
-    script_path = os.path.join(frontend_dir, "js", "chat-history-import.js")
+
+def _frontend_js_response(filename: str):
+    script_path = os.path.join(frontend_dir, "js", filename)
     if not os.path.exists(script_path):
         return Response(content=b"", media_type="application/javascript", status_code=404)
     with open(script_path, "rb") as f:
         return Response(content=f.read(), media_type="application/javascript")
+
+
+@app.get("/chat-history-import.js", include_in_schema=False)
+def chat_history_import_js():
+    return _frontend_js_response("chat-history-import.js")
+
+
+@app.get("/chat-history-browser.js", include_in_schema=False)
+def chat_history_browser_js():
+    return _frontend_js_response("chat-history-browser.js")
+
 
 @app.get("/", include_in_schema=False)
 def frontend_index():
@@ -197,9 +208,13 @@ def frontend_index():
         return Response(content=b"", media_type="text/html", status_code=404)
     with open(index_path, "r", encoding="utf-8") as f:
         html = f.read()
-    script_tag = '<script src="/chat-history-import.js"></script>'
-    if script_tag not in html:
-        html = html.replace("</body>", f"{script_tag}\n</body>")
+    script_tags = [
+        '<script src="/chat-history-import.js"></script>',
+        '<script src="/chat-history-browser.js"></script>',
+    ]
+    missing_tags = [tag for tag in script_tags if tag not in html]
+    if missing_tags:
+        html = html.replace("</body>", "\n".join(missing_tags) + "\n</body>")
     return Response(content=html, media_type="text/html")
 
 # 挂载静态前端到根目录
