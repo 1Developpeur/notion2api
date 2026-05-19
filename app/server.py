@@ -1,18 +1,38 @@
-import time
+import hmac
 import os
-from fastapi import FastAPI, Request
-from fastapi.responses import JSONResponse, Response
+import time
+from contextlib import asynccontextmanager
+
+from fastapi import FastAPI, HTTPException, Request
 from fastapi.middleware.cors import CORSMiddleware
+from fastapi.responses import JSONResponse, Response
 from fastapi.staticfiles import StaticFiles
 from slowapi.errors import RateLimitExceeded
-from contextlib import asynccontextmanager
-from app.config import ACCOUNTS, API_KEY, ALLOWED_ORIGINS, is_lite_mode, is_standard_mode
+
 from app.account_pool import AccountPool
-from app.conversation import ConversationManager
 from app.api.chat import router as chat_router
+from app.api.chat_history import router as chat_history_router
 from app.api.models import router as models_router
-from app.logger import logger
+from app.api.responses import router as responses_router
+from app.config import ACCOUNTS, ALLOWED_ORIGINS, API_KEY, is_lite_mode, is_standard_mode
+from app.conversation import ConversationManager
+from app.core.errors import openai_error_payload
 from app.limiter import limiter
+from app.logger import logger
+
+
+def _valid_bearer_token(auth_header: str, expected_key: str) -> bool:
+    """Return whether an Authorization header contains the expected bearer token."""
+    if not expected_key:
+        return True
+    scheme, separator, token = str(auth_header or "").partition(" ")
+    if not separator or scheme.lower() != "bearer":
+        return False
+    token = token.strip()
+    if not token or any(char.isspace() for char in token):
+        return False
+    return hmac.compare_digest(token, expected_key)
+
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
@@ -36,11 +56,12 @@ async def lifespan(app: FastAPI):
     # 关闭时清理
     logger.info("Service shutting down", extra={"request_info": {"event": "shutdown"}})
 
+
 app = FastAPI(
     title="Notion Opus API",
     description="A FastAPI wrapper providing an OpenAI-compatible interface for Notion's Claude Opus backend.",
     version="1.0.0",
-    lifespan=lifespan
+    lifespan=lifespan,
 )
 
 # 允许跨域（配合本地前端）
@@ -59,9 +80,16 @@ app.state.limiter = limiter
 def custom_rate_limit_exceeded_handler(request: Request, exc: RateLimitExceeded):
     return JSONResponse(
         status_code=429,
-        content={"error": "Too many requests, please try again later"}
+        content={"error": "Too many requests, please try again later"},
     )
 app.add_exception_handler(RateLimitExceeded, custom_rate_limit_exceeded_handler)
+
+
+@app.exception_handler(HTTPException)
+async def http_exception_handler(request: Request, exc: HTTPException):
+    if isinstance(exc.detail, dict):
+        return JSONResponse(status_code=exc.status_code, content=exc.detail)
+    return JSONResponse(status_code=exc.status_code, content={"detail": exc.detail})
 
 
 @app.exception_handler(Exception)
@@ -93,7 +121,7 @@ async def log_requests_middleware(request: Request, call_next):
     start_time = time.time()
     
     # 跳过高频且不重要的日志打印，避免刷屏
-    skip_logging = request.url.path in ["/health", "/favicon.ico"]
+    skip_logging = request.url.path in ["/health", "/healthz", "/favicon.ico"]
     
     try:
         response = await call_next(request)
@@ -131,22 +159,22 @@ async def api_key_auth(request: Request, call_next):
         # 跳过 OPTIONS 请求和非受保护的静态路由（如果以后有的话）
         if request.url.path.startswith("/v1") and request.method != "OPTIONS":
             auth_header = request.headers.get("Authorization", "")
-            if not auth_header.startswith("Bearer ") or auth_header.split(" ")[1] != API_KEY:
+            if not _valid_bearer_token(auth_header, API_KEY):
                 return JSONResponse(
                     status_code=401,
-                    content={
-                        "error": {
-                            "message": "Error: API KEY doesn't match.",
-                            "type": "invalid_request_error",
-                            "code": "invalid_api_key"
-                        }
-                    }
+                    content=openai_error_payload(
+                        message="Error: API KEY doesn't match.",
+                        code="invalid_api_key",
+                        status_code=401,
+                    ),
                 )
     return await call_next(request)
 
 # 挂载路由，前缀统一为 /v1
 app.include_router(chat_router, prefix="/v1")
 app.include_router(models_router, prefix="/v1")
+app.include_router(chat_history_router, prefix="/v1")
+app.include_router(responses_router, prefix="/v1")
 
 # 挂载健康检查
 @app.get("/favicon.ico", include_in_schema=False)
@@ -166,7 +194,53 @@ def health_check(request: Request):
         "uptime": int(uptime)
     }
 
-# 挂载静态前端到根目录
+@app.get("/healthz", tags=["system"])
+def healthz(request: Request):
+    return health_check(request)
+
 frontend_dir = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "frontend")
+
+
+def _frontend_js_response(filename: str):
+    script_path = os.path.join(frontend_dir, "js", filename)
+    if not os.path.exists(script_path):
+        return Response(content=b"", media_type="application/javascript", status_code=404)
+    with open(script_path, "rb") as f:
+        return Response(content=f.read(), media_type="application/javascript")
+
+
+@app.get("/chat-history-import.js", include_in_schema=False)
+def chat_history_import_js():
+    return _frontend_js_response("chat-history-import.js")
+
+
+@app.get("/chat-history-browser.js", include_in_schema=False)
+def chat_history_browser_js():
+    return _frontend_js_response("chat-history-browser.js")
+
+
+@app.get("/chat-history-main.js", include_in_schema=False)
+def chat_history_main_js():
+    return _frontend_js_response("chat-history-main.js")
+
+
+@app.get("/", include_in_schema=False)
+def frontend_index():
+    index_path = os.path.join(frontend_dir, "index.html")
+    if not os.path.exists(index_path):
+        return Response(content=b"", media_type="text/html", status_code=404)
+    with open(index_path, "r", encoding="utf-8") as f:
+        html = f.read()
+    script_tags = [
+        '<script src="/chat-history-import.js"></script>',
+        '<script src="/chat-history-browser.js"></script>',
+        '<script src="/chat-history-main.js"></script>',
+    ]
+    missing_tags = [tag for tag in script_tags if tag not in html]
+    if missing_tags:
+        html = html.replace("</body>", "\n".join(missing_tags) + "\n</body>")
+    return Response(content=html, media_type="text/html")
+
+# 挂载静态前端到根目录
 if os.path.exists(frontend_dir):
     app.mount("/", StaticFiles(directory=frontend_dir, html=True), name="frontend")

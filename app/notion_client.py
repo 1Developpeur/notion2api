@@ -1,4 +1,5 @@
 import os
+import json
 import threading
 import time
 import uuid
@@ -10,7 +11,7 @@ import urllib3
 
 from app.logger import logger
 from app.model_registry import get_notion_model
-from app.stream_parser import parse_stream
+from app.stream_parser_safe import parse_stream
 
 # 禁用 SSL 警告
 urllib3.disable_warnings(urllib3.exceptions.InsecureRequestWarning)
@@ -21,6 +22,10 @@ NOTION_CLIENT_VERSION = os.getenv("NOTION_CLIENT_VERSION", "23.13.20260228.0625"
 
 class NotionUpstreamError(RuntimeError):
     """Notion 上游请求失败或返回异常内容。"""
+
+    status_code: Optional[int]
+    retriable: bool
+    response_excerpt: str
 
     def __init__(
         self,
@@ -114,6 +119,94 @@ class NotionOpusAPI:
             "x-notion-space-id": self.space_id,
         }
 
+    def _build_chat_history_headers(self) -> dict[str, str]:
+        return {
+            "content-type": "application/json",
+            "accept": "application/json",
+            "cookie": f"token_v2={self.token_v2}; notion_user_id={self.user_id}",
+            "x-notion-active-user-header": self.user_id,
+            "x-notion-space-id": self.space_id,
+            "notion-client-version": NOTION_CLIENT_VERSION,
+            "origin": "https://www.notion.so",
+            "referer": "https://www.notion.so/ai",
+            "user-agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/145.0.0.0 Safari/537.36",
+        }
+
+    def fetch_chat_history(self, limit: int = 100, max_pages: int = 5) -> dict[str, Any]:
+        """Best-effort pull of Notion AI chat transcripts for the current user."""
+        endpoint = "https://www.notion.so/api/v3/getInferenceTranscriptsForUser"
+        collected: dict[str, Any] = {}
+        page_cursor: str | None = None
+
+        for page_index in range(max_pages):
+            request_id = str(uuid.uuid4())
+            candidate_payloads = [
+                {"requestId": request_id},
+                {"requestId": request_id, "limit": limit},
+                {"requestId": request_id, "pageSize": limit},
+            ]
+            if page_cursor:
+                candidate_payloads = [
+                    {"requestId": request_id, "cursor": page_cursor, "limit": limit},
+                    {"requestId": request_id, "startCursor": page_cursor, "limit": limit},
+                    {"requestId": request_id, "cursor": page_cursor, "pageSize": limit},
+                ] + candidate_payloads
+
+            response_obj = None
+            last_excerpt = ""
+            for payload in candidate_payloads:
+                try:
+                    response_obj = self._scraper.post(
+                        endpoint,
+                        headers=self._build_chat_history_headers(),
+                        json=payload,
+                        timeout=(15, 60),
+                    )
+                except Exception as exc:
+                    last_excerpt = str(exc)
+                    continue
+
+                if response_obj.status_code == 200:
+                    break
+
+                last_excerpt = (response_obj.text or "").strip().replace("\n", " ")[:300]
+                response_obj = None
+
+            if response_obj is None:
+                raise NotionUpstreamError(
+                    "Failed to fetch Notion chat history.",
+                    status_code=502,
+                    retriable=True,
+                    response_excerpt=last_excerpt,
+                )
+
+            try:
+                page_obj = response_obj.json()
+            except Exception as exc:
+                raise NotionUpstreamError(
+                    "Notion chat history response was not valid JSON.",
+                    status_code=response_obj.status_code,
+                    retriable=True,
+                    response_excerpt=(response_obj.text or "").strip()[:300],
+                ) from exc
+
+            if isinstance(page_obj, dict):
+                collected.update(page_obj)
+
+                next_cursor = (
+                    page_obj.get("nextCursor")
+                    or page_obj.get("next_cursor")
+                    or page_obj.get("cursor")
+                    or page_obj.get("nextPageCursor")
+                )
+                if isinstance(next_cursor, str) and next_cursor.strip():
+                    page_cursor = next_cursor.strip()
+                    continue
+
+            break
+
+        return collected
+
     def _create_thread(self, thread_id: str, thread_type: str) -> bool:
         payload = {
             "requestId": str(uuid.uuid4()),
@@ -179,16 +272,30 @@ class NotionOpusAPI:
             )
         return False
 
-    def delete_thread(self, thread_id: str) -> None:
-        """
-        通过 saveTransactions 接口将指定 thread 的 alive 状态设为 False，
-        从而清理 Notion 主页面上的对话记录。
-        此方法设计为在后台线程中调用，不影响主流输出。
-        """
-        headers = self._build_thread_headers()
-        payload = {
-            "requestId": str(uuid.uuid4()),
-            "transactions": [
+    def delete_threads(self, thread_ids: list[str]) -> dict[str, Any]:
+        """Mark multiple remote Notion AI threads inactive using saveTransactions."""
+        clean_ids: list[str] = []
+        seen: set[str] = set()
+        for thread_id in thread_ids:
+            value = str(thread_id or "").strip()
+            if not value or value in seen:
+                continue
+            seen.add(value)
+            clean_ids.append(value)
+
+        result: dict[str, Any] = {
+            "requested": len(thread_ids),
+            "valid_ids": len(clean_ids),
+            "remote_deleted": 0,
+            "remote_failed": 0,
+            "failed_ids": [],
+        }
+        if not clean_ids:
+            return result
+
+        transactions = []
+        for thread_id in clean_ids:
+            transactions.append(
                 {
                     "id": str(uuid.uuid4()),
                     "spaceId": self.space_id,
@@ -205,25 +312,48 @@ class NotionOpusAPI:
                         }
                     ],
                 }
-            ],
-        }
-        try:
-            resp = requests.post(self.delete_url, json=payload, headers=headers, timeout=15)
-            if resp.status_code == 200:
-                logger.info(
-                    "Thread auto-deleted from Notion home",
-                    extra={"request_info": {"event": "thread_deleted", "thread_id": thread_id}},
-                )
-            else:
-                logger.warning(
-                    f"Thread deletion failed: HTTP {resp.status_code}",
-                    extra={"request_info": {"event": "thread_delete_failed", "thread_id": thread_id, "status": resp.status_code}},
-                )
-        except Exception as exc:
-            logger.warning(
-                f"Thread deletion raised an exception: {exc}",
-                extra={"request_info": {"event": "thread_delete_error", "thread_id": thread_id}},
             )
+
+        payload = {"requestId": str(uuid.uuid4()), "transactions": transactions}
+        try:
+            resp = requests.post(
+                self.delete_url,
+                json=payload,
+                headers=self._build_thread_headers(),
+                timeout=30,
+            )
+        except requests.exceptions.RequestException as exc:
+            raise NotionUpstreamError(
+                "Request to Notion upstream failed while deleting remote threads.",
+                retriable=True,
+                response_excerpt=str(exc),
+            ) from exc
+
+        if resp.status_code != 200:
+            excerpt = (resp.text or "").strip().replace("\n", " ")[:300]
+            raise NotionUpstreamError(
+                f"Notion remote thread delete returned HTTP {resp.status_code}.",
+                status_code=resp.status_code,
+                retriable=resp.status_code >= 500 or resp.status_code == 429,
+                response_excerpt=excerpt,
+            )
+
+        result["remote_deleted"] = len(clean_ids)
+        logger.info(
+            "Bulk remote Notion threads marked inactive",
+            extra={
+                "request_info": {
+                    "event": "threads_bulk_deleted",
+                    "count": len(clean_ids),
+                    "account": self.account_key,
+                }
+            },
+        )
+        return result
+
+    def delete_thread(self, thread_id: str) -> None:
+        """Mark one remote Notion AI thread inactive."""
+        self.delete_threads([thread_id])
 
     def stream_response(self, transcript: list, thread_id: Optional[str] = None) -> Generator[dict[str, Any], None, None]:
         """

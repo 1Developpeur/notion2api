@@ -1,11 +1,44 @@
-import os
 import json
+import os
 from dotenv import load_dotenv
 
 # 加载 .env 文件中的环境变量（override=True 确保 .env 优先于系统环境变量）
 load_dotenv(override=True)
 
 REQUIRED_ACCOUNT_FIELDS = {"token_v2", "space_id", "user_id"}
+
+DEFAULT_ALLOWED_ORIGINS = [
+    "http://127.0.0.1:8000",
+    "http://localhost:8000",
+    "http://127.0.0.1:5173",
+    "http://localhost:5173",
+    "http://127.0.0.1:5174",
+    "http://localhost:5174",
+    "http://127.0.0.1:3000",
+    "http://localhost:3000",
+]
+
+
+def _env_flag(name: str, default: bool = False) -> bool:
+    value = os.getenv(name)
+    if value is None:
+        return default
+    return value.strip().lower() in {"1", "true", "yes", "y", "on"}
+
+
+def parse_allowed_origins(value: str | None, *, allow_unsafe_wildcard: bool = False) -> list[str]:
+    """Parse and harden CORS origins.
+
+    The service holds Notion session material locally, so wildcard CORS is not a
+    safe default. A wildcard can still be explicitly enabled for isolated tests by
+    setting ALLOW_UNSAFE_CORS=true.
+    """
+    raw = value if value is not None else ""
+    origins = [origin.strip() for origin in raw.split(",") if origin.strip()]
+    if not origins or "*" in origins:
+        return ["*"] if allow_unsafe_wildcard else list(DEFAULT_ALLOWED_ORIGINS)
+    return origins
+
 
 def load_accounts():
     """
@@ -49,7 +82,8 @@ API_KEY = os.getenv("API_KEY", "")
 SILICONFLOW_API_KEY = os.getenv("SILICONFLOW_API_KEY", "")
 HOST = os.getenv("HOST", "0.0.0.0")
 PORT = int(os.getenv("PORT", "8000"))
-ALLOWED_ORIGINS = [origin.strip() for origin in os.getenv("ALLOWED_ORIGINS", "*").split(",") if origin.strip()]
+ALLOW_UNSAFE_CORS = _env_flag("ALLOW_UNSAFE_CORS", default=False)
+ALLOWED_ORIGINS = parse_allowed_origins(os.getenv("ALLOWED_ORIGINS"), allow_unsafe_wildcard=ALLOW_UNSAFE_CORS)
 
 # APP_MODE: heavy（默认）、lite 或 standard
 APP_MODE = os.getenv("APP_MODE", "heavy").lower().strip()
