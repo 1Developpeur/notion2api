@@ -27,6 +27,32 @@ def _bool_payload(value: Any, default: bool = False) -> bool:
     return default
 
 
+def _clean_thread_ids(value: Any) -> list[str]:
+    if not isinstance(value, list):
+        return []
+    out: list[str] = []
+    seen: set[str] = set()
+    for item in value:
+        if isinstance(item, bool) or item is None or isinstance(item, (dict, list, tuple, set)):
+            continue
+        text = str(item).strip()
+        if not text or text in seen:
+            continue
+        seen.add(text)
+        out.append(text)
+    return out
+
+
+def _get_account_client(request: Request, account_index: int):
+    pool = request.app.state.account_pool
+    clients = getattr(pool, "clients", [])
+    if not clients:
+        raise HTTPException(status_code=503, detail="No configured Notion accounts are available")
+    if account_index < 0 or account_index >= len(clients):
+        raise HTTPException(status_code=400, detail="account_index is out of range")
+    return clients[account_index]
+
+
 @router.get("/status")
 def status() -> dict[str, Any]:
     return {
@@ -37,6 +63,7 @@ def status() -> dict[str, Any]:
             "notion_direct_sync",
             "metadata_only_sync",
             "selected_thread_hydration",
+            "bulk_remote_delete",
             "hydration_diagnostics",
             "thread_debug",
             "local_archive",
@@ -87,14 +114,7 @@ async def sync_from_notion(request: Request) -> dict[str, Any]:
     except Exception as exc:
         raise HTTPException(status_code=400, detail="Invalid import parameters") from exc
 
-    pool = request.app.state.account_pool
-    clients = getattr(pool, "clients", [])
-    if not clients:
-        raise HTTPException(status_code=503, detail="No configured Notion accounts are available")
-    if account_index < 0 or account_index >= len(clients):
-        raise HTTPException(status_code=400, detail="account_index is out of range")
-
-    client = clients[account_index]
+    client = _get_account_client(request, account_index)
     try:
         bundle = sync_chat_history_from_notion(client, limit=limit, max_pages=max_pages, hydrate=hydrate)
     except NotionUpstreamError as exc:
@@ -136,6 +156,62 @@ def list_threads(limit: int = Query(50, ge=1, le=200), offset: int = Query(0, ge
     return {"threads": _store().list_threads(limit=limit, offset=offset)}
 
 
+@router.delete("/threads")
+async def delete_threads(request: Request) -> dict[str, Any]:
+    """Bulk-delete remote Notion chat threads and remove them from the local archive."""
+    try:
+        payload = await request.json()
+    except Exception as exc:
+        raise HTTPException(status_code=400, detail="Request body must be JSON") from exc
+    if not isinstance(payload, dict):
+        raise HTTPException(status_code=400, detail="Request body must be a JSON object")
+
+    thread_ids = _clean_thread_ids(payload.get("thread_ids") or payload.get("threadIds"))
+    if not thread_ids:
+        raise HTTPException(status_code=400, detail="thread_ids must contain at least one thread id")
+    if len(thread_ids) > 200:
+        raise HTTPException(status_code=400, detail="Bulk delete is limited to 200 thread ids per request")
+
+    remote = _bool_payload(payload.get("remote"), default=True)
+    local = _bool_payload(payload.get("local"), default=True)
+    account_index = payload.get("account_index", 0)
+    try:
+        account_index = int(account_index)
+    except Exception as exc:
+        raise HTTPException(status_code=400, detail="Invalid delete parameters") from exc
+
+    remote_result: dict[str, Any] = {"remote_deleted": 0, "remote_failed": 0, "failed_ids": []}
+    if remote:
+        client = _get_account_client(request, account_index)
+        try:
+            remote_result = client.delete_threads(thread_ids)
+        except NotionUpstreamError as exc:
+            raise HTTPException(
+                status_code=503,
+                detail={
+                    "error": {
+                        "message": "Unable to delete remote chat history from Notion.",
+                        "type": "upstream_error",
+                        "param": None,
+                        "code": "upstream_error",
+                        "detail": exc.response_excerpt,
+                    }
+                },
+            ) from exc
+
+    local_result: dict[str, int] = {"threads_deleted": 0, "messages_deleted": 0, "fts_deleted": 0}
+    if local:
+        local_result = _store().delete_threads(thread_ids)
+
+    return {
+        "requested": len(thread_ids),
+        "remote": remote,
+        "local": local,
+        "remote_result": remote_result,
+        "local_result": local_result,
+    }
+
+
 @router.get("/threads/{thread_id}")
 def get_thread(thread_id: str) -> dict[str, Any]:
     thread = _store().get_thread(thread_id)
@@ -165,15 +241,8 @@ async def hydrate_thread(thread_id: str, request: Request) -> dict[str, Any]:
     if not thread:
         raise HTTPException(status_code=404, detail="Thread not found")
 
-    pool = request.app.state.account_pool
-    clients = getattr(pool, "clients", [])
-    if not clients:
-        raise HTTPException(status_code=503, detail="No configured Notion accounts are available")
-    if account_index < 0 or account_index >= len(clients):
-        raise HTTPException(status_code=400, detail="account_index is out of range")
-
     try:
-        bundle = hydrate_thread_from_notion(clients[account_index], thread)
+        bundle = hydrate_thread_from_notion(_get_account_client(request, account_index), thread)
     except NotionUpstreamError as exc:
         raise HTTPException(
             status_code=503,
