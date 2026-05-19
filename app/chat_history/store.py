@@ -96,6 +96,20 @@ def _message_ids_json(value: Any) -> str:
     return json.dumps([item for item in ids if item], ensure_ascii=False)
 
 
+def _clean_ids(values: Any) -> list[str]:
+    if not isinstance(values, list):
+        return []
+    out: list[str] = []
+    seen: set[str] = set()
+    for value in values:
+        item = _id_text(value)
+        if not item or item in seen:
+            continue
+        seen.add(item)
+        out.append(item)
+    return out
+
+
 def _thread_timestamp_expr(alias: str = "t") -> str:
     return (
         f"COALESCE("
@@ -304,6 +318,55 @@ class ChatHistoryStore:
                     result["messages_inserted"] += 1
                 elif tuple(existing) != proposed:
                     result["messages_updated"] += 1
+            conn.commit()
+        return result
+
+    def existing_thread_ids(self, thread_ids: list[Any]) -> set[str]:
+        ids = _clean_ids(thread_ids)
+        if not ids:
+            return set()
+        existing: set[str] = set()
+        with self._conn() as conn:
+            for thread_id in ids:
+                row = conn.execute("SELECT id FROM chat_threads WHERE id=?", (thread_id,)).fetchone()
+                if row:
+                    existing.add(str(row["id"]))
+        return existing
+
+    def delete_threads(self, thread_ids: list[Any]) -> dict[str, int]:
+        ids = _clean_ids(thread_ids)
+        result = {
+            "requested": len(thread_ids) if isinstance(thread_ids, list) else 0,
+            "valid_ids": len(ids),
+            "threads_deleted": 0,
+            "messages_deleted": 0,
+            "fts_deleted": 0,
+        }
+        with self._conn() as conn:
+            for thread_id in ids:
+                message_rows = conn.execute(
+                    "SELECT id FROM chat_messages WHERE thread_id=?",
+                    (thread_id,),
+                ).fetchall()
+                for row in message_rows:
+                    deleted = conn.execute(
+                        "DELETE FROM chat_messages_fts WHERE id=?",
+                        (row["id"],),
+                    ).rowcount
+                    if deleted and deleted > 0:
+                        result["fts_deleted"] += deleted
+                deleted_messages = conn.execute(
+                    "DELETE FROM chat_messages WHERE thread_id=?",
+                    (thread_id,),
+                ).rowcount
+                if deleted_messages and deleted_messages > 0:
+                    result["messages_deleted"] += deleted_messages
+                deleted_threads = conn.execute(
+                    "DELETE FROM chat_threads WHERE id=?",
+                    (thread_id,),
+                ).rowcount
+                if deleted_threads and deleted_threads > 0:
+                    result["threads_deleted"] += deleted_threads
             conn.commit()
         return result
 
