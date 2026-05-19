@@ -146,12 +146,23 @@ def hydrate_thread_from_notion(
     raw = thread.get("raw") if isinstance(thread.get("raw"), dict) else None
     if raw:
         ids.update(collect_hydration_message_ids(raw))
-    return hydrate_message_ids_from_notion(
+    if not ids and thread_id:
+        ids.add(thread_id)
+
+    bundle = hydrate_message_ids_from_notion(
         client,
         ids,
         fallback_thread_id=thread_id,
         hydrate_batch_size=hydrate_batch_size,
     )
+    fallback_text = str(thread.get("title") or thread.get("first_message_preview") or thread.get("last_message_preview") or "").strip()
+    if thread_id and fallback_text:
+        for message in bundle.get("messages", {}).values():
+            if message.get("id") == thread_id or not message.get("thread_id"):
+                message["thread_id"] = thread_id
+            if message.get("thread_id") == thread_id and not str(message.get("text") or "").strip():
+                message["text"] = fallback_text
+    return bundle
 
 
 def sync_chat_history_from_notion(
