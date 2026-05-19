@@ -262,16 +262,30 @@ class NotionOpusAPI:
             )
         return False
 
-    def delete_thread(self, thread_id: str) -> None:
-        """
-        通过 saveTransactions 接口将指定 thread 的 alive 状态设为 False，
-        从而清理 Notion 主页面上的对话记录。
-        此方法设计为在后台线程中调用，不影响主流输出。
-        """
-        headers = self._build_thread_headers()
-        payload = {
-            "requestId": str(uuid.uuid4()),
-            "transactions": [
+    def delete_threads(self, thread_ids: list[str]) -> dict[str, Any]:
+        """Mark multiple remote Notion AI threads inactive using saveTransactions."""
+        clean_ids: list[str] = []
+        seen: set[str] = set()
+        for thread_id in thread_ids:
+            value = str(thread_id or "").strip()
+            if not value or value in seen:
+                continue
+            seen.add(value)
+            clean_ids.append(value)
+
+        result: dict[str, Any] = {
+            "requested": len(thread_ids),
+            "valid_ids": len(clean_ids),
+            "remote_deleted": 0,
+            "remote_failed": 0,
+            "failed_ids": [],
+        }
+        if not clean_ids:
+            return result
+
+        transactions = []
+        for thread_id in clean_ids:
+            transactions.append(
                 {
                     "id": str(uuid.uuid4()),
                     "spaceId": self.space_id,
@@ -288,25 +302,48 @@ class NotionOpusAPI:
                         }
                     ],
                 }
-            ],
-        }
-        try:
-            resp = requests.post(self.delete_url, json=payload, headers=headers, timeout=15)
-            if resp.status_code == 200:
-                logger.info(
-                    "Thread auto-deleted from Notion home",
-                    extra={"request_info": {"event": "thread_deleted", "thread_id": thread_id}},
-                )
-            else:
-                logger.warning(
-                    f"Thread deletion failed: HTTP {resp.status_code}",
-                    extra={"request_info": {"event": "thread_delete_failed", "thread_id": thread_id, "status": resp.status_code}},
-                )
-        except Exception as exc:
-            logger.warning(
-                f"Thread deletion raised an exception: {exc}",
-                extra={"request_info": {"event": "thread_delete_error", "thread_id": thread_id}},
             )
+
+        payload = {"requestId": str(uuid.uuid4()), "transactions": transactions}
+        try:
+            resp = requests.post(
+                self.delete_url,
+                json=payload,
+                headers=self._build_thread_headers(),
+                timeout=30,
+            )
+        except requests.exceptions.RequestException as exc:
+            raise NotionUpstreamError(
+                "Request to Notion upstream failed while deleting remote threads.",
+                retriable=True,
+                response_excerpt=str(exc),
+            ) from exc
+
+        if resp.status_code != 200:
+            excerpt = (resp.text or "").strip().replace("\n", " ")[:300]
+            raise NotionUpstreamError(
+                f"Notion remote thread delete returned HTTP {resp.status_code}.",
+                status_code=resp.status_code,
+                retriable=resp.status_code >= 500 or resp.status_code == 429,
+                response_excerpt=excerpt,
+            )
+
+        result["remote_deleted"] = len(clean_ids)
+        logger.info(
+            "Bulk remote Notion threads marked inactive",
+            extra={
+                "request_info": {
+                    "event": "threads_bulk_deleted",
+                    "count": len(clean_ids),
+                    "account": self.account_key,
+                }
+            },
+        )
+        return result
+
+    def delete_thread(self, thread_id: str) -> None:
+        """Mark one remote Notion AI thread inactive."""
+        self.delete_threads([thread_id])
 
     def stream_response(self, transcript: list, thread_id: Optional[str] = None) -> Generator[dict[str, Any], None, None]:
         """
