@@ -6,7 +6,7 @@ from fastapi import APIRouter, HTTPException, Query, Request
 from fastapi.responses import PlainTextResponse
 
 from app.chat_history.har_importer import import_chat_object, import_har_object
-from app.chat_history.notion_sync import sync_chat_history_from_notion
+from app.chat_history.notion_sync import hydrate_thread_from_notion, sync_chat_history_from_notion
 from app.chat_history.store import ChatHistoryStore, get_default_chat_history_db_path
 from app.notion_client import NotionUpstreamError
 
@@ -17,6 +17,16 @@ def _store() -> ChatHistoryStore:
     return ChatHistoryStore()
 
 
+def _bool_payload(value: Any, default: bool = False) -> bool:
+    if isinstance(value, bool):
+        return value
+    if isinstance(value, str):
+        return value.strip().lower() in {"1", "true", "yes", "y", "on", "full", "hydrate"}
+    if isinstance(value, (int, float)):
+        return bool(value)
+    return default
+
+
 @router.get("/status")
 def status() -> dict[str, Any]:
     return {
@@ -25,6 +35,8 @@ def status() -> dict[str, Any]:
         "capabilities": [
             "har_import",
             "notion_direct_sync",
+            "metadata_only_sync",
+            "selected_thread_hydration",
             "hydration_diagnostics",
             "thread_debug",
             "local_archive",
@@ -54,7 +66,7 @@ async def import_har(request: Request) -> dict[str, Any]:
 @router.post("/sync/notion")
 @router.post("/import/notion")
 async def sync_from_notion(request: Request) -> dict[str, Any]:
-    """Pull chat history directly from the configured Notion account into the local archive."""
+    """Pull chat-history metadata by default; hydrate full message bodies only when requested."""
     try:
         payload = await request.json()
     except Exception:
@@ -66,6 +78,7 @@ async def sync_from_notion(request: Request) -> dict[str, Any]:
     account_index = payload.get("account_index", 0)
     limit = payload.get("limit", 100)
     max_pages = payload.get("max_pages", 5)
+    hydrate = _bool_payload(payload.get("hydrate"), default=False)
 
     try:
         account_index = int(account_index)
@@ -83,7 +96,7 @@ async def sync_from_notion(request: Request) -> dict[str, Any]:
 
     client = clients[account_index]
     try:
-        bundle = sync_chat_history_from_notion(client, limit=limit, max_pages=max_pages)
+        bundle = sync_chat_history_from_notion(client, limit=limit, max_pages=max_pages, hydrate=hydrate)
     except NotionUpstreamError as exc:
         raise HTTPException(
             status_code=503,
@@ -129,6 +142,64 @@ def get_thread(thread_id: str) -> dict[str, Any]:
     if not thread:
         raise HTTPException(status_code=404, detail="Thread not found")
     return thread
+
+
+@router.post("/threads/{thread_id}/hydrate")
+async def hydrate_thread(thread_id: str, request: Request) -> dict[str, Any]:
+    """Hydrate full messages for one selected archived thread."""
+    try:
+        payload = await request.json()
+    except Exception:
+        payload = {}
+    if not isinstance(payload, dict):
+        payload = {}
+
+    account_index = payload.get("account_index", 0)
+    try:
+        account_index = int(account_index)
+    except Exception as exc:
+        raise HTTPException(status_code=400, detail="Invalid hydrate parameters") from exc
+
+    store = _store()
+    thread = store.get_thread(thread_id)
+    if not thread:
+        raise HTTPException(status_code=404, detail="Thread not found")
+
+    pool = request.app.state.account_pool
+    clients = getattr(pool, "clients", [])
+    if not clients:
+        raise HTTPException(status_code=503, detail="No configured Notion accounts are available")
+    if account_index < 0 or account_index >= len(clients):
+        raise HTTPException(status_code=400, detail="account_index is out of range")
+
+    try:
+        bundle = hydrate_thread_from_notion(clients[account_index], thread)
+    except NotionUpstreamError as exc:
+        raise HTTPException(
+            status_code=503,
+            detail={
+                "error": {
+                    "message": "Unable to hydrate chat thread from Notion.",
+                    "type": "upstream_error",
+                    "param": None,
+                    "code": "upstream_error",
+                    "detail": exc.response_excerpt,
+                }
+            },
+        ) from exc
+
+    imported = store.upsert_bundle(bundle)
+    hydrated = store.get_thread(thread_id)
+    return {
+        "imported": imported,
+        "endpoint_counts": bundle.get("endpoint_counts", {}),
+        "stats": bundle.get("stats", {}),
+        "thread": {
+            "id": thread_id,
+            "message_count": (hydrated or {}).get("message_count", 0),
+            "hydrated": bool((hydrated or {}).get("message_count", 0)),
+        },
+    }
 
 
 @router.get("/threads/{thread_id}/debug")
