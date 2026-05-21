@@ -20,6 +20,38 @@ urllib3.disable_warnings(urllib3.exceptions.InsecureRequestWarning)
 NOTION_CLIENT_VERSION = os.getenv("NOTION_CLIENT_VERSION", "23.13.20260228.0625")
 
 
+def _env_flag(name: str, default: bool = False) -> bool:
+    value = os.getenv(name)
+    if value is None:
+        return default
+    return value.strip().lower() in {"1", "true", "yes", "y", "on"}
+
+
+def _default_persist_threads() -> bool:
+    """Preserve Notion-visible threads only for stateful local-memory mode by default."""
+    app_mode = os.getenv("APP_MODE", "heavy").strip().lower()
+    return app_mode == "heavy"
+
+
+def _resolve_thread_persistence() -> dict[str, bool]:
+    """Resolve how upstream Notion threads should be persisted.
+
+    In standard/lite proxy modes, callers normally send the full request context and
+    do not need Notion's visible chat list as a backing store. Defaulting those modes
+    to ephemeral threads prevents council-style fan-out from flooding Notion AI chat
+    history. Heavy mode keeps the previous preserved-thread behavior unless explicitly
+    overridden.
+    """
+    persist = _env_flag("NOTION_PERSIST_THREADS", _default_persist_threads())
+    return {
+        "persist": persist,
+        "generate_title": _env_flag("NOTION_GENERATE_TITLES", persist),
+        "save_all_thread_operations": _env_flag("NOTION_SAVE_THREAD_OPERATIONS", persist),
+        "set_unread_state": _env_flag("NOTION_SET_UNREAD_STATE", persist),
+        "delete_after_stream": _env_flag("NOTION_DELETE_EPHEMERAL_THREADS", not persist),
+    }
+
+
 class NotionUpstreamError(RuntimeError):
     """Notion 上游请求失败或返回异常内容。"""
 
@@ -370,6 +402,9 @@ class NotionOpusAPI:
         notion_transcript = self._to_notion_transcript(transcript)
         thread_type = self._resolve_thread_type(notion_transcript)
         request_profile = self._resolve_request_profile(thread_type)
+        thread_persistence = _resolve_thread_persistence()
+        if not thread_persistence["persist"]:
+            request_profile["precreate_thread"] = False
 
         # 如果没有提供 thread_id，创建新的；否则重用已有的
         should_create_thread = thread_id is None
@@ -414,9 +449,9 @@ class NotionOpusAPI:
             "threadId": thread_id,
             "threadType": thread_type,
             "createThread": request_profile["create_thread"],
-            "generateTitle": True,
-            "saveAllThreadOperations": True,
-            "setUnreadState": True,
+            "generateTitle": thread_persistence["generate_title"],
+            "saveAllThreadOperations": thread_persistence["save_all_thread_operations"],
+            "setUnreadState": thread_persistence["set_unread_state"],
             "isPartialTranscript": request_profile["is_partial_transcript"],
             "asPatchResponse": True,
             "isUserInAnySalesAssistedSpace": False,
@@ -446,6 +481,9 @@ class NotionOpusAPI:
                     "thread_type": thread_type,
                     "create_thread": bool(request_profile["create_thread"]),
                     "is_partial_transcript": bool(request_profile["is_partial_transcript"]),
+                    "persist_thread": bool(thread_persistence["persist"]),
+                    "save_all_thread_operations": bool(thread_persistence["save_all_thread_operations"]),
+                    "delete_after_stream": bool(thread_persistence["delete_after_stream"]),
                     "account": self.account_key,
                     "space_id": self.space_id,
                 }
@@ -503,20 +541,45 @@ class NotionOpusAPI:
                     retriable=True,
                 )
 
-            # 流结束后，不再自动删除 thread
-            # 原因：Notion API 的 workflow 模式依赖于服务器端保存的对话历史
-            # 删除 thread 会导致后续请求无法获取历史消息（AI 失忆）
-            # 保持 thread 存活可以维持对话上下文
-            logger.info(
-                "Thread completed and preserved for conversation context",
-                extra={
-                    "request_info": {
-                        "event": "thread_completed_preserved",
-                        "thread_id": thread_id,
-                        "was_created_new": should_create_thread,
-                    }
-                },
-            )
+            if thread_persistence["delete_after_stream"]:
+                try:
+                    self.delete_thread(thread_id)
+                    logger.info(
+                        "Ephemeral Notion thread cleaned up after proxy response",
+                        extra={
+                            "request_info": {
+                                "event": "ephemeral_thread_deleted",
+                                "thread_id": thread_id,
+                                "was_created_new": should_create_thread,
+                            }
+                        },
+                    )
+                except Exception:
+                    logger.warning(
+                        "Ephemeral Notion thread cleanup failed",
+                        exc_info=True,
+                        extra={
+                            "request_info": {
+                                "event": "ephemeral_thread_delete_failed",
+                                "thread_id": thread_id,
+                            }
+                        },
+                    )
+            else:
+                # 流结束后，不再自动删除 thread
+                # 原因：Notion API 的 workflow 模式依赖于服务器端保存的对话历史
+                # 删除 thread 会导致后续请求无法获取历史消息（AI 失忆）
+                # 保持 thread 存活可以维持对话上下文
+                logger.info(
+                    "Thread completed and preserved for conversation context",
+                    extra={
+                        "request_info": {
+                            "event": "thread_completed_preserved",
+                            "thread_id": thread_id,
+                            "was_created_new": should_create_thread,
+                        }
+                    },
+                )
         except requests.exceptions.Timeout as exc:
             logger.error(f"Request timeout: {exc}", exc_info=True)
             raise NotionUpstreamError("Request to Notion upstream timed out.", retriable=True) from exc
