@@ -107,6 +107,13 @@ body{background:var(--bg);color:var(--text)}
   border-left-color:var(--border-active);
   background:var(--bg-hover);
 }
+.chat-item.selected{
+  background:var(--bg-hover);
+  border-left-color:var(--border);
+}
+.chat-item.selected.active{
+  border-left-color:var(--border-active);
+}
 .chat-item-title{
   overflow:hidden;text-overflow:ellipsis;white-space:nowrap;flex:1;
 }
@@ -739,7 +746,7 @@ window.NotionAI.Core.State = {
     baseUrl:localStorage.getItem('claude_base_url')||window.location.origin,
     apiKey:'',theme:localStorage.getItem('theme')||(window.matchMedia('(prefers-color-scheme:dark)').matches?'dark':'light'),
     chats:JSON.parse(localStorage.getItem('claude_chats'))||[],
-    currentChatId:null,isGenerating:false,controller:null,modelDisplayNames:{},chatToRename:null
+    currentChatId:null,selectedChatIds:[],isGenerating:false,controller:null,modelDisplayNames:{},chatToRename:null
   },
   loadStoredApiKey(){return localStorage.getItem('claude_api_key')||sessionStorage.getItem('claude_api_key')||''},
   persistApiKey(k){if(k){localStorage.setItem('claude_api_key',k);sessionStorage.setItem('claude_api_key',k)}else{localStorage.removeItem('claude_api_key');sessionStorage.removeItem('claude_api_key')}},
@@ -1229,6 +1236,7 @@ window.NotionAI.Chat.Manager = {
     if(STATE.isGenerating)return;
     const id=Date.now().toString();
     window.NotionAI.Core.State.set('currentChatId',id);
+    window.NotionAI.Core.State.set('selectedChatIds',[id]);
     document.getElementById('headerTitle').classList.add('hidden');
     document.getElementById('chatContainer').innerHTML='';
     window.NotionAI.UI.Input.clear();
@@ -1243,6 +1251,10 @@ window.NotionAI.Chat.Manager = {
     if(STATE.isGenerating)return;
     const chats=STATE.chats,chat=chats.find(c=>c.id===chatId);if(!chat)return;
     window.NotionAI.Core.State.set('currentChatId',chatId);
+    const selected = window.NotionAI.Core.State.get('selectedChatIds') || [];
+    if (!selected.includes(chatId)) {
+      window.NotionAI.Core.State.set('selectedChatIds', [chatId]);
+    }
     document.getElementById('welcomeScreen').classList.add('hidden');
     document.getElementById('chatContainer').innerHTML='';
     document.getElementById('headerTitle').textContent=chat.title;
@@ -1260,13 +1272,87 @@ window.NotionAI.Chat.Manager = {
     window.NotionAI.Utils.DOM.scrollToBottom();
     this.renderChatList();
   },
+  handleChatClick(e, chatId) {
+    if(STATE.isGenerating)return;
+    const chats=STATE.chats;
+    const starred=chats.filter(c=>c.starred).sort((a,b)=>b.id-a.id);
+    const recent=chats.filter(c=>!c.starred).sort((a,b)=>b.id-a.id);
+    const searchVal=(document.getElementById('searchInput')?.value||'').trim().toLowerCase();
+    const filter=searchVal?c=>c.title.toLowerCase().includes(searchVal):null;
+    
+    const starredFiltered = filter ? starred.filter(filter) : starred;
+    const recentFiltered = filter ? recent.filter(filter) : recent;
+    const allRendered = [...starredFiltered, ...recentFiltered];
+    
+    let selected = [...(window.NotionAI.Core.State.get('selectedChatIds') || [])];
+    
+    if (e.ctrlKey || e.metaKey) {
+      if (selected.includes(chatId)) {
+        selected = selected.filter(id => id !== chatId);
+        window.NotionAI.Core.State.set('selectedChatIds', selected);
+        if (STATE.currentChatId === chatId) {
+          const nextActive = selected[selected.length - 1] || null;
+          if (nextActive) {
+            this.selectChat(nextActive);
+          } else {
+            this.startNewChat();
+          }
+        } else {
+          this.renderChatList();
+        }
+      } else {
+        selected.push(chatId);
+        window.NotionAI.Core.State.set('selectedChatIds', selected);
+        this.selectChat(chatId);
+      }
+    } else if (e.shiftKey) {
+      const endIdx = allRendered.findIndex(c => c.id === chatId);
+      let startIdx = allRendered.findIndex(c => c.id === STATE.currentChatId);
+      if (startIdx === -1) startIdx = 0;
+      
+      const minIdx = Math.min(startIdx, endIdx);
+      const maxIdx = Math.max(startIdx, endIdx);
+      const newSelected = [];
+      for (let i = minIdx; i <= maxIdx; i++) {
+        newSelected.push(allRendered[i].id);
+      }
+      window.NotionAI.Core.State.set('selectedChatIds', newSelected);
+      this.selectChat(chatId);
+    } else {
+      window.NotionAI.Core.State.set('selectedChatIds', [chatId]);
+      this.selectChat(chatId);
+    }
+  },
   async deleteChat(chatId) {
     if(STATE.isGenerating)return;
-    const chats=STATE.chats,chat=chats.find(c=>c.id===chatId);if(!chat)return;
-    if(chat.conversationId){const ok=await window.NotionAI.API.Client.deleteConversation(chat.conversationId);if(!ok)return}
-    window.NotionAI.Chat.Storage.deleteChat(chatId);
-    if(STATE.currentChatId===chatId)this.startNewChat();
-    this.renderChatList();
+    const selected = window.NotionAI.Core.State.get('selectedChatIds') || [];
+    const targets = selected.includes(chatId) ? selected : [chatId];
+    if(targets.length > 1) {
+      if(!confirm(`Delete ${targets.length} selected chats?`)) return;
+    } else {
+      const chats=STATE.chats,chat=chats.find(c=>c.id===chatId);if(!chat)return;
+      if(!confirm(`Delete chat "${chat.title}"?`)) return;
+    }
+    for(const id of targets) {
+      const chats=STATE.chats,chat=chats.find(c=>c.id===id);
+      if(chat) {
+        if(chat.conversationId){
+          try{await window.NotionAI.API.Client.deleteConversation(chat.conversationId);}catch(e){}
+        }
+        window.NotionAI.Chat.Storage.deleteChat(id);
+      }
+    }
+    const newSelected = selected.filter(id => !targets.includes(id));
+    window.NotionAI.Core.State.set('selectedChatIds', newSelected);
+    if(targets.includes(STATE.currentChatId)) {
+      if(newSelected.length > 0) {
+        this.selectChat(newSelected[newSelected.length - 1]);
+      } else {
+        this.startNewChat();
+      }
+    } else {
+      this.renderChatList();
+    }
   },
   renameChat(chatId,newTitle) {
     window.NotionAI.Chat.Storage.updateChatTitle(chatId,newTitle);
@@ -1286,8 +1372,10 @@ window.NotionAI.Chat.Manager = {
       let filtered=filterFn?items.filter(filterFn):items;
       filtered.forEach(chat=>{
         const item=document.createElement('div');
-        item.className=`chat-item${chat.id===STATE.currentChatId?' active':''}`;
-        item.onclick=()=>this.selectChat(chat.id);
+        const selected = window.NotionAI.Core.State.get('selectedChatIds') || [];
+        const isSelected = selected.includes(chat.id);
+        item.className=`chat-item${chat.id===STATE.currentChatId?' active':''}${isSelected?' selected':''}`;
+        item.onclick=e=>this.handleChatClick(e,chat.id);
         const title=document.createElement('span');title.className='chat-item-title';title.textContent=chat.title;
         const mc=document.createElement('div');mc.className='chat-dropdown-container';mc.style.cssText='position:relative;display:flex;align-items:center';
         const mb=document.createElement('button');mb.className='chat-item-menu-btn';
@@ -1681,6 +1769,27 @@ function init(){
   document.getElementById('modelTriggerBtn').addEventListener('click',e=>{e.stopPropagation();toggleModelDropdown()});
   document.addEventListener('click',e=>{const dd=document.getElementById('customModelDropdown');if(!dd.contains(e.target)&&e.target.id!=='modelTriggerBtn')dd.classList.remove('open')});
   document.getElementById('searchInput').addEventListener('input',()=>window.NotionAI.Chat.Manager.renderChatList());
+  document.addEventListener('keydown', e => {
+    if (e.key === 'Delete') {
+      const activeEl = document.activeElement;
+      const isInput = activeEl ? (activeEl.tagName === 'INPUT' || activeEl.tagName === 'TEXTAREA' || activeEl.isContentEditable) : false;
+      if (!isInput) {
+        const currentChatId = window.NotionAI.Core.State.get('currentChatId');
+        if (currentChatId && currentChatId.startsWith('remote-chat-history:')) {
+          if (window.NotionAI.ChatHistoryMain) {
+            e.preventDefault();
+            window.NotionAI.ChatHistoryMain.deleteSelectedRemoteThreads();
+          }
+        } else {
+          const selected = window.NotionAI.Core.State.get('selectedChatIds') || [];
+          if (selected.length > 0) {
+            e.preventDefault();
+            window.NotionAI.Chat.Manager.deleteChat(selected[0]);
+          }
+        }
+      }
+    }
+  });
 
   if(!STATE.currentChatId)window.NotionAI.Chat.Manager.startNewChat();
 }
