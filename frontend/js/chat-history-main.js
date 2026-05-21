@@ -273,48 +273,106 @@
     window.NotionAI?.Chat?.Manager?.renderChatList?.();
   }
 
+  function showConfirmDialog(message, onConfirm) {
+    const overlay = document.createElement('div');
+    overlay.className = 'modal-overlay fade-in';
+    overlay.style.zIndex = '999999';
+
+    const content = document.createElement('div');
+    content.className = 'modal-content modal-sm';
+
+    const header = document.createElement('div');
+    header.className = 'modal-header';
+    const title = document.createElement('h3');
+    title.textContent = 'Confirm Delete';
+    header.appendChild(title);
+
+    const body = document.createElement('div');
+    body.className = 'modal-body';
+    body.style.fontSize = '13px';
+    body.style.lineHeight = '1.4';
+    body.style.color = 'var(--text-secondary)';
+    body.textContent = message;
+
+    const footer = document.createElement('div');
+    footer.className = 'modal-footer';
+
+    const cancelBtn = document.createElement('button');
+    cancelBtn.type = 'button';
+    cancelBtn.className = 'btn-secondary';
+    cancelBtn.textContent = 'Cancel';
+    cancelBtn.addEventListener('click', () => {
+      document.body.removeChild(overlay);
+    });
+
+    const confirmBtn = document.createElement('button');
+    confirmBtn.type = 'button';
+    confirmBtn.className = 'btn-primary';
+    confirmBtn.style.backgroundColor = '#a94442';
+    confirmBtn.style.borderColor = '#a94442';
+    confirmBtn.style.color = '#ffffff';
+    confirmBtn.textContent = 'Delete';
+    confirmBtn.addEventListener('click', () => {
+      document.body.removeChild(overlay);
+      onConfirm();
+    });
+
+    footer.appendChild(cancelBtn);
+    footer.appendChild(confirmBtn);
+
+    content.appendChild(header);
+    content.appendChild(body);
+    content.appendChild(footer);
+    overlay.appendChild(content);
+
+    document.body.appendChild(overlay);
+  }
+
   async function deleteSelectedRemoteThreads() {
     const ids = Array.from(state.selectedIds);
     if (!ids.length || state.deleting) return;
-    const confirmed = window.confirm(`Delete ${ids.length} selected remote chat(s)? Confirmed deletes will also be removed from the local archive.`);
-    if (!confirmed) return;
 
-    state.deleting = true;
-    window.NotionAI?.Chat?.Manager?.renderChatList?.();
-    const successIds = [];
-    const failed = [];
-    try {
-      for (let index = 0; index < ids.length; index += BULK_DELETE_SIZE) {
-        const batch = ids.slice(index, index + BULK_DELETE_SIZE);
-        const result = await postJson(DELETE_ENDPOINT, {
-          thread_ids: batch,
-          account_index: 0,
-          remote: true,
-          local: true
-        });
-        if (Array.isArray(result?.results?.success)) successIds.push(...result.results.success);
-        if (Array.isArray(result?.results?.failed)) failed.push(...result.results.failed);
-      }
+    showConfirmDialog(
+      `Delete ${ids.length} selected remote chat(s)? Confirmed deletes will also be removed from the local archive.`,
+      async () => {
+        state.deleting = true;
+        window.NotionAI?.Chat?.Manager?.renderChatList?.();
+        const successIds = [];
+        const failed = [];
+        try {
+          for (let index = 0; index < ids.length; index += BULK_DELETE_SIZE) {
+            const batch = ids.slice(index, index + BULK_DELETE_SIZE);
+            const result = await postJson(DELETE_ENDPOINT, {
+              thread_ids: batch,
+              account_index: 0,
+              remote: true,
+              local: true
+            });
+            if (Array.isArray(result?.results?.success)) successIds.push(...result.results.success);
+            if (Array.isArray(result?.results?.failed)) failed.push(...result.results.failed);
+          }
 
-      const successSet = new Set(successIds);
-      state.threads = state.threads.filter(thread => !successSet.has(thread.id));
-      state.selectedIds.clear();
-      for (const failedItem of failed) {
-        if (failedItem?.thread_id) state.selectedIds.add(failedItem.thread_id);
+          const successSet = new Set(successIds);
+          state.threads = state.threads.filter(thread => !successSet.has(thread.id));
+          state.selectedIds.clear();
+          for (const failedItem of failed) {
+            if (failedItem?.thread_id) state.selectedIds.add(failedItem.thread_id);
+          }
+          if (state.activeThreadId && successSet.has(state.activeThreadId)) {
+            clearRemoteSelection();
+            renderStatus('Deleted selected archived chat.');
+          }
+          const suffix = failed.length ? ` ${failed.length} failed and remain selected.` : '';
+          console.info(`Deleted ${successIds.length} remote chat(s).${suffix}`, { successIds, failed });
+        } catch (err) {
+          console.warn('Unable to delete selected remote chats', err);
+          renderStatus(`Bulk delete failed: ${err?.message || String(err)}`);
+        } finally {
+          state.deleting = false;
+          window.NotionAI?.Chat?.Manager?.renderChatList?.();
+        }
       }
-      if (state.activeThreadId && successSet.has(state.activeThreadId)) {
-        clearRemoteSelection();
-        renderStatus('Deleted selected archived chat.');
-      }
-      const suffix = failed.length ? ` ${failed.length} failed and remain selected.` : '';
-      console.info(`Deleted ${successIds.length} remote chat(s).${suffix}`, { successIds, failed });
-    } catch (err) {
-      console.warn('Unable to delete selected remote chats', err);
-      renderStatus(`Bulk delete failed: ${err?.message || String(err)}`);
-    } finally {
-      state.deleting = false;
-      window.NotionAI?.Chat?.Manager?.renderChatList?.();
-    }
+    );
   }
 
   async function selectRemoteThread(thread) {
@@ -349,6 +407,51 @@
       renderStatus(err?.message || String(err));
     } finally {
       window.NotionAI.Chat.Manager.renderChatList();
+    }
+  }
+  
+  function handleRemoteChatClick(e, thread) {
+    if (window.NotionAI?.Core?.State?.get?.('isGenerating')) return;
+
+    const searchValue = (document.getElementById('searchInput')?.value || '').trim().toLowerCase();
+    const threads = searchValue
+      ? state.threads.filter(t => String(t.title || t.id).toLowerCase().includes(searchValue))
+      : state.threads;
+
+    if (e.ctrlKey || e.metaKey) {
+      if (state.selectedIds.has(thread.id)) {
+        state.selectedIds.delete(thread.id);
+        if (state.activeThreadId === thread.id) {
+          const loadedArray = Array.from(state.selectedIds);
+          const nextActiveId = loadedArray[loadedArray.length - 1] || null;
+          if (nextActiveId) {
+            const nextActiveThread = state.threads.find(t => t.id === nextActiveId);
+            if (nextActiveThread) selectRemoteThread(nextActiveThread);
+          } else {
+            clearRemoteSelection();
+          }
+        } else {
+          window.NotionAI?.Chat?.Manager?.renderChatList?.();
+        }
+      } else {
+        state.selectedIds.add(thread.id);
+        selectRemoteThread(thread);
+      }
+    } else if (e.shiftKey) {
+      const endIdx = threads.findIndex(t => t.id === thread.id);
+      let startIdx = threads.findIndex(t => t.id === state.activeThreadId);
+      if (startIdx === -1) startIdx = 0;
+
+      const minIdx = Math.min(startIdx, endIdx);
+      const maxIdx = Math.max(startIdx, endIdx);
+      for (let i = minIdx; i <= maxIdx; i++) {
+        state.selectedIds.add(threads[i].id);
+      }
+      selectRemoteThread(thread);
+    } else {
+      state.selectedIds.clear();
+      state.selectedIds.add(thread.id);
+      selectRemoteThread(thread);
     }
   }
 
@@ -458,8 +561,9 @@
       }
 
       const item = document.createElement('div');
-      item.className = `chat-item chat-history-main-item${thread.id === state.activeThreadId ? ' active' : ''}`;
-      item.onclick = () => selectRemoteThread(thread);
+      const isSelected = state.selectedIds.has(thread.id);
+      item.className = `chat-item chat-history-main-item${thread.id === state.activeThreadId ? ' active' : ''}${isSelected ? ' selected' : ''}`;
+      item.onclick = (e) => handleRemoteChatClick(e, thread);
 
       const checkbox = document.createElement('input');
       checkbox.type = 'checkbox';
