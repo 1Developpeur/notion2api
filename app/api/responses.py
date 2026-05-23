@@ -11,6 +11,8 @@ from app.api.chat import create_chat_completion
 from app.core.errors import openai_error
 from app.core.models import normalize_model_id
 from app.schemas import ChatCompletionRequest, ChatMessage
+from app.attachments.normalizer import normalize_responses_input
+from app.attachments.security import AttachmentPolicy, validate_content_type
 
 router = APIRouter()
 
@@ -127,7 +129,23 @@ async def create_response(
     model = normalize_model_id(payload.get("model"))
     if not model:
         openai_error("The 'model' field is required.", "model_required")
-    messages = _responses_input_to_messages(payload.get("input"))
+    try:
+        cleaned_msgs, attachments = normalize_responses_input(payload.get("input"), payload.get("attachments"))
+    except Exception as exc:
+        openai_error(str(exc), "invalid_input")
+
+    policy = AttachmentPolicy.from_env()
+    if attachments and not policy.enabled:
+        openai_error("Attachments are disabled.", "attachments_disabled")
+
+    try:
+        for att in attachments:
+            if att.content_type:
+                validate_content_type(att.content_type, policy)
+    except Exception as exc:
+        openai_error(str(exc), "invalid_attachment")
+
+    messages = [ChatMessage(role=m.get("role"), content=m.get("content")) for m in cleaned_msgs]
     stream = bool(payload.get("stream", False))
 
     chat_req = ChatCompletionRequest(
@@ -137,6 +155,23 @@ async def create_response(
         temperature=payload.get("temperature"),
         conversation_id=payload.get("conversation_id"),
     )
+
+    # Preserve raw attachment data for the delegated chat handler without logging it.
+    request.state._attachments = attachments or None
+
+    if attachments:
+        safe_top_level = []
+        for att in attachments:
+            safe_top_level.append(
+                {
+                    "name": att.name,
+                    "content_type": att.content_type,
+                    "source": att.source,
+                    "url": att.url,
+                    "path": att.path,
+                }
+            )
+        chat_req.attachments = safe_top_level
 
     chat_result = await create_chat_completion(request, chat_req, background_tasks, response)
 

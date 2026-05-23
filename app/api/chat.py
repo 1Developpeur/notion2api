@@ -838,6 +838,11 @@ def _is_client_disconnect_error(exc: BaseException) -> bool:
     return False
 
 
+def _request_state_attachments(request: Request) -> list[Any]:
+    attachments = getattr(request.state, "_attachments", None)
+    return attachments if isinstance(attachments, list) else []
+
+
 async def _handle_lite_request(
     request: Request,
     req_body: ChatCompletionRequest,
@@ -850,6 +855,9 @@ async def _handle_lite_request(
 
     # 提取并规范化消息与附件
     cleaned_msgs, attachments = normalize_chat_messages([m.dict() for m in req_body.messages], getattr(req_body, "attachments", None))
+    state_attachments = _request_state_attachments(request)
+    if state_attachments:
+        attachments = state_attachments
     # Gate feature flag
     policy = AttachmentPolicy.from_env()
     if attachments and not policy.enabled:
@@ -1035,6 +1043,9 @@ async def _handle_standard_request(
 
             # 提取并规范化消息与附件
             cleaned_msgs, attachments = normalize_chat_messages([m.dict() for m in req_body.messages], getattr(req_body, "attachments", None))
+            state_attachments = _request_state_attachments(request)
+            if state_attachments:
+                attachments = state_attachments
             policy = AttachmentPolicy.from_env()
             if attachments and not policy.enabled:
                 openai_error("Attachments are disabled for this server.", "attachments_disabled")
@@ -1364,6 +1375,9 @@ async def create_chat_completion(
 
             # Pass attachments when present
             cleaned_msgs, attachments = normalize_chat_messages([m.dict() for m in req_body.messages], getattr(req_body, "attachments", None))
+            state_attachments = _request_state_attachments(request)
+            if state_attachments:
+                attachments = state_attachments
             if attachments and not AttachmentPolicy.from_env().enabled:
                 openai_error("Attachments are disabled for this server.", "attachments_disabled")
 

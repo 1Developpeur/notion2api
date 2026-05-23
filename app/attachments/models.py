@@ -21,6 +21,9 @@ class InputAttachment:
     path: str = ""
     data: bytes | str = b""
 
+    def __repr__(self) -> str:  # hide raw data to avoid accidental leaks when stringified
+        return f"InputAttachment(name={self.name!r}, content_type={self.content_type!r}, source={self.source!r}, url={self.url!r}, path={self.path!r}, data=<redacted>)"
+
 
 @dataclass(slots=True)
 class LoadedAttachment:
