@@ -843,6 +843,16 @@ def _request_state_attachments(request: Request) -> list[Any]:
     return attachments if isinstance(attachments, list) else []
 
 
+def _attachment_error_response(exc: AttachmentError) -> JSONResponse:
+    return _build_error_response(
+        getattr(exc, "status_code", 400) or 400,
+        code=getattr(exc, "code", "invalid_attachment") or "invalid_attachment",
+        message=str(exc),
+        error_type="invalid_request_error",
+        param=getattr(exc, "param", "attachments") or "attachments",
+    )
+
+
 async def _handle_lite_request(
     request: Request,
     req_body: ChatCompletionRequest,
@@ -981,6 +991,18 @@ async def _handle_lite_request(
                 error_type="account_pool_cooling",
                 suggestion="所有账号暂时冷却中，请等待几秒后重试",
             )
+        except AttachmentError as exc:
+            logger.warning(
+                "Lite mode: Invalid attachment input",
+                extra={
+                    "request_info": {
+                        "event": "lite_invalid_attachment",
+                        "code": getattr(exc, "code", "invalid_attachment"),
+                        "param": getattr(exc, "param", "attachments"),
+                    }
+                },
+            )
+            return _attachment_error_response(exc)
         except HTTPException:
             raise
         except Exception:
@@ -1199,6 +1221,18 @@ async def _handle_standard_request(
                 error_type="account_pool_cooling",
                 suggestion="所有账号暂时冷却中，请等待几秒后重试",
             )
+        except AttachmentError as exc:
+            logger.warning(
+                "Standard mode: Invalid attachment input",
+                extra={
+                    "request_info": {
+                        "event": "standard_invalid_attachment",
+                        "code": getattr(exc, "code", "invalid_attachment"),
+                        "param": getattr(exc, "param", "attachments"),
+                    }
+                },
+            )
+            return _attachment_error_response(exc)
         except HTTPException:
             raise
         except Exception:
@@ -1759,6 +1793,18 @@ async def create_chat_completion(
                 error_type="account_pool_cooling",
                 suggestion="所有账号暂时冷却中，请等待几秒后重试",
             )
+        except AttachmentError as exc:
+            logger.warning(
+                "Invalid attachment input",
+                extra={
+                    "request_info": {
+                        "event": "chat_completion_invalid_attachment",
+                        "code": getattr(exc, "code", "invalid_attachment"),
+                        "param": getattr(exc, "param", "attachments"),
+                    }
+                },
+            )
+            return _attachment_error_response(exc)
         except HTTPException:
             raise
         except Exception:

@@ -26,8 +26,15 @@ class ResponsesAttachmentTests(unittest.TestCase):
 
     def test_no_attachments_preserves_behavior(self):
         payload = {"model": "claude-sonnet4.6", "input": "Hello"}
-        resp = self.client.post("/v1/responses", json=payload, headers=self.auth_headers)
-        self.assertIn(resp.status_code, (200, 201, 202))
+
+        with patch("app.notion_client.NotionOpusAPI.stream_response") as mock_stream:
+            mock_stream.return_value = iter([{"type": "final_content", "text": "ok"}])
+            resp = self.client.post("/v1/responses", json=payload, headers=self.auth_headers)
+
+        self.assertEqual(resp.status_code, 200)
+        mock_stream.assert_called()
+        attachments = mock_stream.call_args.kwargs.get("attachments")
+        self.assertIsNone(attachments)
 
     def test_input_file_normalized_and_passed(self):
         input_value = [{"type": "message", "role": "user", "content": [{"type": "text", "text": "Hi"}, {"type": "input_file", "filename": "a.csv", "file_data": "YQ"}]}]
@@ -72,22 +79,40 @@ class ResponsesAttachmentTests(unittest.TestCase):
         self.assertEqual(attachments[0].data, "YQ==")
 
     def test_attachments_disabled_returns_400(self):
-        # simulate attachments disabled
-        orig = AttachmentPolicy.from_env()
-        try:
-            # monkeypatch env to disable
-            import os
-
-            os.environ["ENABLE_ATTACHMENTS"] = "false"
+        with patch.dict("os.environ", {"ENABLE_ATTACHMENTS": "false"}):
             policy = AttachmentPolicy.from_env()
             self.assertFalse(policy.enabled)
             payload = {"model": "claude-sonnet4.6", "input": [{"type": "message", "role": "user", "content": [{"type": "input_file", "filename": "a.csv", "file_data": "YQ"}]}]}
             resp = self.client.post("/v1/responses", json=payload, headers=self.auth_headers)
-            self.assertEqual(resp.status_code, 400)
-            self.assertIn("attachments_disabled", resp.text)
-        finally:
-            if "ENABLE_ATTACHMENTS" in os.environ:
-                del os.environ["ENABLE_ATTACHMENTS"]
+        self.assertEqual(resp.status_code, 400)
+        self.assertIn("attachments_disabled", resp.text)
+
+    def test_enabled_invalid_base64_returns_400(self):
+        payload = {
+            "model": "claude-sonnet4.6",
+            "input": [
+                {
+                    "type": "message",
+                    "role": "user",
+                    "content": [
+                        {"type": "input_text", "text": "Summarize"},
+                        {
+                            "type": "input_file",
+                            "filename": "bad.csv",
+                            "file_data": "YQ",
+                            "content_type": "text/csv",
+                        },
+                    ],
+                }
+            ],
+        }
+        with patch.dict("os.environ", {"ENABLE_ATTACHMENTS": "true"}):
+            resp = self.client.post("/v1/responses", json=payload, headers=self.auth_headers)
+
+        self.assertEqual(resp.status_code, 400)
+        code = resp.json().get("error", {}).get("code")
+        self.assertTrue(code == "invalid_request_error" or code.startswith("invalid_attachment"), code)
+        self.assertNotIn("YQ", resp.text)
 
     def test_unsupported_mime_returns_400(self):
         input_value = [{"type": "message", "role": "user", "content": [{"type": "input_file", "filename": "a.csv", "file_data": "YQ", "content_type": "application/zip"}]}]
