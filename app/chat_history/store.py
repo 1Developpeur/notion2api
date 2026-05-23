@@ -146,7 +146,9 @@ def _display_message(message: dict[str, Any]) -> dict[str, Any] | None:
     text = visible_message_text(raw) if raw else str(message.get("text") or "").strip()
     if not text:
         return None
-    role = visible_message_role(raw) if raw else str(message.get("role") or "").strip()
+    role = visible_message_role(raw) if raw else None
+    if not role:
+        role = str(message.get("role") or "").strip()
     if not role:
         return None
     if role not in {"user", "assistant"}:
