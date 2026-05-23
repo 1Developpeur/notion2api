@@ -13,6 +13,8 @@ import requests
 import urllib3
 
 from app.logger import logger
+from app.attachments.notion_upload import NotionAttachmentUploader, NotionAttachmentUploadError
+from app.attachments.models import UploadedAttachment
 from app.model_registry import get_notion_model
 from app.stream_parser_safe import parse_stream
 
@@ -349,6 +351,18 @@ class NotionOpusAPI:
                         return item.get("url") or ""
         raise NotionUpstreamError("Signed URL not found in response", retriable=False, response_excerpt=str(body)[:300])
 
+    def _build_attachment_transcript_steps(self, uploaded_attachments: list[UploadedAttachment]) -> list[dict[str, Any]]:
+        steps: list[dict[str, Any]] = []
+        for uploaded in uploaded_attachments:
+            step_value = {
+                "fileName": uploaded.name,
+                "contentType": uploaded.content_type,
+                "attachmentUrl": uploaded.attachment_url,
+                "metadata": uploaded.metadata or {},
+            }
+            steps.append({"type": "attachment", "value": step_value})
+        return steps
+
     def fetch_chat_history(self, limit: int = 100, max_pages: int = 5) -> dict[str, Any]:
         """Best-effort pull of Notion AI chat transcripts for the current user."""
         endpoint = "https://www.notion.so/api/v3/getInferenceTranscriptsForUser"
@@ -572,7 +586,7 @@ class NotionOpusAPI:
         """Mark one remote Notion AI thread inactive."""
         self.delete_threads([thread_id])
 
-    def stream_response(self, transcript: list, thread_id: Optional[str] = None) -> Generator[dict[str, Any], None, None]:
+    def stream_response(self, transcript: list, thread_id: Optional[str] = None, attachments: list | None = None) -> Generator[dict[str, Any], None, None]:
         """
         发起 Notion API 请求并返回结构化流生成器。
         接收完整的 transcript 列表作为参数。
@@ -599,6 +613,30 @@ class NotionOpusAPI:
 
         # 保存 thread_id 以便外部访问
         self.current_thread_id = thread_id
+
+        uploaded_attachments: list[UploadedAttachment] = []
+        if attachments:
+            try:
+                uploader = NotionAttachmentUploader(self)
+                uploaded_attachments, resolved_thread_id = uploader.upload_attachments(
+                    thread_id=thread_id,
+                    attachments=list(attachments),
+                    create_thread=request_profile["create_thread"],
+                )
+                if resolved_thread_id and resolved_thread_id != thread_id:
+                    thread_id = resolved_thread_id
+                    self.current_thread_id = thread_id
+            except NotionAttachmentUploadError as exc:
+                raise NotionUpstreamError(
+                    "Attachment upload staging failed.",
+                    status_code=502,
+                    retriable=True,
+                    response_excerpt=str(getattr(exc, "reason", "attachment_upload_failed"))[:300],
+                ) from exc
+
+            attachment_steps = self._build_attachment_transcript_steps(uploaded_attachments)
+            if attachment_steps:
+                notion_transcript = notion_transcript + attachment_steps
 
         if request_profile["precreate_thread"] and should_create_thread:
             if not self._create_thread(thread_id, thread_type):
@@ -648,6 +686,16 @@ class NotionOpusAPI:
             },
             "transcript": notion_transcript,
         }
+        if uploaded_attachments:
+            payload["attachments"] = [
+                {
+                    "fileName": uploaded.name,
+                    "contentType": uploaded.content_type,
+                    "attachmentUrl": uploaded.attachment_url,
+                    "metadata": uploaded.metadata or {},
+                }
+                for uploaded in uploaded_attachments
+            ]
         if request_profile["include_debug_overrides"]:
             payload["debugOverrides"] = {
                 "emitAgentSearchExtractedResults": True,
