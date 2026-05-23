@@ -170,6 +170,56 @@ class NotionOpusAPI:
             "user-agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/145.0.0.0 Safari/537.36",
         }
 
+    def _normalize_upload_descriptor(self, body: Any) -> dict[str, Any]:
+        if not isinstance(body, dict):
+            raise NotionUpstreamError("Upload descriptor response malformed", retriable=False, response_excerpt=str(body)[:300])
+
+        upload_url = (
+            body.get("upload_url")
+            or body.get("uploadUrl")
+            or body.get("signedUploadPostUrl")
+            or body.get("signed_upload_post_url")
+            or body.get("signedUploadUrl")
+            or body.get("signed_upload_url")
+        )
+
+        fields = body.get("fields") or body.get("formFields") or body.get("postFields") or {}
+        if fields is None:
+            fields = {}
+        if not isinstance(fields, dict):
+            raise NotionUpstreamError("Upload descriptor fields malformed", retriable=False, response_excerpt=str(body)[:300])
+
+        file_id = body.get("file_id") or body.get("fileId") or body.get("id")
+        if not file_id and isinstance(body.get("file"), dict):
+            file_id = body["file"].get("id")
+
+        attachment_url = (
+            body.get("attachment_url")
+            or body.get("attachmentUrl")
+            or body.get("url")
+            or body.get("signedGetUrl")
+            or body.get("signed_get_url")
+        )
+
+        metadata = body.get("metadata") or {}
+        if metadata is None:
+            metadata = {}
+        if not isinstance(metadata, dict):
+            metadata = {"value": metadata}
+
+        canonical = {
+            "upload_url": str(upload_url or ""),
+            "fields": fields,
+            "file_id": str(file_id or ""),
+            "attachment_url": str(attachment_url or ""),
+            "metadata": metadata,
+        }
+
+        if not canonical["upload_url"] and not canonical["file_id"] and not canonical["attachment_url"]:
+            raise NotionUpstreamError("Upload descriptor missing required fields", retriable=False, response_excerpt=str(body)[:300])
+
+        return canonical
+
     # --- Attachment upload adapter methods -------------------------------------------------
     def request_upload_descriptor(self, *, name: str, content_type: str, size: int, thread_id: str | None, create_thread: bool) -> dict[str, Any]:
         """Request an upload descriptor from Notion upstream for staging an attachment.
@@ -200,15 +250,7 @@ class NotionOpusAPI:
         except Exception as exc:
             raise NotionUpstreamError("Upload descriptor response invalid JSON", status_code=resp.status_code, retriable=True, response_excerpt=(resp.text or "")[:300]) from exc
 
-        # Accept either direct fields or nested shape depending on upstream
-        descriptor = {}
-        # prefer explicit fields
-        for key in ("uploadUrl", "upload_url", "fields", "fileId", "file_id", "attachmentUrl", "attachment_url"):
-            if key in body:
-                descriptor_key = key.replace("Url", "_url").replace("fileId", "file_id").replace("attachment_url", "attachment_url")
-        # best-effort copy
-        descriptor.update(body if isinstance(body, dict) else {})
-        return descriptor
+        return self._normalize_upload_descriptor(body)
 
     def perform_multipart_upload(self, *, descriptor: dict[str, Any], name: str, data: bytes, content_type: str) -> None:
         """Perform multipart upload to a signed upload URL using descriptor data.

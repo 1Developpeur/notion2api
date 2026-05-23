@@ -1,6 +1,5 @@
 import base64
 import unittest
-from unittest.mock import Mock
 
 from app.attachments.models import InputAttachment
 from app.attachments.notion_upload import NotionAttachmentUploader, NotionAttachmentUploadError
