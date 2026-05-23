@@ -1,19 +1,20 @@
 (() => {
   const THREADS_ENDPOINT = '/v1/chat-history/threads';
   const DELETE_ENDPOINT = '/v1/chat-history/threads/delete';
-  const PAGE_SIZE = 200;
+  const PAGE_SIZE = 50;
   const BULK_DELETE_SIZE = 200;
   const REMOTE_ID_PREFIX = 'remote-chat-history:';
   const state = {
     threads: [],
     selectedIds: new Set(),
-    filterText: '',
     offset: 0,
-    hasMore: false,
+    hasMore: true,
     loading: false,
     deleting: false,
     activeThreadId: null,
-    patched: false
+    patched: false,
+    showDuplicatesOnly: false,
+    hydrating: false
   };
 
   function getBaseUrl() {
@@ -48,13 +49,17 @@
     const style = document.createElement('style');
     style.id = 'chatHistoryMainStyles';
     style.textContent = `
-      .chat-history-main-day{font-size:10px;text-transform:uppercase;color:var(--text-tertiary);letter-spacing:.08em;padding:8px 16px 3px}
-      .chat-history-main-toolbar{display:flex;gap:6px;align-items:center;padding:3px 12px 7px;flex-wrap:wrap}
+      .chat-section-header{position:sticky;top:0;background:var(--bg-sidebar);z-index:11;padding:12px 16px 4px;line-height:1.2}
+      .chat-history-main-day{font-size:10px;text-transform:uppercase;color:var(--text-tertiary);letter-spacing:.08em;padding:8px 16px 3px;display:flex;justify-content:space-between;align-items:center}
+      .chat-history-main-day-hydrate{background:none;border:none;color:var(--accent,#7c3aed);font-size:9px;cursor:pointer;padding:0;text-transform:none;letter-spacing:normal}
+      .chat-history-main-day-hydrate:hover:not(:disabled){text-decoration:underline}
+      .chat-history-main-day-hydrate:disabled{opacity:0.5;cursor:not-allowed}
+      .chat-history-main-toolbar{position:sticky;top:29px;background:var(--bg-sidebar);z-index:10;display:flex;gap:6px;align-items:center;padding:3px 12px 7px;flex-wrap:wrap;border-bottom:1px solid var(--border)}
       .chat-history-main-toolbar button{border:1px solid var(--border);background:transparent;color:var(--text-secondary);border-radius:4px;font-size:11px;padding:4px 6px;line-height:1.1}
       .chat-history-main-toolbar button:hover:not(:disabled){background:var(--bg-hover);color:var(--text)}
       .chat-history-main-toolbar button:disabled{opacity:.45;cursor:not-allowed}
-      .chat-history-main-filter{width:100%;box-sizing:border-box;border:1px solid var(--border);border-radius:4px;background:transparent;color:var(--text);font-size:12px;padding:6px 8px;outline:none}
-      .chat-history-main-filter:focus{border-color:var(--accent,#7c3aed)}
+      .chat-history-main-toolbar label{font-size:11px;color:var(--text-secondary);display:flex;align-items:center;gap:4px;cursor:pointer;user-select:none}
+      .chat-history-main-toolbar label input{margin:0;cursor:pointer}
       .chat-history-main-summary{width:100%;font-size:10px;color:var(--text-tertiary);padding:0 1px}
       .chat-history-main-delete{color:#a94442!important;border-color:#a94442!important}
       .chat-item.chat-history-main-item{align-items:flex-start;gap:8px;padding-top:7px;padding-bottom:7px}
@@ -63,6 +68,8 @@
       .chat-history-main-meta{font-size:10px;color:var(--text-tertiary);overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
       .chat-history-main-dot{width:7px;height:7px;border-radius:999px;margin-top:6px;flex-shrink:0;background:var(--text-tertiary);opacity:.7}
       .chat-history-main-dot.hydrated{background:#2e7d32;opacity:1}
+      .chat-history-main-dot.hydrating{background:#7c3aed;opacity:1;animation:chat-dot-pulse 1s infinite alternate}
+      @keyframes chat-dot-pulse{0%{opacity:.3}100%{opacity:1}}
       .chat-history-main-empty{font-size:12px;color:var(--text-tertiary);padding:8px 12px;line-height:1.4}
       .chat-history-main-status{max-width:720px;margin:32px auto;padding:0 24px;color:var(--text-secondary);font-size:14px;line-height:1.6}
       .chat-history-steps{max-width:720px;margin:18px auto;color:var(--text-secondary);font-size:13px}
@@ -202,8 +209,25 @@
     }
   }
 
-  function matchesFilter(thread) {
-    const query = state.filterText.trim().toLowerCase();
+  function getTitleCounts() {
+    const counts = {};
+    for (const thread of state.threads) {
+      const title = String(thread.title || '').trim().toLowerCase();
+      if (!title) continue;
+      counts[title] = (counts[title] || 0) + 1;
+    }
+    return counts;
+  }
+
+  function matchesFilter(thread, titleCounts) {
+    if (state.showDuplicatesOnly) {
+      const title = String(thread.title || '').trim().toLowerCase();
+      if (!title || (titleCounts[title] || 0) <= 1) {
+        return false;
+      }
+    }
+    const searchInput = document.getElementById('searchInput');
+    const query = (searchInput ? searchInput.value : '').trim().toLowerCase();
     if (!query) return true;
     const haystack = [
       thread?.id,
@@ -218,7 +242,8 @@
   }
 
   function getVisibleThreads() {
-    return state.threads.filter(matchesFilter);
+    const titleCounts = getTitleCounts();
+    return state.threads.filter(t => matchesFilter(t, titleCounts));
   }
 
   function selectRemoteCheckbox(threadId, checked) {
@@ -227,35 +252,65 @@
     window.NotionAI?.Chat?.Manager?.renderChatList?.();
   }
 
-  async function loadAllRemoteThreads() {
+  async function loadInitialRemoteThreads() {
     if (state.loading) return;
     state.loading = true;
+    state.offset = 0;
+    state.hasMore = true;
+    state.threads = [];
     window.NotionAI?.Chat?.Manager?.renderChatList?.();
     try {
-      const allThreads = [];
-      const seen = new Set();
-      let offset = 0;
-      while (true) {
-        const data = await fetchJson(`${THREADS_ENDPOINT}?limit=${PAGE_SIZE}&offset=${offset}`);
-        const page = Array.isArray(data?.threads) ? data.threads : [];
-        for (const thread of page) {
-          if (!thread?.id || seen.has(thread.id)) continue;
-          seen.add(thread.id);
-          allThreads.push(thread);
-        }
-        offset += page.length;
-        if (page.length < PAGE_SIZE) break;
-      }
-      state.threads = allThreads;
-      state.offset = allThreads.length;
-      state.hasMore = false;
+      const data = await fetchJson(`${THREADS_ENDPOINT}?limit=${PAGE_SIZE}&offset=0`);
+      const page = Array.isArray(data?.threads) ? data.threads : [];
+      state.threads = page.filter(t => t?.id);
+      state.offset = page.length;
+      state.hasMore = page.length === PAGE_SIZE;
       pruneSelectionToLoadedThreads();
     } catch (err) {
-      console.warn('Unable to load all remote chat history', err);
-      renderStatus(`Unable to load all remote chats: ${err?.message || String(err)}`);
+      console.warn('Unable to load initial remote threads', err);
+      renderStatus(`Unable to load remote chats: ${err?.message || String(err)}`);
     } finally {
       state.loading = false;
       window.NotionAI?.Chat?.Manager?.renderChatList?.();
+    }
+  }
+
+  async function loadNextBatch() {
+    if (state.loading || !state.hasMore) return;
+    state.loading = true;
+    const chatList = document.getElementById('chatList');
+    const savedScrollTop = chatList ? chatList.scrollTop : 0;
+    window.NotionAI?.Chat?.Manager?.renderChatList?.();
+    try {
+      const data = await fetchJson(`${THREADS_ENDPOINT}?limit=${PAGE_SIZE}&offset=${state.offset}`);
+      const page = Array.isArray(data?.threads) ? data.threads : [];
+      const seen = new Set(state.threads.map(t => t.id));
+      const newThreads = [];
+      for (const thread of page) {
+        if (thread?.id && !seen.has(thread.id)) {
+          newThreads.push(thread);
+        }
+      }
+      state.threads = [...state.threads, ...newThreads];
+      state.offset += page.length;
+      state.hasMore = page.length === PAGE_SIZE;
+      pruneSelectionToLoadedThreads();
+    } catch (err) {
+      console.warn('Unable to load next batch of remote threads', err);
+    } finally {
+      state.loading = false;
+      window.NotionAI?.Chat?.Manager?.renderChatList?.();
+      if (chatList) {
+        chatList.scrollTop = savedScrollTop;
+      }
+    }
+  }
+
+  function handleScroll(e) {
+    const el = e.target;
+    if (state.loading || !state.hasMore) return;
+    if (el.scrollHeight - el.scrollTop - el.clientHeight < 50) {
+      loadNextBatch();
     }
   }
 
@@ -375,6 +430,34 @@
     );
   }
 
+  async function hydrateThreads(threadsToHydrate) {
+    if (state.hydrating) return;
+    state.hydrating = true;
+    window.NotionAI?.Chat?.Manager?.renderChatList?.();
+    try {
+      for (const thread of threadsToHydrate) {
+        if (thread.hydrated || Number(thread.message_count || 0) > 0) continue;
+        updateThread(thread.id, { hydrating: true });
+        window.NotionAI?.Chat?.Manager?.renderChatList?.();
+        try {
+          const hydration = await postJson(`${THREADS_ENDPOINT}/${encodeURIComponent(thread.id)}/hydrate`);
+          const count = Number(hydration?.thread?.message_count ?? thread.message_count ?? 0);
+          updateThread(thread.id, {
+            message_count: count,
+            hydrated: Boolean(hydration?.thread?.hydrated || count > 0),
+            hydrating: false
+          });
+        } catch (err) {
+          console.warn(`Failed to hydrate thread ${thread.id}`, err);
+          updateThread(thread.id, { hydrating: false });
+        }
+      }
+    } finally {
+      state.hydrating = false;
+      window.NotionAI?.Chat?.Manager?.renderChatList?.();
+    }
+  }
+
   async function selectRemoteThread(thread) {
     if (window.NotionAI?.Core?.State?.get?.('isGenerating')) return;
     state.activeThreadId = thread.id;
@@ -413,10 +496,7 @@
   function handleRemoteChatClick(e, thread) {
     if (window.NotionAI?.Core?.State?.get?.('isGenerating')) return;
 
-    const searchValue = (document.getElementById('searchInput')?.value || '').trim().toLowerCase();
-    const threads = searchValue
-      ? state.threads.filter(t => String(t.title || t.id).toLowerCase().includes(searchValue))
-      : state.threads;
+    const threads = getVisibleThreads();
 
     if (e.ctrlKey || e.metaKey) {
       if (state.selectedIds.has(thread.id)) {
@@ -459,7 +539,10 @@
     if (!chatList) return;
     const threads = getVisibleThreads();
 
-    if (!state.threads.length && !state.loading && !state.filterText) return;
+    const searchInput = document.getElementById('searchInput');
+    const isSearchActive = Boolean((searchInput ? searchInput.value : '').trim());
+
+    if (!state.threads.length && !state.loading && !isSearchActive && !state.showDuplicatesOnly) return;
 
     const header = document.createElement('div');
     header.className = 'chat-section-header';
@@ -469,35 +552,25 @@
     const toolbar = document.createElement('div');
     toolbar.className = 'chat-history-main-toolbar';
 
-    const filter = document.createElement('input');
-    filter.type = 'search';
-    filter.className = 'chat-history-main-filter';
-    filter.placeholder = 'Filter remote chat history by title, id, preview, or date';
-    filter.value = state.filterText;
-    filter.addEventListener('click', event => event.stopPropagation());
-    filter.addEventListener('input', event => {
-      state.filterText = String(event.target.value || '');
+    const dupLabel = document.createElement('label');
+    const dupCheckbox = document.createElement('input');
+    dupCheckbox.type = 'checkbox';
+    dupCheckbox.checked = state.showDuplicatesOnly;
+    dupCheckbox.addEventListener('change', (e) => {
+      state.showDuplicatesOnly = e.target.checked;
       window.NotionAI?.Chat?.Manager?.renderChatList?.();
-      const nextFilter = document.querySelector('.chat-history-main-filter');
-      if (nextFilter) {
-        nextFilter.focus();
-        nextFilter.setSelectionRange(nextFilter.value.length, nextFilter.value.length);
-      }
     });
+    dupLabel.appendChild(dupCheckbox);
+    dupLabel.appendChild(document.createTextNode('Duplicates'));
 
     const selectedCount = state.selectedIds.size;
     const visibleCount = threads.length;
 
-    const summary = document.createElement('div');
-    summary.className = 'chat-history-main-summary';
-    const filterText = state.filterText.trim() ? `${visibleCount} matched` : `${visibleCount} visible`;
-    summary.textContent = `${filterText}; ${state.threads.length} loaded; ${selectedCount} selected`;
-
     const selectBtn = document.createElement('button');
     selectBtn.type = 'button';
     selectBtn.textContent = 'Select filtered';
-    selectBtn.disabled = state.deleting || state.loading || !state.threads.length;
-    selectBtn.title = 'Select every currently matching conversation. With no filter, every loaded conversation matches.';
+    selectBtn.disabled = state.deleting || state.loading || !threads.length;
+    selectBtn.title = 'Select every currently matching conversation.';
     selectBtn.addEventListener('click', event => {
       event.stopPropagation();
       selectFilteredRemoteThreads();
@@ -506,10 +579,14 @@
     const clearBtn = document.createElement('button');
     clearBtn.type = 'button';
     clearBtn.textContent = 'Clear';
-    clearBtn.disabled = state.deleting || (!selectedCount && !state.filterText);
+    clearBtn.disabled = state.deleting || (!selectedCount && !isSearchActive && !state.showDuplicatesOnly);
     clearBtn.addEventListener('click', event => {
       event.stopPropagation();
-      if (state.filterText) state.filterText = '';
+      state.showDuplicatesOnly = false;
+      if (searchInput) {
+        searchInput.value = '';
+        searchInput.dispatchEvent(new Event('input', { bubbles: true }));
+      }
       clearSelectedRemoteThreads();
     });
 
@@ -523,11 +600,16 @@
       deleteSelectedRemoteThreads();
     });
 
-    toolbar.appendChild(filter);
-    toolbar.appendChild(summary);
+    const summary = document.createElement('div');
+    summary.className = 'chat-history-main-summary';
+    const filterText = (isSearchActive || state.showDuplicatesOnly) ? `${visibleCount} matched` : `${visibleCount} visible`;
+    summary.textContent = `${filterText}; ${state.threads.length} loaded; ${selectedCount} selected`;
+
+    toolbar.appendChild(dupLabel);
     toolbar.appendChild(selectBtn);
     toolbar.appendChild(clearBtn);
     toolbar.appendChild(deleteBtn);
+    toolbar.appendChild(summary);
     chatList.appendChild(toolbar);
 
     if (state.loading && !state.threads.length) {
@@ -535,7 +617,7 @@
       loading.className = 'chat-history-main-status';
       loading.style.margin = '8px 12px';
       loading.style.padding = '0';
-      loading.textContent = 'Loading all remote chats...';
+      loading.textContent = 'Loading remote chats...';
       chatList.appendChild(loading);
       return;
     }
@@ -543,7 +625,7 @@
     if (!threads.length) {
       const empty = document.createElement('div');
       empty.className = 'chat-history-main-empty';
-      empty.textContent = state.filterText.trim()
+      empty.textContent = (isSearchActive || state.showDuplicatesOnly)
         ? 'No remote chats match this filter.'
         : 'No remote chats are loaded.';
       chatList.appendChild(empty);
@@ -554,9 +636,36 @@
       const label = dayLabel(thread);
       if (label !== currentDay) {
         currentDay = label;
+        const dayThreads = threads.filter(t => dayLabel(t) === label);
+        const unhydratedDayThreads = dayThreads.filter(t => !t.hydrated && Number(t.message_count || 0) === 0);
+
         const day = document.createElement('div');
         day.className = 'chat-history-main-day';
-        day.textContent = label;
+        day.style.display = 'flex';
+        day.style.justifyContent = 'space-between';
+        day.style.alignItems = 'center';
+
+        const labelSpan = document.createElement('span');
+        labelSpan.textContent = label;
+        day.appendChild(labelSpan);
+
+        if (unhydratedDayThreads.length > 0) {
+          const hydrateAllBtn = document.createElement('button');
+          hydrateAllBtn.type = 'button';
+          hydrateAllBtn.className = 'chat-history-main-day-hydrate';
+          hydrateAllBtn.textContent = `Hydrate all (${unhydratedDayThreads.length})`;
+          if (state.hydrating) {
+            hydrateAllBtn.disabled = true;
+            hydrateAllBtn.style.opacity = '0.5';
+            hydrateAllBtn.style.cursor = 'not-allowed';
+          }
+          hydrateAllBtn.onclick = (e) => {
+            e.stopPropagation();
+            hydrateThreads(unhydratedDayThreads);
+          };
+          day.appendChild(hydrateAllBtn);
+        }
+
         chatList.appendChild(day);
       }
 
@@ -588,8 +697,13 @@
       meta.textContent = count > 0 ? `${count} messages` : 'metadata only';
 
       const dot = document.createElement('span');
-      dot.className = `chat-history-main-dot${Boolean(thread.hydrated || count > 0) ? ' hydrated' : ''}`;
-      dot.title = count > 0 ? 'Hydrated' : 'Metadata only';
+      if (thread.hydrating) {
+        dot.className = 'chat-history-main-dot hydrating';
+        dot.title = 'Hydrating...';
+      } else {
+        dot.className = `chat-history-main-dot${Boolean(thread.hydrated || count > 0) ? ' hydrated' : ''}`;
+        dot.title = count > 0 ? 'Hydrated' : 'Metadata only';
+      }
 
       text.appendChild(title);
       text.appendChild(meta);
@@ -598,10 +712,19 @@
       item.appendChild(dot);
       chatList.appendChild(item);
     });
+
+    if (state.loading && state.threads.length > 0) {
+      const loadingIndicator = document.createElement('div');
+      loadingIndicator.className = 'chat-history-main-status';
+      loadingIndicator.style.margin = '8px 12px';
+      loadingIndicator.style.padding = '0';
+      loadingIndicator.textContent = 'Loading more chats...';
+      chatList.appendChild(loadingIndicator);
+    }
   }
 
   async function refresh() {
-    await loadAllRemoteThreads();
+    await loadInitialRemoteThreads();
   }
 
   function patchChatManager() {
@@ -612,8 +735,32 @@
     const originalSelect = manager.selectChat.bind(manager);
 
     manager.renderChatList = function patchedRenderChatList(...args) {
+      const chatList = document.getElementById('chatList');
+      const savedScrollTop = chatList ? chatList.scrollTop : 0;
+
       originalRender(...args);
-      renderRemoteChats(document.getElementById('chatList'));
+
+      const newChatList = document.getElementById('chatList');
+      if (newChatList) {
+        if (!newChatList.dataset.patchedScroll) {
+          newChatList.dataset.patchedScroll = 'true';
+          newChatList.addEventListener('scroll', handleScroll);
+        }
+        
+        const searchInput = document.getElementById('searchInput');
+        if (searchInput && !searchInput.dataset.patchedSearch) {
+          searchInput.dataset.patchedSearch = 'true';
+          searchInput.addEventListener('input', () => {
+            window.NotionAI?.Chat?.Manager?.renderChatList?.();
+          });
+        }
+      }
+
+      renderRemoteChats(newChatList);
+
+      if (newChatList) {
+        newChatList.scrollTop = savedScrollTop;
+      }
     };
     manager.startNewChat = function patchedStartNewChat(...args) {
       clearRemoteSelection();
