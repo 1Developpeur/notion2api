@@ -131,6 +131,20 @@ def _top_level_attachment(item: Any) -> InputAttachment | None:
     return _attachment_from_part(normalized)
 
 
+def _attachment_signature(attachment: InputAttachment) -> tuple[Any, ...]:
+    data_value = attachment.data
+    if isinstance(data_value, bytes):
+        data_value = data_value.decode("utf-8", errors="ignore")
+    return (
+        str(attachment.source or ""),
+        str(attachment.name or ""),
+        str(attachment.content_type or ""),
+        str(attachment.url or ""),
+        str(attachment.path or ""),
+        str(data_value or ""),
+    )
+
+
 def _extract_text_and_attachments(content: Any) -> tuple[str, list[InputAttachment]]:
     if content is None:
         return "", []
@@ -201,7 +215,9 @@ def normalize_chat_messages(
 
     for item in top_level_attachments or []:
         attachment = _top_level_attachment(item)
-        if attachment is not None:
+        if attachment is not None and _attachment_signature(attachment) not in {
+            _attachment_signature(existing) for existing in attachments
+        }:
             attachments.append(attachment)
 
     _append_attachment_fallback(normalized_messages, attachments)

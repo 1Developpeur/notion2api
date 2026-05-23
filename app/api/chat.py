@@ -17,6 +17,9 @@ from app.config import is_lite_mode
 from app.logger import logger
 from app.model_registry import is_supported_model, list_available_models
 from app.notion_client import NotionUpstreamError
+from app.attachments.normalizer import normalize_chat_messages
+from app.attachments.security import AttachmentPolicy
+from app.attachments.errors import AttachmentError
 from app.schemas import (
     ChatCompletionRequest,
     ChatCompletionResponse,
@@ -845,6 +848,15 @@ async def _handle_lite_request(
     req_body.model = _resolve_request_model(req_body.model)
     assert req_body.model is not None
 
+    # 提取并规范化消息与附件
+    cleaned_msgs, attachments = normalize_chat_messages([m.dict() for m in req_body.messages], getattr(req_body, "attachments", None))
+    # Gate feature flag
+    policy = AttachmentPolicy.from_env()
+    if attachments and not policy.enabled:
+        openai_error("Attachments are disabled for this server.", "attachments_disabled")
+
+    # 将清理后的消息注入到请求体以复用现有逻辑
+    req_body.messages = [ChatMessage(**m) for m in cleaned_msgs]
     # 提取用户问题
     user_prompt = _prepare_messages_lite(req_body)
 
@@ -860,7 +872,7 @@ async def _handle_lite_request(
             transcript = build_lite_transcript(user_prompt, req_body.model)
 
             # 调用 Notion API（不使用 thread_id）
-            stream_gen = client.stream_response(transcript, thread_id=None)
+            stream_gen = client.stream_response(transcript, thread_id=None, attachments=attachments if attachments else None)
             first_item = next(stream_gen, None)
 
             if first_item is None:
@@ -1021,17 +1033,23 @@ async def _handle_standard_request(
         try:
             client = pool.get_client()
 
+            # 提取并规范化消息与附件
+            cleaned_msgs, attachments = normalize_chat_messages([m.dict() for m in req_body.messages], getattr(req_body, "attachments", None))
+            policy = AttachmentPolicy.from_env()
+            if attachments and not policy.enabled:
+                openai_error("Attachments are disabled for this server.", "attachments_disabled")
+
             # 构建 Standard transcript（完整上下文）
             # 从 client 提取账号信息
             account = {
                 "user_id": client.user_id,
                 "space_id": client.space_id,
             }
-            messages = [msg.dict() for msg in req_body.messages]
+            messages = cleaned_msgs
             transcript = build_standard_transcript(messages, req_body.model, account)
 
             # 调用 Notion API（不使用 thread_id，让 Notion ��动处理）
-            stream_gen = client.stream_response(transcript, thread_id=None)
+            stream_gen = client.stream_response(transcript, thread_id=None, attachments=attachments if attachments else None)
             first_item = next(stream_gen, None)
 
             if first_item is None:
@@ -1344,7 +1362,12 @@ async def create_chat_completion(
             # 获取或创建 thread_id 以保持对话上下文
             thread_id = manager.get_conversation_thread_id(conversation_id)
 
-            stream_gen = client.stream_response(transcript, thread_id=thread_id)
+            # Pass attachments when present
+            cleaned_msgs, attachments = normalize_chat_messages([m.dict() for m in req_body.messages], getattr(req_body, "attachments", None))
+            if attachments and not AttachmentPolicy.from_env().enabled:
+                openai_error("Attachments are disabled for this server.", "attachments_disabled")
+
+            stream_gen = client.stream_response(transcript, thread_id=thread_id, attachments=attachments if attachments else None)
             first_item = next(stream_gen, None)
 
             # 保存 thread_id（如果是新对话）
