@@ -3,7 +3,7 @@ import unittest
 from unittest.mock import Mock
 
 from app.attachments.models import InputAttachment
-from app.attachments.notion_upload import NotionAttachmentUploader
+from app.attachments.notion_upload import NotionAttachmentUploader, NotionAttachmentUploadError
 
 
 class FakeNotionClient:
@@ -62,8 +62,71 @@ class NotionAttachmentUploadTests(unittest.TestCase):
         data_b64 = base64.b64encode(b"%PDF-1.4\n%fakepdf\n").decode()
         att = InputAttachment(name="bad.pdf", content_type="application/pdf", source="inline_data", data=data_b64)
 
-        with self.assertRaises(RuntimeError):
+        with self.assertRaises(NotionAttachmentUploadError):
             uploader.upload_attachments(thread_id="t", attachments=[att], create_thread=False)
+
+    def test_missing_client_method_fails(self):
+        # client missing required methods should fail closed
+        class IncompleteClient:
+            pass
+
+        client = IncompleteClient()
+        uploader = NotionAttachmentUploader(notion_client=client, poll_interval=0.001)
+        data_b64 = base64.b64encode(b"hello,world\n").decode()
+        att = InputAttachment(name="greet.csv", content_type="text/csv", source="inline_data", data=data_b64)
+
+        with self.assertRaises(NotionAttachmentUploadError):
+            uploader.upload_attachments(thread_id="t", attachments=[att], create_thread=False)
+
+    def test_incomplete_descriptor_fails(self):
+        # descriptor missing upload_url and file_id should be rejected
+        class BadDescriptorClient(FakeNotionClient):
+            def request_upload_descriptor(self, name, content_type, size, thread_id, create_thread):
+                return {"fields": {}}  # incomplete
+
+        client = BadDescriptorClient()
+        uploader = NotionAttachmentUploader(notion_client=client, poll_interval=0.001)
+        data_b64 = base64.b64encode(b"hello,world\n").decode()
+        att = InputAttachment(name="greet.csv", content_type="text/csv", source="inline_data", data=data_b64)
+
+        with self.assertRaises(NotionAttachmentUploadError):
+            uploader.upload_attachments(thread_id="t", attachments=[att], create_thread=False)
+
+    def test_multipart_upload_failure_propagates(self):
+        class FailUploadClient(FakeNotionClient):
+            def perform_multipart_upload(self, descriptor, name, data, content_type):
+                raise RuntimeError("upload failed")
+
+        client = FailUploadClient()
+        uploader = NotionAttachmentUploader(notion_client=client, poll_interval=0.001)
+        data_b64 = base64.b64encode(b"hello,world\n").decode()
+        att = InputAttachment(name="greet.csv", content_type="text/csv", source="inline_data", data=data_b64)
+
+        with self.assertRaises(NotionAttachmentUploadError):
+            uploader.upload_attachments(thread_id="t", attachments=[att], create_thread=False)
+
+    def test_task_timeout_fails(self):
+        class SlowTaskClient(FakeNotionClient):
+            def get_task_status(self, task_id):
+                return {"status": "pending"}
+
+        client = SlowTaskClient()
+        uploader = NotionAttachmentUploader(notion_client=client, poll_interval=0.001, poll_timeout=0.01)
+        data_b64 = base64.b64encode(b"hello,world\n").decode()
+        att = InputAttachment(name="greet.csv", content_type="text/csv", source="inline_data", data=data_b64)
+
+        with self.assertRaises(NotionAttachmentUploadError):
+            uploader.upload_attachments(thread_id="t", attachments=[att], create_thread=False)
+
+    def test_build_metadata_excludes_sensitive(self):
+        client = FakeNotionClient()
+        uploader = NotionAttachmentUploader(notion_client=client)
+        sample = {"fileSizeBytes": 123, "contentType": "text/csv", "source": "inline_data", "taskId": "task-1", "fileId": "file-1", "signedUrl": "https://x", "raw": b"bytes"}
+        meta = uploader.build_attachment_step_metadata(sample)
+        self.assertIn("fileSizeBytes", meta)
+        self.assertIn("contentType", meta)
+        self.assertNotIn("signedUrl", meta)
+        self.assertNotIn("raw", meta)
 
 
 if __name__ == "__main__":
