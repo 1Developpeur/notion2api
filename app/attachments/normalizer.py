@@ -27,18 +27,24 @@ def _looks_like_url(value: str) -> bool:
     return parsed.scheme.lower() in {"http", "https"}
 
 
+def _looks_like_windows_path(value: str) -> bool:
+    return len(value) >= 3 and value[1] == ":" and value[2] in {"\\", "/"}
+
+
 def _looks_like_path(value: str) -> bool:
     if not value:
         return False
+    if _looks_like_windows_path(value):
+        return True
+    if value.startswith(("/", "\\\\", ".\\", "./", "..\\", "../")):
+        return True
+
     parsed = urlparse(value)
-    if parsed.scheme and parsed.scheme.lower() != "file":
-        return False
     if parsed.scheme.lower() == "file":
         return True
-    return (
-        value.startswith(("/", "\\\\", ".\\", "./", "..\\", "../"))
-        or (len(value) >= 3 and value[1] == ":" and value[2] in {"\\", "/"})
-    )
+    if parsed.scheme:
+        return False
+    return False
 
 
 def _image_url_value(part: dict[str, Any]) -> str:
