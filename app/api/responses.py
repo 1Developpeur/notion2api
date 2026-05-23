@@ -2,12 +2,13 @@ from __future__ import annotations
 
 import time
 import uuid
-from typing import Any
+from typing import Any, Literal
 
 from fastapi import APIRouter, BackgroundTasks, Request, Response
 from fastapi.responses import JSONResponse, StreamingResponse
 
 from app.api.chat import create_chat_completion
+from app.attachments.errors import AttachmentError
 from app.core.errors import openai_error
 from app.core.models import normalize_model_id
 from app.schemas import ChatCompletionRequest, ChatMessage
@@ -15,6 +16,20 @@ from app.attachments.normalizer import normalize_responses_input
 from app.attachments.security import AttachmentPolicy, validate_content_type
 
 router = APIRouter()
+
+
+ChatRole = Literal["system", "user", "assistant"]
+
+
+def _normalize_chat_role(value: Any) -> ChatRole:
+    role = str(value or "user").lower()
+    if role == "developer":
+        return "system"
+    if role == "system":
+        return "system"
+    if role == "assistant":
+        return "assistant"
+    return "user"
 
 
 def _content_to_text(content: Any) -> str:
@@ -50,11 +65,7 @@ def _responses_input_to_messages(input_value: Any) -> list[ChatMessage]:
         if not isinstance(item, dict):
             continue
 
-        role = str(item.get("role") or "user").lower()
-        if role == "developer":
-            role = "system"
-        elif role not in {"system", "user", "assistant"}:
-            role = "user"
+        role = _normalize_chat_role(item.get("role"))
 
         if item.get("type") == "message" and "content" in item:
             text = _content_to_text(item.get("content"))
@@ -131,8 +142,13 @@ async def create_response(
         openai_error("The 'model' field is required.", "model_required")
     try:
         cleaned_msgs, attachments = normalize_responses_input(payload.get("input"), payload.get("attachments"))
-    except Exception as exc:
-        openai_error(str(exc), "invalid_input")
+    except AttachmentError as exc:
+        openai_error(
+            str(exc),
+            exc.code or "invalid_attachment",
+            status_code=exc.status_code,
+            param=exc.param,
+        )
 
     policy = AttachmentPolicy.from_env()
     if attachments and not policy.enabled:
@@ -142,10 +158,21 @@ async def create_response(
         for att in attachments:
             if att.content_type:
                 validate_content_type(att.content_type, policy)
-    except Exception as exc:
-        openai_error(str(exc), "invalid_attachment")
+    except AttachmentError as exc:
+        openai_error(
+            str(exc),
+            exc.code or "invalid_attachment",
+            status_code=exc.status_code,
+            param=exc.param,
+        )
 
-    messages = [ChatMessage(role=m.get("role"), content=m.get("content")) for m in cleaned_msgs]
+    messages = [
+        ChatMessage(
+            role=_normalize_chat_role(m.get("role")),
+            content=str(m.get("content") or ""),
+        )
+        for m in cleaned_msgs
+    ]
     stream = bool(payload.get("stream", False))
 
     chat_req = ChatCompletionRequest(
@@ -157,7 +184,7 @@ async def create_response(
     )
 
     # Preserve raw attachment data for the delegated chat handler without logging it.
-    request.state._attachments = attachments or None
+    request.state.attachments = attachments or None
 
     if attachments:
         safe_top_level = []

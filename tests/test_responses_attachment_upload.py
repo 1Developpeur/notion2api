@@ -6,7 +6,7 @@ from fastapi.testclient import TestClient
 
 from app.server import app
 from app.attachments.normalizer import normalize_responses_input
-from app.attachments.security import AttachmentPolicy
+from app.attachments.security import AttachmentPolicy, validate_content_type
 from app.config import API_KEY
 
 
@@ -123,7 +123,7 @@ class ResponsesAttachmentTests(unittest.TestCase):
         ok = True
         try:
             for att in attachments:
-                policy.validate_content_type(att.content_type)
+                validate_content_type(att.content_type, policy)
         except Exception:
             ok = False
         self.assertFalse(ok)

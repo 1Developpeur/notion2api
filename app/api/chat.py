@@ -839,7 +839,9 @@ def _is_client_disconnect_error(exc: BaseException) -> bool:
 
 
 def _request_state_attachments(request: Request) -> list[Any]:
-    attachments = getattr(request.state, "_attachments", None)
+    attachments = getattr(request.state, "attachments", None)
+    if attachments is None:
+        attachments = getattr(request.state, "_attachments", None)
     return attachments if isinstance(attachments, list) else []
 
 
