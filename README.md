@@ -1,20 +1,23 @@
 # Notion2API
 
-> Notion AI to OpenAI-Compatible API Wrapper
+> Notion AI → OpenAI-Compatible API
 
 🌐 English | [中文](./README_CN.md)
 
-Notion2API wraps Notion AI as an OpenAI-compatible API, supporting direct use with Cherry Studio, Zotero, and other third-party clients, as well as existing frontend pages.
+Notion2API reverse-engineers the Notion AI web interface and exposes it as a standard `/v1/chat/completions` endpoint, making it directly usable with Cherry Studio, Zotero, and any other OpenAI-compatible client.
+
+---
 
 ## Features
 
-- **Three Operation Modes** - Lite/Standard/Heavy to meet different needs
-- **OpenAI Compatible** - Standard `/v1/chat/completions` endpoint
-- **Streaming Response** - SSE real-time output support
-- **Thinking Panel** - Reasoning process display for all models
-- **Search Feature** - Web search results display
-- **Account Pool** - Multi-account load balancing and failover
-- **Docker Deployment** - Ready-to-use containerized solution
+- **OpenAI Compatible** — Standard `/v1/chat/completions` endpoint, streaming (SSE) and non-streaming
+- **Three Operation Modes** — Lite / Standard / Heavy to fit different use cases
+- **9 AI Models** — Claude Sonnet/Opus, GPT-5.x, Gemini, Kimi
+- **Thinking Panel** — Reasoning process display for all models
+- **Search Panel** — Web search queries and source links
+- **Multi-Account Pool** — Round-Robin load balancing with cooldown failover
+- **Built-in Web UI** — Minimalist design, ambient animations, dark mode
+- **Docker Ready** — One-command deployment
 
 ---
 
@@ -23,13 +26,14 @@ Notion2API wraps Notion AI as an OpenAI-compatible API, supporting direct use wi
 | Feature | Lite | Standard | Heavy |
 |---------|------|----------|-------|
 | **Memory** | ❌ None | ✅ Client-managed | ✅ Server-managed |
-| **Database** | ❌ Not needed | ❌ Not needed | ✅ SQLite |
-| **Thinking** | ❌ Not needed | ✅ Dedicated panel | ✅ Dedicated panel |
-| **Search Results** | ❌ Not needed | ✅ Dedicated panel | ✅ Dedicated panel |
+| **Database** | ❌ | ❌ | ✅ SQLite |
+| **Thinking Panel** | ❌ | ✅ | ✅ |
+| **Search Panel** | ❌ | ✅ | ✅ |
 | **Rate Limit** | 30/min | 25/min | 20/min |
-| **Use Case** | Simple Q&A | Short-mid conversations | Long-term conversations |
+| **Use Case** | Simple Q&A | Short–mid conversations | Long-term conversations |
 
-To switch modes: change the `APP_MODE` variable in `.env`.
+> **Recommended**: `standard` — full context, no database required.  
+> Switch by setting `APP_MODE` in `.env`.
 
 ---
 
@@ -37,87 +41,73 @@ To switch modes: change the `APP_MODE` variable in `.env`.
 
 ### 1. Get Notion Credentials
 
-Run the interactive login helper:
+Choose the method that fits your situation:
+
+#### Method A — F12 (if you already have a Notion web session)
+
+1. Open https://www.notion.so/ai and log in
+2. Press `F12` → **Application** tab → **Storage → Cookies → https://www.notion.so**
+3. Find `token_v2` and copy its Value
+4. Switch to the **Console** tab, paste and run `scripts/extract_notion_info.js`
+5. The script outputs all required fields — paste the result into `accounts.json`
+
+#### Method B — Browser-Assisted Login (no existing web session needed)
 
 ```bash
 python login.py
 ```
 
-It will:
-1. Launch a local Chrome window on a debug port.
-2. Let you sign in to Notion in that browser.
-3. Read the Notion browser session cookies via DevTools.
-4. Use those cookies locally to capture `token_v2` and identify the active Notion user.
-5. Validate the token against Notion.
-6. Extract `space_id`, `user_id`, `space_view_id`, `user_name`, and `user_email`.
-7. Prefer the active `notion_user_id` cookie when multiple users/workspaces are visible.
-8. Save the result into `accounts.json` as a named profile.
-9. Update `.env` with the refreshed `NOTION_ACCOUNTS` value.
-
-The helper does not commit or store the full browser cookie jar. Browser cookies are only used during the local login flow to select the correct account/workspace. Keep generated `accounts.json` and `.env` files private; both are ignored by git because they contain credentials.
-
-To verify the saved login later, run:
+This launches a temporary Chrome/Edge window, waits for you to sign in to Notion, then automatically extracts all credentials and writes them to `accounts.json` and `.env`.
 
 ```bash
-python login.py --check
+python login.py --check          # verify a saved profile
+python login.py --list           # list all saved profiles
+python login.py --manual         # paste token_v2 manually if Chrome is unavailable
+python login.py --profile work   # save under a named profile
 ```
 
-To inspect all saved profiles, run:
+Both methods write to `accounts.json`. Multiple accounts are supported — add more entries to the array to enable load balancing.
+
+> ⚠️ `accounts.json` and `.env` contain credentials. Both are git-ignored — keep them private.
+
+---
+
+### 2. Configure `.env`
 
 ```bash
-python login.py --list
-```
-
-To check a specific profile, pass its name:
-
-```bash
-python login.py --check --profile work
-```
-
-If you prefer the old manual flow, you can still use `scripts/extract_notion_info.js` and fill `accounts.json` yourself.
-
-If Chrome is unavailable or you want to paste a token directly, use:
-
-```bash
-python login.py --manual
-```
-
-The browser-assisted flow waits up to 300 seconds by default so you have time to finish signing in.
-
-### 2. Configure Environment Variables
-
-```bash
-# Copy example config
 cp .env.example .env
-
-# If you used login.py, accounts.json is already populated.
-# You can still override the account pool through .env if needed.
-NOTION_ACCOUNTS='[{"profile_name":"default","token_v2":"your_token","space_id":"your_space","user_id":"your_uid","space_view_id":"your_view","user_name":"your_name","user_email":"your_email"}]'
-APP_MODE=standard  # lite / standard / heavy
 ```
 
-**⚠️ If using Heavy mode**:
+At minimum, set:
 
-Heavy mode requires `SILICONFLOW_API_KEY` (for conversation summary compression):
-1. Visit https://siliconflow.cn to register an account (free)
-2. Get your API Key
-3. Add it to `.env`:
-   ```bash
-   SILICONFLOW_API_KEY=your_api_key_here
-   APP_MODE=heavy
-   ```
+```env
+APP_MODE=standard   # lite / standard / heavy
+```
+
+If using **Heavy mode**, also add:
+
+```env
+SILICONFLOW_API_KEY=your_key_here
+```
+
+> Heavy mode uses SiliconFlow's LLM to compress long conversations. Register free at https://siliconflow.cn.
+
+---
 
 ### 3. Start the Service
 
-#### Docker Deployment (Recommended)
+#### Docker (Recommended)
 
 ```bash
-# Build and start
 docker-compose build --no-cache && docker-compose up -d
-# Access http://localhost:8000
 ```
 
-**Note**: `accounts.json` is mounted as a volume. After modifying accounts, just `docker-compose restart` — no rebuild needed.
+`accounts.json` is mounted as a volume — update accounts without rebuilding:
+
+```bash
+# After editing accounts.json:
+docker-compose restart
+```
 
 #### Local Run
 
@@ -126,27 +116,31 @@ pip install -r requirements.txt
 uvicorn app.server:app --host 0.0.0.0 --port 8000
 ```
 
+Access the Web UI at `http://localhost:8000`.
+
 ---
 
 ## Supported Models
 
 | Model Name | Description |
 |---|---|
-| `claude-sonnet4.6` | Best balance of performance and speed! (**Most recommended**, most optimized, most reliable) |
-| `claude-opus4.6` | Stronger reasoning, but not recommended for frequent use |
-| `claude-opus4.7` | Latest Claude, even stronger reasoning |
-| `gpt-5.5` | Latest GPT model (Beta) |
-| `gemini-2.5flash` | **Native fast**, no thinking delay, highly recommended for quick tasks |
+| `claude-sonnet4.6` | Best balance of speed and quality — **most recommended** |
+| `claude-opus4.6` | Stronger reasoning, use sparingly |
+| `claude-opus4.7` | Latest Claude, strongest reasoning |
+| `gpt-5.5` | Latest GPT (Beta) |
+| `gpt-5.4` | OpenAI model |
+| `gpt-5.2` | OpenAI model |
+| `gemini-2.5flash` | Native fast, no thinking delay — great for quick tasks |
 | `gemini-3.1pro` | Google's strongest reasoning model |
-| `gpt-5.2` / `gpt-5.4` | OpenAI models, also great |
-| `kimi-2.6` | Moonshot AI model (Beta) |
+| `kimi-2.6` | Moonshot AI (Beta) |
 
-View full list: `GET http://localhost:8000/v1/models`
+Full list via API: `GET http://localhost:8000/v1/models`
 
 ---
 
 ## API Usage
-This project supports custom API keys with no format requirements.
+
+This project accepts any string as the API key (no format requirement).
 
 ### Python Example
 
@@ -155,7 +149,7 @@ from openai import OpenAI
 
 client = OpenAI(
     base_url="http://localhost:8000/v1",
-    api_key="optional_api_key"
+    api_key="any-string"
 )
 
 response = client.chat.completions.create(
@@ -168,126 +162,121 @@ for chunk in response:
     print(chunk.choices[0].delta.content or "", end="")
 ```
 
-### Use with LLM Council Plus
+### Endpoints
 
-`llm-council-plus` supports any OpenAI-compatible endpoint. Point it at this service and use the `/v1` prefix:
-
-1. Start Notion2API locally or on your server.
-2. In `llm-council-plus`, open **LLM API Keys** → **Custom OpenAI-Compatible Endpoint**.
-3. Set **Base URL** to `http://localhost:8000/v1`.
-4. Set **API Key** only if `API_KEY` is enabled on this service. If `API_KEY` is unset, leave it blank.
-5. Click **Connect** to verify. The app will call `GET /v1/models` for discovery and `POST /v1/chat/completions` for chat.
-
-If you run Notion2API behind a reverse proxy, replace `http://localhost:8000` with your public origin and keep the `/v1` suffix.
+| Endpoint | Method | Description |
+|---|---|---|
+| `/v1/chat/completions` | POST | Chat completions (core) |
+| `/v1/models` | GET | List available models |
+| `/health` | GET | Health check (account pool status, uptime) |
+| `/` | GET | Built-in Web UI |
 
 ---
 
 ## Web UI
-(Custom design inspired by Claude style, supports Standard and Heavy modes)
 
-Access `http://localhost:8000` to use the built-in Web UI:
+Access `http://localhost:8000` for the built-in **Notion AI Studio** interface:
 
-- **Main Content Area** - Displays AI responses
-- **Thinking Panel** - Shows reasoning process (collapsible)
-- **Search Panel** - Shows search sources (collapsible)
-- **Star Feature** - Bookmark valuable conversations to the top
+- **Conversation Management** — Create, rename, delete, star/bookmark
+- **Model Selector** — Grouped by provider (Anthropic / OpenAI / Google / Moonshot)
+- **Thinking Panel** — Collapsible reasoning display with elapsed timer
+- **Search Panel** — Collapsible web search queries and source links
+- **Ambient Animations** — Weather effects: default / snow / rain / sunny / night
+- **Theme** — Light / dark mode toggle
+- **Responsive** — Mobile-friendly sidebar
+
+> Thinking and Search panels require `standard` or `heavy` mode.
 
 ---
 
 ## Environment Variables
 
 | Variable | Description | Default |
-|----------|-------------|---------|
-| `APP_MODE` | Operation mode: lite/standard/heavy | `heavy` |
-| `NOTION_ACCOUNTS` | Notion credentials JSON array | Required |
-| `API_KEY` | Client authentication key | Optional (recommended) |
+|---|---|---|
+| `NOTION_ACCOUNTS` | Notion credentials JSON array | **Required** |
+| `APP_MODE` | `lite` / `standard` / `heavy` | `heavy` |
+| `API_KEY` | Bearer token for client auth | *(none)* |
 | `DB_PATH` | SQLite database path | `./data/conversations.db` |
-| `HOST_PORT` | Host port | `8000` |
-| `SILICONFLOW_API_KEY` | Required for Heavy mode, used for early conversation summary compression | Optional |
+| `HOST` | Bind address | `0.0.0.0` |
+| `PORT` | Service port | `8000` |
+| `HOST_PORT` | Docker host port | `8000` |
+| `ALLOWED_ORIGINS` | CORS allowed origins | `*` |
+| `SILICONFLOW_API_KEY` | Required for Heavy mode compression | *(none)* |
+| `DISABLE_RATE_LIMIT` | Disable per-IP rate limiting | `false` |
+| `NOTION_CLIENT_VERSION` | Override Notion client version header | `23.13.20260228.0625` |
+| `LOG_LEVEL` | Logging level | `INFO` |
+| `TZ` | Timezone | `Asia/Shanghai` |
 
 ---
 
-## Docker Deployment
-
-### Using docker-compose (Recommended)
+## Docker Reference
 
 ```bash
-# 1. Configure environment
-cp .env.example .env
-nano .env
+# Start
+docker-compose up -d
 
-# 2. Configure accounts (see accounts.README.md)
-nano accounts.json
+# View logs
+docker-compose logs -f --tail=50
 
-# 3. Build and start
-docker-compose build --no-cache && docker-compose up -d
+# Restart (e.g. after updating accounts.json)
+docker-compose restart
 
-# 4. View logs
-docker-compose logs -f
+# Update code and redeploy
+git pull && docker-compose down && docker-compose build --no-cache && docker-compose up -d
 
-# 5. Stop service
+# Stop
 docker-compose down
 ```
 
-### Update After Code Changes
+### Nginx Reverse Proxy (optional)
 
-```bash
-git pull && docker-compose down && docker-compose build --no-cache && docker-compose up -d
-```
-
-### Update Accounts Only (No Rebuild Needed)
-
-```bash
-nano accounts.json
-docker-compose restart
-```
-
-### Custom Port
-
-Modify the `HOST_PORT` variable in `.env`:
-```bash
-HOST_PORT=8080  # Use port 8080
+```nginx
+location / {
+    proxy_pass http://127.0.0.1:8000;
+    proxy_set_header Host $host;
+    proxy_buffering off;
+    proxy_cache off;
+    proxy_read_timeout 300s;
+}
 ```
 
 ---
 
 ## FAQ
 
-> For detailed error solutions, see [Issues & Troubleshooting](./docs/issues.md)
+**Thinking panel not showing?**  
+Use `APP_MODE=standard` or `heavy`. Lite mode does not support Thinking or Search panels.
 
-### 1. Thinking panel not showing?
+**How do I switch modes?**  
+Edit `APP_MODE` in `.env`, then restart: `docker-compose restart`
 
-Make sure you are using `APP_MODE=standard` or `heavy`. Lite mode does not support Thinking.
-
-### 2. How to switch modes?
-
-Modify `APP_MODE` in `.env`, then restart the service:
-```bash
-APP_MODE=standard  # Switch to standard
-docker-compose restart
-```
-
-### 3. How to configure multiple accounts?
-(Multiple accounts improve stability, Beta version)
-
-`NOTION_ACCOUNTS` supports array format:
+**How do I add multiple accounts?**  
+Edit `accounts.json` as an array — accounts are load-balanced automatically:
 ```json
 [
-  {"token_v2":"token1","space_id":"space1",...},
-  {"token_v2":"token2","space_id":"space2",...}
+  {"token_v2": "token1", "space_id": "...", "user_id": "...", "space_view_id": "...", "user_name": "...", "user_email": "..."},
+  {"token_v2": "token2", "space_id": "...", "user_id": "...", "space_view_id": "...", "user_name": "...", "user_email": "..."}
 ]
 ```
 
+**Getting 429 or Notion AI suspended?**  
+Notion may throttle workspaces with unusual request patterns. Adding multiple accounts helps distribute load. Business Trial workspaces are especially prone to this.
+
+**Token expired?**  
+Re-run `python login.py` or repeat the F12 steps to refresh credentials.
+
 ---
 
-## Compatibility Test
-(Note: Due to Notion's own AI call rate, there is usually a ~3 second delay from sending a query to receiving an answer. Clients with high latency requirements, such as Immersive Translate, are not recommended.)
+## Compatibility
+
+> Due to Notion's own AI latency, expect ~3 seconds from request to first token.
 
 | Client | Status | Notes |
-|--------|--------|-------|
+|---|---|---|
 | Cherry Studio | ✅ Full support | Recommended |
-| Zotero Translation | ✅ Full support | Slightly slow, but sonnet model is accurate |
-| Immersive Translate | Not recommended | Very slow |
+| Zotero Translation | ✅ Full support | Slightly slow; sonnet model most accurate |
+| Immersive Translate | ⚠️ Not recommended | High latency |
+| Claude Code | ❌ Not supported | Uses Anthropic native API format |
 
 ---
 
@@ -297,20 +286,6 @@ MIT License
 
 ---
 
-## Star History
-
 If this project helps you, please give it a Star ⭐
 
-## Notes
-This project was built with assistance from Claude Code and Codex.
-
-**Heavy Mode Details**:
-- Sliding window: retains the most recent **8 rounds** of conversation (16 messages) by default
-- Summary compression: content beyond the window is automatically compressed into a summary
-- Full archive: all history is permanently stored in the SQLite database
-
-**Future Improvements**:
-- If you need a custom sliding window size (e.g., 10 or 20 rounds), feel free to submit an Issue
-- We will add environment variable configuration options based on demand
-
-Issues and suggestions are welcome!
+*Built with assistance from Claude Code.*

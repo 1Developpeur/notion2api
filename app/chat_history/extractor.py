@@ -1,3 +1,5 @@
+"""Chat-history record extraction and normalization helpers."""
+
 from __future__ import annotations
 
 import hashlib
@@ -276,9 +278,11 @@ def normalize_thread(thread_id: str | None, raw: dict[str, Any]) -> dict[str, An
         return None
     updated_at = _first_scalar_text(value, THREAD_UPDATED_FIELDS)
     created_at = _first_scalar_text(value, THREAD_CREATED_FIELDS)
+    data_value = value.get("data")
+    data_title = data_value.get("title") if isinstance(data_value, dict) else None
     return {
         "id": str(resolved_id),
-        "title": _first_scalar_text(value, THREAD_TITLE_FIELDS) or (value.get("data") if isinstance(value.get("data"), dict) else {}).get("title"),
+        "title": _first_scalar_text(value, THREAD_TITLE_FIELDS) or data_title,
         "created_time": created_at,
         "last_edited_time": updated_at,
         "updated_at": updated_at,
@@ -436,11 +440,13 @@ def redact_secrets(value: Any, depth: int = 0) -> Any:
 def describe_thread_record(thread: dict[str, Any] | None, messages: list[dict[str, Any]] | None = None) -> dict[str, Any]:
     thread = thread or {}
     messages = messages or []
-    thread_raw = thread.get("raw") if isinstance(thread.get("raw"), dict) else {}
+    thread_raw_any = thread.get("raw")
+    thread_raw: dict[str, Any] = thread_raw_any if isinstance(thread_raw_any, dict) else {}
 
     raw_fields = {str(key) for key in thread_raw.keys()}
     for message in messages:
-        message_raw = message.get("raw") if isinstance(message.get("raw"), dict) else {}
+        message_raw_any = message.get("raw")
+        message_raw: dict[str, Any] = message_raw_any if isinstance(message_raw_any, dict) else {}
         raw_fields.update(str(key) for key in message_raw.keys())
 
     known_fields = [field for field in THREAD_MESSAGE_FIELDS if field in thread_raw]

@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import base64
+import binascii
 import json
 from collections import Counter
 from typing import Any
@@ -15,18 +16,18 @@ def _json_loads(text: str | None, encoding: str | None = None) -> Any:
     if encoding == "base64":
         try:
             text = base64.b64decode(text).decode("utf-8", errors="replace")
-        except Exception:
+        except (binascii.Error, UnicodeDecodeError):
             return None
     try:
         return json.loads(text)
-    except Exception:
+    except json.JSONDecodeError:
         return None
 
 
 def _endpoint(entry: dict[str, Any]) -> str:
     try:
         path = urlparse(entry["request"]["url"]).path
-    except Exception:
+    except (KeyError, TypeError, ValueError):
         return ""
     if not path.startswith("/api/v3/"):
         return ""

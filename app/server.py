@@ -10,15 +10,24 @@ from fastapi.staticfiles import StaticFiles
 from slowapi.errors import RateLimitExceeded
 
 from app.account_pool import AccountPool
+from app.api.attachment_guard import attachment_deployment_guard
 from app.api.chat import router as chat_router
 from app.api.chat_history import router as chat_history_router
+from app.api.chat_history_resume import router as chat_history_resume_router
+from app.api.chat_resume_thread_binding import apply_chat_resume_thread_bindings
+from app.api.features import router as features_router
 from app.api.models import router as models_router
 from app.api.responses import router as responses_router
+from app.attachments.runtime_config import apply_attachment_runtime_config
 from app.config import ACCOUNTS, ALLOWED_ORIGINS, API_KEY, is_lite_mode, is_standard_mode
 from app.conversation import ConversationManager
 from app.core.errors import openai_error_payload
 from app.limiter import limiter
 from app.logger import logger
+
+
+apply_attachment_runtime_config()
+apply_chat_resume_thread_bindings()
 
 
 def _valid_bearer_token(auth_header: str, expected_key: str) -> bool:
@@ -38,18 +47,20 @@ def _valid_bearer_token(auth_header: str, expected_key: str) -> bool:
 async def lifespan(app: FastAPI):
     # 启动时初始化状态
     app.state.account_pool = AccountPool(ACCOUNTS)
+    # Keep durable conversation storage available in every mode so chat-history
+    # resume/fork can create real local conversations without forcing heavy mode.
+    app.state.conversation_manager = ConversationManager()
 
     # 确定运行模式
     if is_lite_mode():
         mode = "lite"
-        logger.info("Service starting up in LITE mode", extra={"request_info": {"event": "startup", "accounts": len(ACCOUNTS), "mode": "lite"}})
+        logger.info("Service starting up in LITE mode", extra={"request_info": {"event": "startup", "accounts": len(ACCOUNTS), "mode": "lite", "conversation_storage": True}})
     elif is_standard_mode():
         mode = "standard"
-        logger.info("Service starting up in STANDARD mode", extra={"request_info": {"event": "startup", "accounts": len(ACCOUNTS), "mode": "standard"}})
+        logger.info("Service starting up in STANDARD mode", extra={"request_info": {"event": "startup", "accounts": len(ACCOUNTS), "mode": "standard", "conversation_storage": True}})
     else:
         mode = "heavy"
-        app.state.conversation_manager = ConversationManager()
-        logger.info("Service starting up in HEAVY mode", extra={"request_info": {"event": "startup", "accounts": len(ACCOUNTS), "mode": "heavy"}})
+        logger.info("Service starting up in HEAVY mode", extra={"request_info": {"event": "startup", "accounts": len(ACCOUNTS), "mode": "heavy", "conversation_storage": True}})
 
     app.state.start_time = time.time()
     yield
@@ -115,6 +126,9 @@ async def generic_exception_handler(request: Request, exc: Exception):
         },
     )
 
+# Attachment deployment guard runs before body parsing in chat/response handlers.
+app.middleware("http")(attachment_deployment_guard)
+
 # 结构化日志中间件
 @app.middleware("http")
 async def log_requests_middleware(request: Request, call_next):
@@ -174,6 +188,8 @@ async def api_key_auth(request: Request, call_next):
 app.include_router(chat_router, prefix="/v1")
 app.include_router(models_router, prefix="/v1")
 app.include_router(chat_history_router, prefix="/v1")
+app.include_router(chat_history_resume_router, prefix="/v1")
+app.include_router(features_router, prefix="/v1")
 app.include_router(responses_router, prefix="/v1")
 
 # 挂载健康检查
@@ -224,6 +240,16 @@ def chat_history_main_js():
     return _frontend_js_response("chat-history-main.js")
 
 
+@app.get("/chat-history-resume.js", include_in_schema=False)
+def chat_history_resume_js():
+    return _frontend_js_response("chat-history-resume.js")
+
+
+@app.get("/attachment-settings.js", include_in_schema=False)
+def attachment_settings_js():
+    return _frontend_js_response("attachment-settings.js")
+
+
 @app.get("/", include_in_schema=False)
 def frontend_index(request: Request):
     index_path = os.path.join(frontend_dir, "index.html")
@@ -235,6 +261,8 @@ def frontend_index(request: Request):
         '<script src="/chat-history-import.js"></script>',
         '<script src="/chat-history-browser.js"></script>',
         '<script src="/chat-history-main.js"></script>',
+        '<script src="/chat-history-resume.js"></script>',
+        '<script src="/attachment-settings.js"></script>',
     ]
     missing_tags = [tag for tag in script_tags if tag not in html]
     if missing_tags:

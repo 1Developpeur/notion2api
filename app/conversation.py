@@ -143,6 +143,10 @@ class ConversationManager:
             self._ensure_column(conn, "conversations", "next_round_index INTEGER DEFAULT 0")
             self._ensure_column(conn, "conversations", "compress_failed_at INTEGER")
             self._ensure_column(conn, "conversations", "thread_id TEXT")
+            # 记录当前 thread 绑定的模型。Notion 的 thread 创建后其模型是粘住的，
+            # 复用同一个 thread 再发不同 model 的 transcript，上游仍按 thread 原始模型执行。
+            # 因此当用户在对话中途切换模型时，需要凭此列检测并重建 thread。
+            self._ensure_column(conn, "conversations", "thread_model TEXT")
             self._ensure_column(conn, "messages", "thinking TEXT")
 
             # Backfill next_round_index for pre-migration conversations that already had history.
@@ -584,13 +588,51 @@ class ConversationManager:
             ).fetchone()
             return row["thread_id"] if row and row["thread_id"] else None
 
-    def set_conversation_thread_id(self, conversation_id: str, thread_id: str) -> None:
-        """保存对话关联的 Notion thread_id"""
+    def get_conversation_thread_model(self, conversation_id: str) -> Optional[str]:
+        """获取当前 thread 绑定的模型名（用于检测模型切换）。"""
+        with self._get_conn() as conn:
+            row = conn.execute(
+                "SELECT thread_model FROM conversations WHERE id = ?",
+                (conversation_id,),
+            ).fetchone()
+            return row["thread_model"] if row and row["thread_model"] else None
+
+    def clear_conversation_thread(self, conversation_id: str) -> None:
+        """清空 thread_id 与 thread_model，下一轮请求会创建新的 Notion thread。"""
         with self._get_conn() as conn:
             conn.execute(
-                "UPDATE conversations SET thread_id = ? WHERE id = ?",
-                (thread_id, conversation_id),
+                "UPDATE conversations SET thread_id = NULL, thread_model = NULL WHERE id = ?",
+                (conversation_id,),
             )
+            conn.commit()
+            logger.info(
+                "Cleared thread binding for conversation",
+                extra={
+                    "request_info": {
+                        "event": "thread_binding_cleared",
+                        "conversation_id": conversation_id,
+                    }
+                },
+            )
+
+    def set_conversation_thread_id(
+        self,
+        conversation_id: str,
+        thread_id: str,
+        model_name: Optional[str] = None,
+    ) -> None:
+        """保存对话关联的 Notion thread_id 以及当前绑定的模型名。"""
+        with self._get_conn() as conn:
+            if model_name is not None:
+                conn.execute(
+                    "UPDATE conversations SET thread_id = ?, thread_model = ? WHERE id = ?",
+                    (thread_id, model_name, conversation_id),
+                )
+            else:
+                conn.execute(
+                    "UPDATE conversations SET thread_id = ? WHERE id = ?",
+                    (thread_id, conversation_id),
+                )
             conn.commit()
             logger.info(
                 "Saved thread_id for conversation",
@@ -599,6 +641,7 @@ class ConversationManager:
                         "event": "thread_id_saved",
                         "conversation_id": conversation_id,
                         "thread_id": thread_id,
+                        "thread_model": model_name,
                     }
                 },
             )

@@ -68,7 +68,7 @@ def main():
                     full_text += item
         except KeyboardInterrupt:
             print("\n[提示] 用户中断当前输出")
-        except Exception as e:
+        except (AttributeError, KeyError, TypeError, ValueError) as e:
             print(f"\n[错误]: 输出流解析异常 - {e}")
 
         print()
