@@ -8,9 +8,18 @@ from app.attachments.notion_upload import NotionAttachmentUploader, NotionAttach
 class FakeNotionClient:
     def __init__(self):
         self.descriptors = []
+        self.enqueued = []
+        self.signed_requests = []
 
     def request_upload_descriptor(self, name, content_type, size, thread_id, create_thread):
-        desc = {"upload_url": f"https://upload.test/{name}", "fields": {"k": "v"}, "file_id": f"file-{name}", "attachment_url": f"https://files.test/{name}", "metadata": {"name": name}}
+        desc = {
+            "upload_url": f"https://upload.test/{name}",
+            "fields": {"k": "v"},
+            "file_id": f"file-{name}",
+            "attachment_url": f"attachment:file-{name}:block",
+            "chat_id": "thread-from-descriptor",
+            "metadata": {"name": name},
+        }
         self.descriptors.append((name, content_type, size, thread_id, create_thread))
         return desc
 
@@ -18,15 +27,17 @@ class FakeNotionClient:
         # record that upload was called; in real code this would POST to descriptor['upload_url']
         self.last_upload = {"descriptor": descriptor, "name": name, "size": len(data), "content_type": content_type}
 
-    def enqueue_attachment_processing(self, file_id, thread_id):
-        return f"task-{file_id}"
+    def enqueue_attachment_processing(self, attachment_url, thread_id):
+        self.enqueued.append((attachment_url, thread_id))
+        return f"task-{attachment_url.split(':')[1]}"
 
     def get_task_status(self, task_id):
         # immediate success for tests
         return {"status": "completed", "success": True}
 
-    def get_signed_read_url(self, file_id):
-        return f"https://signed.test/{file_id}"
+    def get_signed_read_url(self, attachment_url, thread_id="", download_name=""):
+        self.signed_requests.append((attachment_url, thread_id, download_name))
+        return f"https://signed.test/{attachment_url.split(':')[1]}"
 
 
 class NotionAttachmentUploadTests(unittest.TestCase):
@@ -40,7 +51,7 @@ class NotionAttachmentUploadTests(unittest.TestCase):
 
         uploaded, thread = uploader.upload_attachments(thread_id="thread-1", attachments=[att], create_thread=False)
 
-        self.assertEqual(thread, "thread-1")
+        self.assertEqual(thread, "thread-from-descriptor")
         self.assertEqual(len(uploaded), 1)
         u = uploaded[0]
         self.assertTrue(u.file_id.startswith("file-"))
@@ -48,6 +59,8 @@ class NotionAttachmentUploadTests(unittest.TestCase):
         # descriptor was requested with expected params
         self.assertEqual(client.descriptors[0][0], "greet.csv")
         self.assertEqual(client.last_upload["size"], len(b"hello,world\n"))
+        self.assertEqual(client.enqueued[0], ("attachment:file-greet.csv:block", "thread-from-descriptor"))
+        self.assertEqual(client.signed_requests[0], ("attachment:file-greet.csv:block", "thread-from-descriptor", "greet.csv"))
 
     def test_task_failure_raises(self):
         client = FakeNotionClient()

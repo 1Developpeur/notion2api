@@ -37,10 +37,15 @@ class NotionAttachmentUploader:
         create_thread: bool = False,
     ) -> Tuple[List[UploadedAttachment], str]:
         uploaded: List[UploadedAttachment] = []
+        current_thread_id = thread_id
+        should_create_thread = create_thread
         # For each normalized attachment, load bytes and stage
         for att in attachments:
             loaded = load_attachment_data(att)
-            descriptor = self.get_upload_descriptor(thread_id=thread_id, attachment=att, loaded=loaded, create_thread=create_thread)
+            descriptor = self.get_upload_descriptor(thread_id=current_thread_id, attachment=att, loaded=loaded, create_thread=should_create_thread)
+            if descriptor.get("chat_id"):
+                current_thread_id = str(descriptor["chat_id"]).strip() or current_thread_id
+            should_create_thread = False
             # perform the multipart upload using the descriptor
             self.do_multipart_upload(descriptor, loaded)
             # extract a definitive file id — must be present in descriptor
@@ -48,19 +53,24 @@ class NotionAttachmentUploader:
             if not file_id:
                 raise NotionAttachmentUploadError("Upload descriptor missing file identifier", reason="missing_file_id")
 
-            task_id = self.enqueue_attachment_processing(file_id=file_id, thread_id=thread_id)
+            attachment_url = str(descriptor.get("attachment_url") or "")
+            if not attachment_url:
+                raise NotionAttachmentUploadError("Upload descriptor missing attachment URL", reason="missing_attachment_url")
+
+            task_id = self.enqueue_attachment_processing(attachment_url=attachment_url, thread_id=current_thread_id)
             result = self.wait_attachment_task(task_id)
             # normalize result handling
             if not isinstance(result, dict) or not result.get("success"):
                 raise NotionAttachmentUploadError(f"Attachment processing failed for task {task_id}", reason="task_failed")
 
-            signed_url = self.get_signed_attachment_url(file_id)
+            signed_url = self.get_signed_attachment_url(attachment_url=attachment_url, thread_id=current_thread_id, download_name=loaded.name)
             metadata = self.build_attachment_step_metadata(uploaded={
                 "fileSizeBytes": loaded.size_bytes,
                 "contentType": loaded.content_type,
                 "source": loaded.source,
                 "taskId": task_id,
                 "fileId": file_id,
+                "attachmentUrl": attachment_url,
             })
 
             uploaded.append(
@@ -71,14 +81,14 @@ class NotionAttachmentUploader:
                     source=loaded.source,
                     file_id=file_id,
                     thread_mounted=True,
-                    attachment_url=descriptor.get("attachment_url", ""),
-                    signed_get_url=signed_url or "",
+                    attachment_url=attachment_url,
+                    signed_get_url=signed_url or descriptor.get("signed_get_url", "") or "",
                     task_id=task_id,
                     metadata=metadata,
                 )
             )
 
-        return uploaded, thread_id
+        return uploaded, current_thread_id
 
     # The following methods delegate to the notion client when available so tests can mock them.
     def get_upload_descriptor(self, *, thread_id: str, attachment: InputAttachment, loaded: LoadedAttachment, create_thread: bool) -> Dict[str, Any]:
@@ -153,10 +163,10 @@ class NotionAttachmentUploader:
                 pass
         return None
 
-    def enqueue_attachment_processing(self, *, file_id: str, thread_id: str) -> str:
+    def enqueue_attachment_processing(self, *, attachment_url: str, thread_id: str) -> str:
         if not hasattr(self.notion, "enqueue_attachment_processing"):
             raise NotionAttachmentUploadError("Notion client missing enqueue_attachment_processing", reason="missing_method")
-        return self.notion.enqueue_attachment_processing(file_id=file_id, thread_id=thread_id)
+        return self.notion.enqueue_attachment_processing(attachment_url=attachment_url, thread_id=thread_id)
 
     def wait_attachment_task(self, task_id: str) -> Dict[str, Any]:
         # Poll notion client for task status
@@ -178,12 +188,12 @@ class NotionAttachmentUploader:
 
             time.sleep(self.poll_interval)
 
-    def get_signed_attachment_url(self, file_id: str) -> str:
+    def get_signed_attachment_url(self, *, attachment_url: str, thread_id: str, download_name: str) -> str:
         if not hasattr(self.notion, "get_signed_read_url"):
             return ""
-        return self.notion.get_signed_read_url(file_id)
+        return self.notion.get_signed_read_url(attachment_url, thread_id=thread_id, download_name=download_name)
 
     def build_attachment_step_metadata(self, uploaded: Dict[str, Any]) -> Dict[str, Any]:
         # Only include safe, non-sensitive metadata
-        allowed_keys = {"fileSizeBytes", "contentType", "source", "taskId", "fileId"}
+        allowed_keys = {"fileSizeBytes", "contentType", "source", "taskId", "fileId", "attachmentUrl"}
         return {k: v for k, v in uploaded.items() if k in allowed_keys}

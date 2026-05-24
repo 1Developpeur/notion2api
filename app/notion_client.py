@@ -3,6 +3,7 @@ import json
 import threading
 import time
 import uuid
+from urllib.parse import urlparse
 from typing import Any, Generator, Optional
 
 try:
@@ -42,6 +43,19 @@ def _redact_response_excerpt(text: str) -> str:
         if marker in excerpt:
             excerpt = excerpt.replace(marker, f"{marker}[redacted]")
     return excerpt
+
+
+def _extract_attachment_file_id(attachment_url: str) -> str:
+    clean = str(attachment_url or "").strip()
+    if clean.startswith("attachment:"):
+        parts = clean.split(":", 2)
+        if len(parts) == 3:
+            return parts[1].strip()
+    try:
+        path = urlparse(clean).path
+    except Exception:
+        return ""
+    return path.rstrip("/").split("/")[-1] if path else ""
 
 
 def _default_persist_threads() -> bool:
@@ -203,17 +217,15 @@ class NotionOpusAPI:
         if not isinstance(fields, dict):
             raise NotionUpstreamError("Upload descriptor fields malformed", retriable=False, response_excerpt=str(body)[:300])
 
+        attachment_url = body.get("attachment_url") or body.get("attachmentUrl") or body.get("url")
         file_id = body.get("file_id") or body.get("fileId") or body.get("id")
         if not file_id and isinstance(body.get("file"), dict):
             file_id = body["file"].get("id")
+        if not file_id:
+            file_id = _extract_attachment_file_id(str(attachment_url or ""))
 
-        attachment_url = (
-            body.get("attachment_url")
-            or body.get("attachmentUrl")
-            or body.get("url")
-            or body.get("signedGetUrl")
-            or body.get("signed_get_url")
-        )
+        signed_get_url = body.get("signed_get_url") or body.get("signedGetUrl")
+        chat_id = body.get("chat_id") or body.get("chatId")
 
         metadata = body.get("metadata") or {}
         if metadata is None:
@@ -226,6 +238,8 @@ class NotionOpusAPI:
             "fields": fields,
             "file_id": str(file_id or ""),
             "attachment_url": str(attachment_url or ""),
+            "signed_get_url": str(signed_get_url or ""),
+            "chat_id": str(chat_id or ""),
             "metadata": metadata,
         }
 
@@ -243,12 +257,14 @@ class NotionOpusAPI:
         """
         endpoint = "https://www.notion.so/api/v3/getUploadFileUrlForAssistantChatTranscriptUpload"
         payload = {
-            "requestId": str(uuid.uuid4()),
-            "fileName": name,
+            "name": name,
             "contentType": content_type,
-            "size": size,
-            "threadId": thread_id,
-            "spaceId": self.space_id,
+            "assistantChatTranscriptSessionPointer": {
+                "spaceId": self.space_id,
+                "table": "thread",
+                "id": thread_id,
+            },
+            "contentLength": size,
             "createThread": create_thread,
         }
         if _attachment_descriptor_debug_enabled():
@@ -311,6 +327,7 @@ class NotionOpusAPI:
                         "has_upload_url": bool(descriptor.get("upload_url")),
                         "has_file_id": bool(descriptor.get("file_id")),
                         "has_attachment_url": bool(descriptor.get("attachment_url")),
+                        "has_chat_id": bool(descriptor.get("chat_id")),
                         "field_keys": sorted((descriptor.get("fields") or {}).keys()),
                     }
                 },
@@ -339,10 +356,28 @@ class NotionOpusAPI:
         if resp.status_code < 200 or resp.status_code >= 300:
             raise NotionUpstreamError(f"Multipart upload failed with HTTP {resp.status_code}", status_code=resp.status_code, retriable=resp.status_code >= 500, response_excerpt=(resp.text or "")[:300])
 
-    def enqueue_attachment_processing(self, *, file_id: str, thread_id: str) -> str:
+    def enqueue_attachment_processing(self, *, attachment_url: str, thread_id: str) -> str:
         """Ask Notion to enqueue processing of a staged attachment and return a task id."""
         endpoint = "https://www.notion.so/api/v3/enqueueTask"
-        payload = {"requestId": str(uuid.uuid4()), "type": "processAgentAttachment", "fileId": file_id, "threadId": thread_id, "spaceId": self.space_id}
+        payload = {
+            "task": {
+                "eventName": "processAgentAttachment",
+                "request": {
+                    "url": attachment_url,
+                    "spaceId": self.space_id,
+                    "aiSessionPointer": {
+                        "spaceId": self.space_id,
+                        "table": "thread",
+                        "id": thread_id,
+                    },
+                    "source": "user_upload",
+                    "clientVersion": NOTION_CLIENT_VERSION,
+                },
+                "cellRouting": {
+                    "spaceIds": [self.space_id],
+                },
+            },
+        }
         try:
             resp = self._scraper.post(endpoint, headers=self._build_chat_history_headers(), json=payload, timeout=30)
         except Exception as exc:
@@ -363,7 +398,7 @@ class NotionOpusAPI:
 
     def get_task_status(self, task_id: str) -> dict[str, Any]:
         endpoint = "https://www.notion.so/api/v3/getTasks"
-        payload = {"requestId": str(uuid.uuid4()), "taskIds": [task_id]}
+        payload = {"taskIds": [task_id]}
         try:
             resp = self._scraper.post(endpoint, headers=self._build_chat_history_headers(), json=payload, timeout=30)
         except Exception as exc:
@@ -377,7 +412,20 @@ class NotionOpusAPI:
         except Exception as exc:
             raise NotionUpstreamError("Get tasks response invalid JSON", status_code=resp.status_code, retriable=True, response_excerpt=(resp.text or "")[:300]) from exc
 
-        # Expect mapping taskId -> {status, success}
+        results = body.get("results")
+        if isinstance(results, list) and results:
+            entry = results[0] if isinstance(results[0], dict) else {}
+            state = str(entry.get("state") or "").strip()
+            status = entry.get("status") if isinstance(entry.get("status"), dict) else {}
+            result = status.get("result") if isinstance(status.get("result"), dict) else {}
+            result_type = str(result.get("type") or "").strip()
+            data = result.get("data") if isinstance(result.get("data"), dict) else {}
+            if state == "success" or result_type == "success":
+                return {"status": "completed", "success": True, "data": data}
+            if state == "error" or result_type == "error":
+                return {"status": "failed", "success": False, "data": data}
+            return {"status": state or result_type or "pending", "success": False, "data": data}
+
         items = body.get("tasks") or body
         if isinstance(items, dict):
             return items.get(task_id) or {"status": items.get("status"), "success": items.get("success")}
@@ -388,9 +436,22 @@ class NotionOpusAPI:
         # malformed
         raise NotionUpstreamError("Malformed getTasks response", retriable=False, response_excerpt=str(body)[:300])
 
-    def get_signed_read_url(self, file_id: str) -> str:
+    def get_signed_read_url(self, attachment_url: str, thread_id: str = "", download_name: str = "") -> str:
         endpoint = "https://www.notion.so/api/v3/getSignedFileUrls"
-        payload = {"requestId": str(uuid.uuid4()), "fileIds": [file_id], "spaceId": self.space_id}
+        payload = {
+            "urls": [
+                {
+                    "url": attachment_url,
+                    "download": False,
+                    "downloadName": download_name,
+                    "permissionRecord": {
+                        "table": "thread",
+                        "id": thread_id,
+                        "spaceId": self.space_id,
+                    },
+                }
+            ]
+        }
         try:
             resp = self._scraper.post(endpoint, headers=self._build_chat_history_headers(), json=payload, timeout=30)
         except Exception as exc:
@@ -404,14 +465,19 @@ class NotionOpusAPI:
         except Exception as exc:
             raise NotionUpstreamError("Signed URL response invalid JSON", status_code=resp.status_code, retriable=True, response_excerpt=(resp.text or "")[:300]) from exc
 
-        # body expected: { fileId: url } or { signedUrls: [{fileId, url}] }
         if isinstance(body, dict):
-            if file_id in body:
-                return body[file_id]
             if "signedUrls" in body and isinstance(body["signedUrls"], list):
                 for item in body["signedUrls"]:
-                    if str(item.get("fileId")) == str(file_id):
+                    if isinstance(item, str):
+                        return item
+                    if not isinstance(item, dict):
+                        continue
+                    if str(item.get("url") or item.get("sourceUrl") or attachment_url) == str(attachment_url):
                         return item.get("url") or ""
+                    if item.get("signedUrl"):
+                        return item.get("signedUrl") or ""
+            if attachment_url in body:
+                return body[attachment_url]
         raise NotionUpstreamError("Signed URL not found in response", retriable=False, response_excerpt=str(body)[:300])
 
     def _build_attachment_transcript_steps(self, uploaded_attachments: list[UploadedAttachment]) -> list[dict[str, Any]]:
