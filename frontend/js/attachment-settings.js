@@ -51,6 +51,9 @@
     const warnings = Array.isArray(attachments.warnings) ? attachments.warnings : [];
     const warningText = warnings.length ? `<br><strong>Warning:</strong> ${warnings.join(' ')}` : '';
     status.innerHTML = `${attachments.enabled ? 'Enabled' : 'Disabled'} · max ${attachments.max_attachments_per_request || 0} file(s), ${maxMb} MB each.${warningText}`;
+    if (window.NotionAI?.UI?.UpdateAttachmentsUX) {
+      window.NotionAI.UI.UpdateAttachmentsUX(attachments);
+    }
   }
 
   async function refreshFeatures() {
