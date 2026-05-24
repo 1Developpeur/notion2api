@@ -483,13 +483,14 @@ class NotionOpusAPI:
     def _build_attachment_transcript_steps(self, uploaded_attachments: list[UploadedAttachment]) -> list[dict[str, Any]]:
         steps: list[dict[str, Any]] = []
         for uploaded in uploaded_attachments:
-            step_value = {
+            steps.append({
+                "id": str(uuid.uuid4()),
+                "type": "attachment",
                 "fileName": uploaded.name,
                 "contentType": uploaded.content_type,
-                "attachmentUrl": uploaded.attachment_url,
+                "fileUrl": uploaded.attachment_url,
                 "metadata": uploaded.metadata or {},
-            }
-            steps.append({"type": "attachment", "value": step_value})
+            })
         return steps
 
     def fetch_chat_history(self, limit: int = 100, max_pages: int = 5) -> dict[str, Any]:
@@ -766,6 +767,8 @@ class NotionOpusAPI:
             attachment_steps = self._build_attachment_transcript_steps(uploaded_attachments)
             if attachment_steps:
                 notion_transcript = notion_transcript + attachment_steps
+                should_create_thread = False
+                request_profile["create_thread"] = False
 
         if request_profile["precreate_thread"] and should_create_thread:
             if not self._create_thread(thread_id, thread_type):
@@ -806,6 +809,7 @@ class NotionOpusAPI:
             "setUnreadState": thread_persistence["set_unread_state"],
             "isPartialTranscript": request_profile["is_partial_transcript"],
             "asPatchResponse": True,
+            "createdSource": "workflows" if uploaded_attachments else "ai_module",
             "isUserInAnySalesAssistedSpace": False,
             "isSpaceSalesAssisted": False,
             "threadParentPointer": {
@@ -816,12 +820,14 @@ class NotionOpusAPI:
             "transcript": notion_transcript,
         }
         if uploaded_attachments:
+            if not payload["createThread"]:
+                payload.pop("threadParentPointer", None)
             payload["attachments"] = [
                 {
+                    "type": "attachment",
                     "fileName": uploaded.name,
                     "contentType": uploaded.content_type,
-                    "attachmentUrl": uploaded.attachment_url,
-                    "metadata": uploaded.metadata or {},
+                    "fileUrl": uploaded.attachment_url,
                 }
                 for uploaded in uploaded_attachments
             ]

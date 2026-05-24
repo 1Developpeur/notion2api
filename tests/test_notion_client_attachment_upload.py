@@ -207,12 +207,28 @@ class NotionClientAttachmentTests(unittest.TestCase):
         uploader_instance.upload_attachments.assert_called_once()
         payload = self.client._scraper.post.call_args.kwargs["json"]
         self.assertEqual(payload["threadId"], "thread-actual")
+        self.assertFalse(payload["createThread"])
+        self.assertEqual(payload["createdSource"], "workflows")
+        self.assertNotIn("threadParentPointer", payload)
         self.assertIn("attachments", payload)
-        self.assertEqual(payload["attachments"][0]["fileName"], "a.csv")
-        self.assertEqual(payload["attachments"][0]["attachmentUrl"], "https://files.test/a.csv")
+        self.assertEqual(
+            payload["attachments"][0],
+            {
+                "type": "attachment",
+                "fileName": "a.csv",
+                "contentType": "text/csv",
+                "fileUrl": "https://files.test/a.csv",
+            },
+        )
+        self.assertNotIn("attachmentUrl", payload["attachments"][0])
         transcript_steps = [item for item in payload["transcript"] if item.get("type") == "attachment"]
         self.assertTrue(transcript_steps)
-        self.assertEqual(transcript_steps[0]["value"]["fileName"], "a.csv")
+        self.assertEqual(transcript_steps[0]["fileName"], "a.csv")
+        self.assertEqual(transcript_steps[0]["contentType"], "text/csv")
+        self.assertEqual(transcript_steps[0]["fileUrl"], "https://files.test/a.csv")
+        self.assertIn("id", transcript_steps[0])
+        self.assertNotIn("value", transcript_steps[0])
+        self.assertNotIn("attachmentUrl", transcript_steps[0])
         self.assertNotIn("https://signed.test/a.csv", str(payload))
         self.assertNotIn("token_v2", str(payload))
         self.assertNotIn("bytes", str(payload))
