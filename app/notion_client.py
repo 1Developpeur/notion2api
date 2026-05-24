@@ -32,6 +32,18 @@ def _env_flag(name: str, default: bool = False) -> bool:
     return value.strip().lower() in {"1", "true", "yes", "y", "on"}
 
 
+def _attachment_descriptor_debug_enabled() -> bool:
+    return _env_flag("ATTACHMENT_DESCRIPTOR_DEBUG", False)
+
+
+def _redact_response_excerpt(text: str) -> str:
+    excerpt = (text or "").strip().replace("\n", " ")[:500]
+    for marker in ("token_v2=", "cookie:", "Cookie:", "Authorization:"):
+        if marker in excerpt:
+            excerpt = excerpt.replace(marker, f"{marker}[redacted]")
+    return excerpt
+
+
 def _default_persist_threads() -> bool:
     """Preserve Notion-visible threads only for stateful local-memory mode by default."""
     app_mode = os.getenv("APP_MODE", "heavy").strip().lower()
@@ -239,20 +251,71 @@ class NotionOpusAPI:
             "spaceId": self.space_id,
             "createThread": create_thread,
         }
+        if _attachment_descriptor_debug_enabled():
+            logger.warning(
+                "Attachment descriptor request",
+                extra={
+                    "request_info": {
+                        "event": "attachment_descriptor_request",
+                        "endpoint": "getUploadFileUrlForAssistantChatTranscriptUpload",
+                        "payload_keys": sorted(payload.keys()),
+                        "fileName": name,
+                        "contentType": content_type,
+                        "size": size,
+                        "threadId_present": bool(thread_id),
+                        "createThread": create_thread,
+                        "spaceId_present": bool(self.space_id),
+                        "userId_present": bool(self.user_id),
+                    }
+                },
+            )
         try:
             resp = self._scraper.post(endpoint, headers=self._build_chat_history_headers(), json=payload, timeout=30)
         except Exception as exc:
             raise NotionUpstreamError("Failed to request upload descriptor", status_code=None, retriable=True, response_excerpt=str(exc)) from exc
 
         if resp.status_code != 200:
-            raise NotionUpstreamError("Upload descriptor request failed", status_code=resp.status_code, retriable=resp.status_code >= 500, response_excerpt=(resp.text or "")[:300])
+            excerpt = _redact_response_excerpt(resp.text or "")
+            if _attachment_descriptor_debug_enabled():
+                logger.warning(
+                    "Attachment descriptor response failure",
+                    extra={
+                        "request_info": {
+                            "event": "attachment_descriptor_response_failure",
+                            "status_code": resp.status_code,
+                            "retriable": resp.status_code >= 500,
+                            "response_excerpt": excerpt,
+                        }
+                    },
+                )
+            raise NotionUpstreamError(
+                "Upload descriptor request failed",
+                status_code=resp.status_code,
+                retriable=resp.status_code >= 500,
+                response_excerpt=excerpt,
+            )
 
         try:
             body = resp.json()
         except Exception as exc:
             raise NotionUpstreamError("Upload descriptor response invalid JSON", status_code=resp.status_code, retriable=True, response_excerpt=(resp.text or "")[:300]) from exc
 
-        return self._normalize_upload_descriptor(body)
+        descriptor = self._normalize_upload_descriptor(body)
+        if _attachment_descriptor_debug_enabled():
+            logger.warning(
+                "Attachment descriptor response ok",
+                extra={
+                    "request_info": {
+                        "event": "attachment_descriptor_response_ok",
+                        "descriptor_keys": sorted(descriptor.keys()),
+                        "has_upload_url": bool(descriptor.get("upload_url")),
+                        "has_file_id": bool(descriptor.get("file_id")),
+                        "has_attachment_url": bool(descriptor.get("attachment_url")),
+                        "field_keys": sorted((descriptor.get("fields") or {}).keys()),
+                    }
+                },
+            )
+        return descriptor
 
     def perform_multipart_upload(self, *, descriptor: dict[str, Any], name: str, data: bytes, content_type: str) -> None:
         """Perform multipart upload to a signed upload URL using descriptor data.
