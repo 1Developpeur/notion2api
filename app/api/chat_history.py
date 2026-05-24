@@ -183,7 +183,7 @@ async def sync_from_notion(request: Request) -> dict[str, Any]:
     """Pull chat-history metadata by default; hydrate full message bodies only when requested."""
     try:
         payload = await request.json()
-    except Exception:
+    except (TypeError, ValueError):
         payload = {}
 
     if not isinstance(payload, dict):
@@ -198,7 +198,7 @@ async def sync_from_notion(request: Request) -> dict[str, Any]:
         account_index = int(account_index)
         limit = max(1, min(int(limit), 500))
         max_pages = max(1, min(int(max_pages), 20))
-    except Exception as exc:
+    except (TypeError, ValueError) as exc:
         raise HTTPException(status_code=400, detail="Invalid import parameters") from exc
 
     client = _get_account_client(request, account_index)
@@ -269,7 +269,7 @@ async def hydrate_thread(thread_id: str, request: Request) -> dict[str, Any]:
     """Hydrate full messages for one selected archived thread."""
     try:
         payload = await request.json()
-    except Exception:
+    except (TypeError, ValueError):
         payload = {}
     if not isinstance(payload, dict):
         payload = {}
@@ -277,7 +277,7 @@ async def hydrate_thread(thread_id: str, request: Request) -> dict[str, Any]:
     account_index = payload.get("account_index", 0)
     try:
         account_index = int(account_index)
-    except Exception as exc:
+    except (TypeError, ValueError) as exc:
         raise HTTPException(status_code=400, detail="Invalid hydrate parameters") from exc
 
     store = _store()

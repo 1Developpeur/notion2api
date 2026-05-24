@@ -18,8 +18,10 @@ def _merge_bundle(target: dict[str, Any], source: dict[str, Any]) -> None:
 
 
 def _post_json(client: NotionOpusAPI, url: str, payload: dict[str, Any]) -> dict[str, Any]:
+    # pylint: disable-next=protected-access
     response = client._scraper.post(  # noqa: SLF001 - reusing the client transport and auth headers
         url,
+        # pylint: disable-next=protected-access
         headers=client._build_chat_history_headers(),  # noqa: SLF001 - shared header shape already exists on the client
         json=payload,
         timeout=(15, 60),

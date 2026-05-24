@@ -1544,7 +1544,17 @@ async def create_chat_completion(
                     "Notion upstream returned empty content.", retriable=True
                 )
 
-            def openai_stream_generator() -> Generator[str, None, None]:
+            first_stream_item = first_item
+            active_stream_gen = stream_gen
+            attempt_no = attempt
+            active_client = client
+
+            def openai_stream_generator(
+                first_stream_item: Any = first_stream_item,
+                active_stream_gen: Any = active_stream_gen,
+                attempt_no: int = attempt_no,
+                active_client: Any = active_client,
+            ) -> Generator[str, None, None]:
                 streamed_content_accumulator = ""
                 thinking_accumulator = ""
                 authoritative_final_content = ""
@@ -1555,7 +1565,7 @@ async def create_chat_completion(
                 recent_thinking_buffer: list[str] = []
 
                 try:
-                    for raw_item in _iter_stream_items(first_item, stream_gen):
+                    for raw_item in _iter_stream_items(first_stream_item, active_stream_gen):
                         item = _normalize_stream_item(raw_item)
                         item_type = item.get("type")
 
@@ -1678,7 +1688,7 @@ async def create_chat_completion(
                             "request_info": {
                                 "event": "stream_cancelled_by_client",
                                 "conversation_id": conversation_id,
-                                "attempt": attempt,
+                                "attempt": attempt_no,
                             }
                         },
                     )
@@ -1691,13 +1701,13 @@ async def create_chat_completion(
                                 "request_info": {
                                     "event": "stream_client_disconnected",
                                     "conversation_id": conversation_id,
-                                    "attempt": attempt,
+                                    "attempt": attempt_no,
                                 }
                             },
                         )
                         return
-                    if isinstance(exc, NotionUpstreamError) and client is not None and getattr(exc, 'retriable', False):
-                        pool.mark_failed(client)
+                    if isinstance(exc, NotionUpstreamError) and active_client is not None and getattr(exc, 'retriable', False):
+                        pool.mark_failed(active_client)
                     log_method = (
                         logger.warning
                         if isinstance(exc, NotionUpstreamError)
@@ -1710,7 +1720,7 @@ async def create_chat_completion(
                             "request_info": {
                                 "event": "stream_interrupted",
                                 "conversation_id": conversation_id,
-                                "attempt": attempt,
+                                "attempt": attempt_no,
                                 "is_upstream_error": isinstance(
                                     exc, NotionUpstreamError
                                 ),

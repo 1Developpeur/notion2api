@@ -1,3 +1,5 @@
+"""SQLite-backed chat history storage and query helpers."""
+
 from __future__ import annotations
 
 import contextlib
@@ -137,7 +139,7 @@ def _time_sort_value(value: Any) -> tuple[int, str]:
 
         normalized = text.replace("Z", "+00:00")
         return (int(datetime.fromisoformat(normalized).timestamp() * 1000), text)
-    except Exception:
+    except (TypeError, ValueError, OverflowError):
         return (0, text)
 
 
@@ -184,13 +186,16 @@ def _visible_messages(messages: list[dict[str, Any]]) -> list[dict[str, Any]]:
 def _process_steps(messages: list[dict[str, Any]]) -> list[dict[str, Any]]:
     steps: list[dict[str, Any]] = []
     seen: set[str] = set()
-    inference_step_ids = {
-        str((message.get("raw") or {}).get("id"))
-        for message in messages
-        if isinstance(message.get("raw"), dict) and (message.get("raw") or {}).get("type") == "agent-inference"
-    }
+    inference_step_ids: set[str] = set()
     for message in messages:
-        raw = message.get("raw") if isinstance(message.get("raw"), dict) else {}
+        raw_any = message.get("raw")
+        raw = raw_any if isinstance(raw_any, dict) else {}
+        if raw.get("type") == "agent-inference":
+            inference_step_ids.add(str(raw.get("id")))
+
+    for message in messages:
+        raw_any = message.get("raw")
+        raw = raw_any if isinstance(raw_any, dict) else {}
         raw_type = str(raw.get("type") or "").strip()
         label = ""
         detail = ""
@@ -199,8 +204,11 @@ def _process_steps(messages: list[dict[str, Any]]) -> list[dict[str, Any]]:
                 continue
             label = str(raw.get("toolName") or raw.get("toolType") or "Tool result").strip()
             detail = str(raw.get("error") or raw.get("state") or "").strip()
-        elif raw_type == "agent-inference" and isinstance(raw.get("value"), list):
-            for part in raw["value"]:
+        elif raw_type == "agent-inference":
+            value_parts = raw.get("value")
+            if not isinstance(value_parts, list):
+                value_parts = []
+            for part in value_parts:
                 if not isinstance(part, dict):
                     continue
                 if part.get("type") == "tool_use":
