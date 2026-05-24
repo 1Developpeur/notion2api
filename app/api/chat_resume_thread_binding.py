@@ -90,10 +90,18 @@ def _patch_pool_for_request(request: Any, conversation_id: str) -> Callable[[], 
                 thread_id=active_thread_id,
                 attachments=attachments,
             )
-            if not bound_thread_id:
-                created_thread_id = getattr(client, "current_thread_id", None)
-                _set_bound_thread_id(manager, conversation_id, created_thread_id)
-            return stream
+
+            def generator_wrapper():
+                try:
+                    for chunk in stream:
+                        yield chunk
+                finally:
+                    if not bound_thread_id:
+                        created_thread_id = getattr(client, "current_thread_id", None)
+                        if created_thread_id:
+                            _set_bound_thread_id(manager, conversation_id, created_thread_id)
+
+            return generator_wrapper()
 
         client.stream_response = patched_stream_response
         touched.append((client, original_stream_response))
