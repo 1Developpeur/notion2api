@@ -29,16 +29,22 @@ class NotionAttachmentUploader:
         self.notion = notion_client
 
         if poll_interval is None:
-            try:
-                poll_interval = float(os.getenv("NOTION_ATTACHMENT_POLL_INTERVAL_SECONDS", "2.0"))
-            except (TypeError, ValueError):
-                poll_interval = 2.0
+            if hasattr(notion_client, "poll_interval") and notion_client.poll_interval is not None:
+                poll_interval = notion_client.poll_interval
+            else:
+                try:
+                    poll_interval = float(os.getenv("NOTION_ATTACHMENT_POLL_INTERVAL_SECONDS", "2.0"))
+                except (TypeError, ValueError):
+                    poll_interval = 2.0
 
         if poll_timeout is None:
-            try:
-                poll_timeout = float(os.getenv("NOTION_ATTACHMENT_POLL_TIMEOUT_SECONDS", "60.0"))
-            except (TypeError, ValueError):
-                poll_timeout = 60.0
+            if hasattr(notion_client, "poll_timeout") and notion_client.poll_timeout is not None:
+                poll_timeout = notion_client.poll_timeout
+            else:
+                try:
+                    poll_timeout = float(os.getenv("NOTION_ATTACHMENT_POLL_TIMEOUT_SECONDS", "60.0"))
+                except (TypeError, ValueError):
+                    poll_timeout = 60.0
 
         self.poll_interval = poll_interval
         self.poll_timeout = poll_timeout

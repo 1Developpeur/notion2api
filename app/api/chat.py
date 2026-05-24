@@ -935,6 +935,20 @@ async def _handle_lite_request(
         try:
             client = pool.get_client()
 
+            # Read poll configuration from headers if available
+            poll_interval_hdr = request.headers.get("x-notion-poll-interval")
+            poll_timeout_hdr = request.headers.get("x-notion-poll-timeout")
+            if poll_interval_hdr:
+                try:
+                    client.poll_interval = float(poll_interval_hdr)
+                except ValueError:
+                    pass
+            if poll_timeout_hdr:
+                try:
+                    client.poll_timeout = float(poll_timeout_hdr)
+                except ValueError:
+                    pass
+
             # 构建 Lite transcript（无历史记忆）
             transcript = build_lite_transcript(user_prompt, req_body.model)
 
@@ -1124,6 +1138,20 @@ async def _handle_standard_request(
         client = None
         try:
             client = pool.get_client()
+
+            # Read poll configuration from headers if available
+            poll_interval_hdr = request.headers.get("x-notion-poll-interval")
+            poll_timeout_hdr = request.headers.get("x-notion-poll-timeout")
+            if poll_interval_hdr:
+                try:
+                    client.poll_interval = float(poll_interval_hdr)
+                except ValueError:
+                    pass
+            if poll_timeout_hdr:
+                try:
+                    client.poll_timeout = float(poll_timeout_hdr)
+                except ValueError:
+                    pass
 
             # 提取并规范化消息与附件
             cleaned_msgs, attachments = normalize_chat_messages([m.dict() for m in req_body.messages], getattr(req_body, "attachments", None))
