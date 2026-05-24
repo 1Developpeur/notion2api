@@ -23,6 +23,12 @@ class ConversationManager:
         os.makedirs(os.path.dirname(os.path.abspath(self.db_path)), exist_ok=True)
         self._init_db()
 
+    def _env_flag(self, name: str, default: bool = False) -> bool:
+        raw = os.getenv(name)
+        if raw is None:
+            return default
+        return raw.strip().lower() in {"1", "true", "yes", "on"}
+
     def _get_conn(self) -> sqlite3.Connection:
         conn = sqlite3.connect(self.db_path, timeout=10)
         conn.row_factory = sqlite3.Row
@@ -1174,11 +1180,44 @@ class ConversationManager:
     ) -> Dict[str, Any]:
         with self._get_conn() as conn:
             row = conn.execute(
-                "SELECT id FROM conversations WHERE id = ?",
+                "SELECT id, COALESCE(thread_id, '') AS thread_id FROM conversations WHERE id = ?",
                 (conversation_id,),
             ).fetchone()
             if not row:
                 raise ValueError(f"Conversation ID '{conversation_id}' does not exist.")
+
+            remote_thread_id = str(row["thread_id"] or "").strip()
+            remote_native_enabled = self._env_flag("NOTION_REMOTE_NATIVE_CONTINUE", True)
+            recall_requested = bool((recall_query or "").strip())
+            if remote_native_enabled and remote_thread_id and not recall_requested:
+                gemini_mode = is_gemini_model(model_name)
+                transcript: List[Dict[str, Any]] = [
+                    self._build_config_block(model_name, gemini_mode=gemini_mode),
+                    self._build_context_block(notion_client, gemini_mode=gemini_mode),
+                    self._build_dialog_block(
+                        "user",
+                        new_prompt,
+                        notion_client,
+                        gemini_mode=gemini_mode,
+                    ),
+                ]
+                logger.info(
+                    "Using remote-native Notion thread continuation",
+                    extra={
+                        "request_info": {
+                            "event": "remote_native_thread_continue",
+                            "conversation_id": conversation_id,
+                            "thread_id": remote_thread_id,
+                            "transcript_length": len(transcript),
+                            "replayed_local_history": False,
+                        }
+                    },
+                )
+                return {
+                    "transcript": transcript,
+                    "memory_degraded": False,
+                    "remote_native": True,
+                }
 
             # 强制使用新的滑动窗口表（单一数据源）
             sliding_window_rounds = self.get_sliding_window_round_count(conn, conversation_id)
