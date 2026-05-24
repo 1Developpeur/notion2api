@@ -39,18 +39,20 @@ def _valid_bearer_token(auth_header: str, expected_key: str) -> bool:
 async def lifespan(app: FastAPI):
     # 启动时初始化状态
     app.state.account_pool = AccountPool(ACCOUNTS)
+    # Keep durable conversation storage available in every mode so chat-history
+    # resume/fork can create real local conversations without forcing heavy mode.
+    app.state.conversation_manager = ConversationManager()
 
     # 确定运行模式
     if is_lite_mode():
         mode = "lite"
-        logger.info("Service starting up in LITE mode", extra={"request_info": {"event": "startup", "accounts": len(ACCOUNTS), "mode": "lite"}})
+        logger.info("Service starting up in LITE mode", extra={"request_info": {"event": "startup", "accounts": len(ACCOUNTS), "mode": "lite", "conversation_storage": True}})
     elif is_standard_mode():
         mode = "standard"
-        logger.info("Service starting up in STANDARD mode", extra={"request_info": {"event": "startup", "accounts": len(ACCOUNTS), "mode": "standard"}})
+        logger.info("Service starting up in STANDARD mode", extra={"request_info": {"event": "startup", "accounts": len(ACCOUNTS), "mode": "standard", "conversation_storage": True}})
     else:
         mode = "heavy"
-        app.state.conversation_manager = ConversationManager()
-        logger.info("Service starting up in HEAVY mode", extra={"request_info": {"event": "startup", "accounts": len(ACCOUNTS), "mode": "heavy"}})
+        logger.info("Service starting up in HEAVY mode", extra={"request_info": {"event": "startup", "accounts": len(ACCOUNTS), "mode": "heavy", "conversation_storage": True}})
 
     app.state.start_time = time.time()
     yield
