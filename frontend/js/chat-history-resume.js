@@ -23,12 +23,6 @@
     return headers;
   }
 
-  function esc(value) {
-    const node = document.createElement('div');
-    node.textContent = value == null ? '' : String(value);
-    return node.innerHTML;
-  }
-
   function currentRemoteThreadId() {
     const currentChatId = String(window.NotionAI?.Core?.State?.get?.('currentChatId') || '');
     if (!currentChatId.startsWith(REMOTE_ID_PREFIX)) return '';
@@ -57,7 +51,8 @@
 
     const mode = String(result?.mode || 'fork').toLowerCase() === 'continue' ? 'continue' : 'fork';
     const title = String(result?.title || result?.thread_id || 'Resumed chat').trim();
-    const chatId = `${mode}-remote-${conversationId}`;
+    const remoteThreadId = result?.remote_thread_id || result?.thread_id || null;
+    const chatId = Date.now().toString();
     const messages = normalizeMessages(result?.messages || []);
 
     const chat = {
@@ -66,12 +61,14 @@
       messages,
       starred: false,
       conversationId,
-      remoteThreadId: result?.remote_thread_id || result?.thread_id || null,
+      remoteThreadId,
       resumeMode: mode
     };
 
     let chats = window.NotionAI?.Core?.State?.get?.('chats') || [];
-    chats = Array.isArray(chats) ? chats.filter(item => item?.id !== chatId) : [];
+    chats = Array.isArray(chats)
+      ? chats.filter(item => !(item?.conversationId === conversationId || (remoteThreadId && item?.remoteThreadId === remoteThreadId && item?.resumeMode === mode)))
+      : [];
     chats.unshift(chat);
     window.NotionAI.Core.State.set('chats', chats);
     window.NotionAI.Chat.Storage.saveChats();
