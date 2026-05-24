@@ -245,6 +245,11 @@ def chat_history_resume_js():
     return _frontend_js_response("chat-history-resume.js")
 
 
+@app.get("/attachment-settings.js", include_in_schema=False)
+def attachment_settings_js():
+    return _frontend_js_response("attachment-settings.js")
+
+
 @app.get("/", include_in_schema=False)
 def frontend_index(request: Request):
     index_path = os.path.join(frontend_dir, "index.html")
@@ -257,6 +262,7 @@ def frontend_index(request: Request):
         '<script src="/chat-history-browser.js"></script>',
         '<script src="/chat-history-main.js"></script>',
         '<script src="/chat-history-resume.js"></script>',
+        '<script src="/attachment-settings.js"></script>',
     ]
     missing_tags = [tag for tag in script_tags if tag not in html]
     if missing_tags:
