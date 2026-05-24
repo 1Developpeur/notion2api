@@ -13,6 +13,7 @@ from app.account_pool import AccountPool
 from app.api.chat import router as chat_router
 from app.api.chat_history import router as chat_history_router
 from app.api.chat_history_resume import router as chat_history_resume_router
+from app.api.chat_resume_thread_binding import apply_chat_resume_thread_bindings
 from app.api.models import router as models_router
 from app.api.responses import router as responses_router
 from app.config import ACCOUNTS, ALLOWED_ORIGINS, API_KEY, is_lite_mode, is_standard_mode
@@ -20,6 +21,9 @@ from app.conversation import ConversationManager
 from app.core.errors import openai_error_payload
 from app.limiter import limiter
 from app.logger import logger
+
+
+apply_chat_resume_thread_bindings()
 
 
 def _valid_bearer_token(auth_header: str, expected_key: str) -> bool:
