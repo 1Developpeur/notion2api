@@ -7,6 +7,7 @@ provided `notion_client` where possible so tests can mock the client easily.
 
 from __future__ import annotations
 
+import os
 import time
 import uuid
 from typing import Any, Dict, List, Optional, Tuple
@@ -24,8 +25,21 @@ class NotionAttachmentUploadError(RuntimeError):
 
 
 class NotionAttachmentUploader:
-    def __init__(self, notion_client: Any, poll_interval: float = 0.1, poll_timeout: float = 30.0) -> None:
+    def __init__(self, notion_client: Any, poll_interval: float | None = None, poll_timeout: float | None = None) -> None:
         self.notion = notion_client
+
+        if poll_interval is None:
+            try:
+                poll_interval = float(os.getenv("NOTION_ATTACHMENT_POLL_INTERVAL_SECONDS", "2.0"))
+            except (TypeError, ValueError):
+                poll_interval = 2.0
+
+        if poll_timeout is None:
+            try:
+                poll_timeout = float(os.getenv("NOTION_ATTACHMENT_POLL_TIMEOUT_SECONDS", "60.0"))
+            except (TypeError, ValueError):
+                poll_timeout = 60.0
+
         self.poll_interval = poll_interval
         self.poll_timeout = poll_timeout
 
