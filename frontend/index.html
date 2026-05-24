@@ -1830,6 +1830,56 @@ async function handleSend(){
   finally{window.NotionAI.Chat.Streaming.consumePayload=origConsume;STATE.isGenerating=false;window.NotionAI.UI.Input.enable();window.NotionAI.UI.Input.focus();STATE.controller=null;_updateSendButton(false)}
 }
 
+window.NotionAI.UI.UpdateAttachmentsUX = function(attachments) {
+  const enabled = attachments?.enabled;
+  const attachBtn = document.getElementById('attachBtn');
+  const attachmentInput = document.getElementById('attachmentInput');
+  
+  const existingWarning = document.getElementById('attachmentWarningMsg');
+  if (existingWarning) {
+    existingWarning.parentNode.removeChild(existingWarning);
+  }
+  
+  if (enabled === false) {
+    if (attachBtn) {
+      attachBtn.disabled = true;
+      attachBtn.style.opacity = '0.5';
+      attachBtn.style.cursor = 'not-allowed';
+      attachBtn.title = 'File uploads disabled. Set ENABLE_ATTACHMENTS=true.';
+    }
+    if (attachmentInput) {
+      attachmentInput.disabled = true;
+    }
+    
+    const warningDiv = document.createElement('div');
+    warningDiv.id = 'attachmentWarningMsg';
+    warningDiv.style.fontSize = '12px';
+    warningDiv.style.color = '#d93025';
+    warningDiv.style.marginTop = '6px';
+    warningDiv.style.display = 'flex';
+    warningDiv.style.alignItems = 'center';
+    warningDiv.style.gap = '6px';
+    warningDiv.innerHTML = '<span style="font-size:14px">⚠️</span> <span>File uploads disabled. Set <code>ENABLE_ATTACHMENTS=true</code>.</span>';
+    
+    const toolbar = document.querySelector('.input-toolbar');
+    if (toolbar) {
+      toolbar.parentNode.insertBefore(warningDiv, toolbar);
+    }
+  } else {
+    if (attachBtn) {
+      attachBtn.disabled = false;
+      attachBtn.style.opacity = '';
+      attachBtn.style.cursor = '';
+      attachBtn.title = 'Attach files';
+    }
+    if (attachmentInput) {
+      attachmentInput.disabled = false;
+    }
+  }
+  
+  renderSettingsWarnings(attachments?.warnings || []);
+};
+
 async function checkFeatures() {
   try {
     const response = await window.NotionAI.API.Client.get('/v1/features');
@@ -1840,55 +1890,9 @@ async function checkFeatures() {
     const data = await response.json();
     STATE.features = data;
     
-    const attachments = data?.attachments || {};
-    const enabled = attachments.enabled;
-    
-    const attachBtn = document.getElementById('attachBtn');
-    const attachmentInput = document.getElementById('attachmentInput');
-    
-    const existingWarning = document.getElementById('attachmentWarningMsg');
-    if (existingWarning) {
-      existingWarning.parentNode.removeChild(existingWarning);
+    if (window.NotionAI.UI.UpdateAttachmentsUX) {
+      window.NotionAI.UI.UpdateAttachmentsUX(data?.attachments);
     }
-    
-    if (enabled === false) {
-      if (attachBtn) {
-        attachBtn.disabled = true;
-        attachBtn.style.opacity = '0.5';
-        attachBtn.style.cursor = 'not-allowed';
-        attachBtn.title = 'File uploads disabled. Set ENABLE_ATTACHMENTS=true.';
-      }
-      if (attachmentInput) {
-        attachmentInput.disabled = true;
-      }
-      
-      const warningDiv = document.createElement('div');
-      warningDiv.id = 'attachmentWarningMsg';
-      warningDiv.style.fontSize = '12px';
-      warningDiv.style.color = '#d93025';
-      warningDiv.style.marginTop = '6px';
-      warningDiv.style.display = 'flex';
-      warningDiv.style.alignItems = 'center';
-      warningDiv.style.gap = '6px';
-      warningDiv.innerHTML = '<span style="font-size:14px">⚠️</span> <span>File uploads disabled. Set <code>ENABLE_ATTACHMENTS=true</code>.</span>';
-      
-      const toolbar = document.querySelector('.input-toolbar');
-      if (toolbar) {
-        toolbar.parentNode.insertBefore(warningDiv, toolbar);
-      }
-    } else {
-      if (attachBtn) {
-        attachBtn.disabled = false;
-        attachBtn.style.opacity = '';
-        attachBtn.style.cursor = '';
-        attachBtn.title = 'Attach files';
-      }
-      if (attachmentInput) {
-        attachmentInput.disabled = false;
-      }
-    }
-    
-    renderSettingsWarnings(attachments.warnings || []);
   } catch (err) {
     console.error('Error checking features:', err);
   }
