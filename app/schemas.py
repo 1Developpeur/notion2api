@@ -7,25 +7,6 @@ from pydantic import BaseModel, Field
 # ================================
 
 
-def _attachment_to_content_part(item: Any) -> Any:
-    """Normalize a top-level attachment object into an OpenAI-style content part."""
-    if not isinstance(item, dict):
-        return item
-    if item.get("type"):
-        return item
-    normalized = dict(item)
-    content_type = str(
-        normalized.get("content_type")
-        or normalized.get("mime_type")
-        or ""
-    ).lower()
-    if content_type.startswith("image/") or normalized.get("image_url"):
-        normalized["type"] = "image_url"
-    else:
-        normalized["type"] = "file"
-    return normalized
-
-
 class ChatMessage(BaseModel):
     """单条对话消息"""
     role: Literal["user", "assistant", "system"]
@@ -39,6 +20,14 @@ class ChatCompletionRequest(BaseModel):
     """
     OpenAI-Compatible 发起完成请求的 Payload。
     保留 `conversation_id` 作为特定的扩展字段，若缺失则视为独立请求。
+
+    Attachment handling note:
+    - Keep top-level `attachments` separate from `messages` at the schema layer.
+    - app.attachments.normalizer.normalize_chat_messages() is the single canonical
+      place that merges/normalizes structured content parts and top-level attachments.
+    - Mutating attachments into the last user message here caused heavy-mode code to
+      see a hybrid request before normalization, which could duplicate screenshot/file
+      content across message preparation, persistence, and upstream dispatch.
     """
     model: str = Field(default="", description="Requested model.")
     messages: List[ChatMessage]
@@ -47,26 +36,8 @@ class ChatCompletionRequest(BaseModel):
     conversation_id: Optional[str] = Field(default=None, description="Extension for stateful conversation tracking.")
     attachments: Optional[List[Dict[str, Any]]] = Field(
         default=None,
-        description="Optional attachment descriptors. Merged into the last user message.",
+        description="Optional attachment descriptors. Normalized by the chat handler.",
     )
-
-    def __init__(self, **data: Any):
-        super().__init__(**data)
-        if not self.attachments:
-            return
-        attachment_parts = [_attachment_to_content_part(item) for item in self.attachments]
-        if not attachment_parts:
-            return
-        for msg in reversed(self.messages):
-            if msg.role != "user":
-                continue
-            if isinstance(msg.content, list):
-                msg.content = [*msg.content, *attachment_parts]
-            elif msg.content in (None, ""):
-                msg.content = attachment_parts
-            else:
-                msg.content = [{"type": "text", "text": str(msg.content)}, *attachment_parts]
-            break
 
 # ================================
 # 非流式返回 Schema
@@ -98,20 +69,15 @@ class ChatCompletionResponse(BaseModel):
 # ================================
 
 class ChatCompletionChunkDelta(BaseModel):
-    """SSE Delta Block"""
     content: Optional[str] = None
     role: Optional[str] = None
 
 class ChatCompletionChunkChoice(BaseModel):
-    """SSE Choice Block"""
     index: int = 0
     delta: ChatCompletionChunkDelta
     finish_reason: Optional[str] = None
 
 class ChatCompletionChunk(BaseModel):
-    """
-    OpenAI-Compatible 流式 Chunk
-    """
     id: str
     object: str = "chat.completion.chunk"
     created: int = Field(default_factory=lambda: int(time.time()))
