@@ -10,6 +10,7 @@ from fastapi.staticfiles import StaticFiles
 from slowapi.errors import RateLimitExceeded
 
 from app.account_pool import AccountPool
+from app.api.attachment_guard import attachment_deployment_guard
 from app.api.chat import router as chat_router
 from app.api.chat_history import router as chat_history_router
 from app.api.chat_history_resume import router as chat_history_resume_router
@@ -122,6 +123,9 @@ async def generic_exception_handler(request: Request, exc: Exception):
             }
         },
     )
+
+# Attachment deployment guard runs before body parsing in chat/response handlers.
+app.middleware("http")(attachment_deployment_guard)
 
 # 结构化日志中间件
 @app.middleware("http")
