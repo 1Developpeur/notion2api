@@ -6,7 +6,8 @@
     selectedIds: new Set(),
     offset: 0,
     hasMore: false,
-    loading: false
+    loading: false,
+    activeThreadId: null
   };
 
   function getBaseUrl() {
@@ -365,6 +366,7 @@
   }
 
   async function selectThread(thread, threads) {
+    browserState.activeThreadId = thread.id;
     const list = document.getElementById('chatHistoryBrowserList');
     list?.querySelectorAll('.chat-history-browser-item').forEach(el => el.classList.toggle('active', el.dataset.threadId === thread.id));
     const preview = document.getElementById('chatHistoryBrowserPreview');
@@ -426,12 +428,24 @@
       updateSummary();
       renderThreadList(browserState.threads);
       updateSelectionControls();
-      setIdlePreview(browserState.threads);
+      if (!browserState.activeThreadId) {
+        setIdlePreview(browserState.threads);
+      }
     } catch (err) {
       browserState.loading = false;
       setSummary('Failed to load chat history.');
       if (list) list.innerHTML = `<div class="chat-history-empty-warning">${esc(err?.message || String(err))}</div>`;
     }
+  }
+
+  async function reloadSelected() {
+    if (!browserState.activeThreadId) return;
+    const thread = browserState.threads.find(item => item.id === browserState.activeThreadId);
+    if (!thread) {
+      browserState.activeThreadId = null;
+      return;
+    }
+    await selectThread(thread, browserState.threads);
   }
 
   function openModal() {
@@ -465,6 +479,11 @@
 
   function init() {
     ensureStyles();
+    window.addEventListener('chat-history:updated', async () => {
+      const isOpen = !document.getElementById('chatHistoryBrowserModal')?.classList.contains('hidden');
+      await loadThreads();
+      if (isOpen) await reloadSelected();
+    });
     if (injectButton()) return;
     const observer = new MutationObserver(() => {
       if (injectButton()) observer.disconnect();
@@ -472,6 +491,13 @@
     observer.observe(document.body, { childList: true, subtree: true });
     setTimeout(() => observer.disconnect(), 10000);
   }
+
+  window.NotionAI = window.NotionAI || {};
+  window.NotionAI.ChatHistoryBrowser = {
+    refresh: () => loadThreads(),
+    reloadSelected,
+    open: openModal
+  };
 
   if (document.readyState === 'loading') {
     document.addEventListener('DOMContentLoaded', init);

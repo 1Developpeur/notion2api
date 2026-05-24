@@ -183,7 +183,7 @@ async def sync_from_notion(request: Request) -> dict[str, Any]:
     """Pull chat-history metadata by default; hydrate full message bodies only when requested."""
     try:
         payload = await request.json()
-    except Exception:
+    except (TypeError, ValueError):
         payload = {}
 
     if not isinstance(payload, dict):
@@ -198,7 +198,7 @@ async def sync_from_notion(request: Request) -> dict[str, Any]:
         account_index = int(account_index)
         limit = max(1, min(int(limit), 500))
         max_pages = max(1, min(int(max_pages), 20))
-    except Exception as exc:
+    except (TypeError, ValueError) as exc:
         raise HTTPException(status_code=400, detail="Invalid import parameters") from exc
 
     client = _get_account_client(request, account_index)
@@ -269,7 +269,7 @@ async def hydrate_thread(thread_id: str, request: Request) -> dict[str, Any]:
     """Hydrate full messages for one selected archived thread."""
     try:
         payload = await request.json()
-    except Exception:
+    except (TypeError, ValueError):
         payload = {}
     if not isinstance(payload, dict):
         payload = {}
@@ -277,7 +277,7 @@ async def hydrate_thread(thread_id: str, request: Request) -> dict[str, Any]:
     account_index = payload.get("account_index", 0)
     try:
         account_index = int(account_index)
-    except Exception as exc:
+    except (TypeError, ValueError) as exc:
         raise HTTPException(status_code=400, detail="Invalid hydrate parameters") from exc
 
     store = _store()
@@ -312,6 +312,45 @@ async def hydrate_thread(thread_id: str, request: Request) -> dict[str, Any]:
             "message_count": (hydrated or {}).get("message_count", 0),
             "hydrated": bool((hydrated or {}).get("message_count", 0)),
         },
+    }
+
+
+@router.post("/threads/{thread_id}/resume")
+async def resume_thread(thread_id: str, request: Request) -> dict[str, Any]:
+    """Create a real local conversation from one archived thread (fork or continue)."""
+    payload = await _request_payload(request)
+    mode = str(payload.get("mode") or "fork").strip().lower()
+    if mode not in {"fork", "continue"}:
+        raise HTTPException(status_code=400, detail="mode must be either 'fork' or 'continue'")
+
+    thread = _store().get_thread(thread_id)
+    if not thread:
+        raise HTTPException(status_code=404, detail="Thread not found")
+
+    manager = request.app.state.conversation_manager
+    conversation_id = manager.new_conversation()
+
+    if mode == "continue":
+        manager.set_conversation_thread_id(conversation_id, thread_id)
+
+    seeded_messages: list[dict[str, str]] = []
+    for message in thread.get("messages") or []:
+        role = str(message.get("role") or "").strip().lower()
+        if role not in {"user", "assistant", "system"}:
+            continue
+        content = str(message.get("text") or "").strip()
+        if not content:
+            continue
+        manager.add_message(conversation_id, role, content)
+        seeded_messages.append({"role": role, "content": content})
+
+    return {
+        "conversation_id": conversation_id,
+        "mode": mode,
+        "thread_id": thread_id,
+        "seeded_message_count": len(seeded_messages),
+        "title": str(thread.get("title") or thread_id),
+        "messages": seeded_messages,
     }
 
 

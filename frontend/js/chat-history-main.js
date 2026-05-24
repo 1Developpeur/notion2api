@@ -492,6 +492,13 @@
       window.NotionAI.Chat.Manager.renderChatList();
     }
   }
+
+  async function reloadSelectedRemoteThread() {
+    if (!state.activeThreadId) return;
+    const thread = state.threads.find(item => item.id === state.activeThreadId);
+    if (!thread) return;
+    await selectRemoteThread(thread);
+  }
   
   function handleRemoteChatClick(e, thread) {
     if (window.NotionAI?.Core?.State?.get?.('isGenerating')) return;
@@ -781,12 +788,20 @@
       setTimeout(init, 100);
       return;
     }
+    window.addEventListener('chat-history:updated', async (event) => {
+      await refresh();
+      const hydrate = Boolean(event?.detail?.hydrate);
+      if (hydrate) {
+        await reloadSelectedRemoteThread();
+      }
+    });
     refresh();
   }
 
   window.NotionAI = window.NotionAI || {};
   window.NotionAI.ChatHistoryMain = {
     refresh,
+    reloadSelectedRemoteThread,
     clearRemoteSelection,
     deleteSelectedRemoteThreads,
     clearSelectedRemoteThreads,

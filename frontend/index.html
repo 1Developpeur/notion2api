@@ -301,6 +301,8 @@ body{background:var(--bg);color:var(--text)}
   <div id="inputAreaWrapper" class="input-area-wrapper">
     <div class="input-card">
       <textarea id="chatInput" rows="1" placeholder="Send a message..." class="chat-input"></textarea>
+      <div id="attachmentBar" class="attachment-bar hidden"></div>
+      <input id="attachmentInput" type="file" multiple class="hidden" />
       <div class="input-toolbar">
         <div class="toolbar-left">
           <div class="model-selector-container" id="modelSelectorContainer">
@@ -316,6 +318,9 @@ body{background:var(--bg);color:var(--text)}
           </div>
         </div>
         <div class="toolbar-right">
+          <button id="attachBtn" title="Attach files" class="attach-btn" type="button">
+            <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M21.44 11.05l-8.49 8.49a6 6 0 01-8.49-8.49l9.19-9.19a4 4 0 115.66 5.66l-9.2 9.19a2 2 0 01-2.82-2.82l8.48-8.48"/></svg>
+          </button>
           <button id="sendBtn" title="Send (Enter)" class="send-btn">
             <svg id="sendIcon" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5"><path d="M5 12h14M12 5l7 7-7 7"/></svg>
             <svg id="stopIcon" class="hidden" width="14" height="14" viewBox="0 0 24 24" fill="currentColor"><rect x="4" y="4" width="16" height="16" rx="2"/></svg>
@@ -375,6 +380,24 @@ body{background:var(--bg);color:var(--text)}
 .toolbar-left{display:flex;align-items:center}
 .toolbar-right{display:flex;align-items:center}
 .input-footer{text-align:center;font-size:11px;color:var(--text-tertiary);margin-top:6px}
+
+.attachment-bar{display:flex;flex-wrap:wrap;gap:6px;margin-top:8px}
+.attachment-chip{
+  display:inline-flex;align-items:center;gap:6px;
+  max-width:100%;padding:4px 8px;border:1px solid var(--border);
+  border-radius:999px;background:var(--bg-secondary);font-size:12px;color:var(--text-secondary);
+}
+.attachment-chip-name{max-width:260px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.attachment-chip-remove{font-size:12px;line-height:1;padding:0 2px;color:var(--text-tertiary)}
+.attachment-chip-remove:hover{color:var(--text)}
+
+.attach-btn{
+  width:32px;height:32px;border-radius:8px;
+  border:1px solid var(--border);color:var(--text-secondary);
+  display:flex;align-items:center;justify-content:center;
+  margin-right:8px;transition:all .1s;
+}
+.attach-btn:hover{border-color:var(--border-hover);color:var(--text)}
 
 /* Model selector */
 .model-trigger-btn{
@@ -746,7 +769,7 @@ window.NotionAI.Core.State = {
     baseUrl:localStorage.getItem('claude_base_url')||window.location.origin,
     apiKey:'',theme:localStorage.getItem('theme')||(window.matchMedia('(prefers-color-scheme:dark)').matches?'dark':'light'),
     chats:JSON.parse(localStorage.getItem('claude_chats'))||[],
-    currentChatId:null,selectedChatIds:[],isGenerating:false,controller:null,modelDisplayNames:{},chatToRename:null
+    currentChatId:null,selectedChatIds:[],isGenerating:false,controller:null,modelDisplayNames:{},chatToRename:null,pendingAttachments:[]
   },
   loadStoredApiKey(){return localStorage.getItem('claude_api_key')||sessionStorage.getItem('claude_api_key')||''},
   persistApiKey(k){if(k){localStorage.setItem('claude_api_key',k);sessionStorage.setItem('claude_api_key',k)}else{localStorage.removeItem('claude_api_key');sessionStorage.removeItem('claude_api_key')}},
@@ -1131,7 +1154,7 @@ window.NotionAI.Chat.Renderer = {
 <script>
 /* ===== STREAMING ===== */
 window.NotionAI.Chat.Streaming = {
-  async streamResponse(chat, model, aiWrapper) {
+  async streamResponse(chat, model, aiWrapper, attachments = []) {
     const searchState = { queries: [], sources: [] };
     let thinkingText = '', fullAiReply = '';
     const requestMessages = chat.messages.filter(m=>m&&typeof m==='object'&&(m.role==='user'||m.role==='assistant')).map(m=>({role:m.role,content:String(m.content||''),thinking:String(m.thinking||'')}));
@@ -1139,7 +1162,7 @@ window.NotionAI.Chat.Streaming = {
     try {
       const response = await fetch(`${window.NotionAI.Core.State.get('baseUrl')}/v1/chat/completions`, {
         method:'POST', headers:{'Content-Type':'application/json','Authorization':`Bearer ${window.NotionAI.Core.State.get('apiKey')}`,'X-Client-Type':window.NotionAI.Core.Constants.CLIENT_TYPE},
-        body:JSON.stringify({model,messages:requestMessages,conversation_id:chat.conversationId||null,stream:true}), signal:STATE.controller.signal
+        body:JSON.stringify({model,messages:requestMessages,conversation_id:chat.conversationId||null,stream:true,attachments}), signal:STATE.controller.signal
       });
       if(window.NotionAI.API.Client.checkMemoryStatus(response))this.notifyMemoryDegradedOnce();
       const bid=window.NotionAI.API.Client.getConversationId(response);
@@ -1657,6 +1680,63 @@ function _updateSendButton(isGen){
   else{btn.classList.remove('is-generating');si.classList.remove('hidden');sti.classList.add('hidden');btn.title='Send (Enter)'}
 }
 
+function _readFileAsDataUrl(file){
+  return new Promise((resolve,reject)=>{
+    const reader=new FileReader();
+    reader.onload=()=>resolve(String(reader.result||''));
+    reader.onerror=()=>reject(reader.error||new Error('File read failed'));
+    reader.readAsDataURL(file);
+  });
+}
+
+function _renderAttachmentBar(){
+  const bar=document.getElementById('attachmentBar');
+  if(!bar)return;
+  const attachments=STATE.pendingAttachments||[];
+  if(!attachments.length){
+    bar.classList.add('hidden');
+    bar.innerHTML='';
+    return;
+  }
+  bar.classList.remove('hidden');
+  bar.innerHTML='';
+  attachments.forEach((att,idx)=>{
+    const chip=document.createElement('div');
+    chip.className='attachment-chip';
+    const name=document.createElement('span');
+    name.className='attachment-chip-name';
+    name.textContent=att.name||`file-${idx+1}`;
+    const remove=document.createElement('button');
+    remove.type='button';
+    remove.className='attachment-chip-remove';
+    remove.title='Remove attachment';
+    remove.textContent='×';
+    remove.onclick=()=>{
+      STATE.pendingAttachments=(STATE.pendingAttachments||[]).filter((_,i)=>i!==idx);
+      _renderAttachmentBar();
+    };
+    chip.appendChild(name);
+    chip.appendChild(remove);
+    bar.appendChild(chip);
+  });
+}
+
+async function _handleAttachmentPick(event){
+  const input=event?.target;
+  const files=Array.from(input?.files||[]);
+  if(!files.length)return;
+  for(const file of files){
+    const data=await _readFileAsDataUrl(file);
+    (STATE.pendingAttachments||[]).push({
+      name:file.name,
+      content_type:file.type||'application/octet-stream',
+      data,
+    });
+  }
+  input.value='';
+  _renderAttachmentBar();
+}
+
 // Header title inline editing
 function setupHeaderTitleEditing(){
   const ht=document.getElementById('headerTitle');
@@ -1700,13 +1780,19 @@ function setupSidebarResize(){
 
 async function handleSend(){
   if(STATE.isGenerating)return;
-  const text=window.NotionAI.UI.Input.getValue();if(!text)return;
+  const text=window.NotionAI.UI.Input.getValue();
+  const hasAttachments=Array.isArray(STATE.pendingAttachments)&&STATE.pendingAttachments.length>0;
+  if(!text&&!hasAttachments)return;
+  const attachmentsToSend=(STATE.pendingAttachments||[]).map(a=>({name:a.name,content_type:a.content_type,data:a.data}));
+  const userText=text||'Please analyze the attached files.';
   let chat=STATE.chats.find(c=>c.id===STATE.currentChatId);
-  if(!chat){chat={id:STATE.currentChatId,title:text.length>30?text.substring(0,30)+'...':text,messages:[],conversationId:null};STATE.chats.push(chat);document.getElementById('headerTitle').textContent=chat.title;document.getElementById('headerTitle').classList.remove('hidden')}
+  if(!chat){chat={id:STATE.currentChatId,title:userText.length>30?userText.substring(0,30)+'...':userText,messages:[],conversationId:null};STATE.chats.push(chat);document.getElementById('headerTitle').textContent=chat.title;document.getElementById('headerTitle').classList.remove('hidden')}
   window.NotionAI.UI.Input.clear();
+  STATE.pendingAttachments=[];
+  _renderAttachmentBar();
   document.getElementById('welcomeScreen').classList.add('hidden');
-  chat.messages.push({role:'user',content:text});
-  window.NotionAI.Chat.Renderer.appendMessage('user',text,true);
+  chat.messages.push({role:'user',content:userText});
+  window.NotionAI.Chat.Renderer.appendMessage('user',userText,true);
   window.NotionAI.Chat.Storage.saveChats();
   window.NotionAI.Chat.Manager.renderChatList();
   window.NotionAI.Utils.DOM.scrollToBottom();
@@ -1726,7 +1812,7 @@ async function handleSend(){
     const timerEl=aiWrapper.thinkingCardRef?.querySelector('.thinking-header-timer');
     if(timerEl)aiWrapper._thinkingTimerInterval=setInterval(()=>{if(aiWrapper._thinkingStartTime)timerEl.textContent=Math.round((Date.now()-aiWrapper._thinkingStartTime)/1000)+'s'},1000);
     window.NotionAI.Utils.DOM.scrollToBottom();
-    const result=await window.NotionAI.Chat.Streaming.streamResponse(chat,selectedModel,aiWrapper);
+    const result=await window.NotionAI.Chat.Streaming.streamResponse(chat,selectedModel,aiWrapper,attachmentsToSend);
     removeThinkingIndicator();
     if(aiWrapper._thinkingTimerInterval){clearInterval(aiWrapper._thinkingTimerInterval);aiWrapper._thinkingTimerInterval=null}
     const ns=window.NotionAI.Utils.Validation.normalizeSearchPayload(result.searchState);
@@ -1758,6 +1844,8 @@ function init(){
   document.getElementById('mobileBackdrop').addEventListener('click',()=>window.NotionAI.UI.Sidebar.close());
   document.getElementById('chatInput').addEventListener('input',()=>window.NotionAI.UI.Input.autoResize());
   document.getElementById('chatInput').addEventListener('keydown',e=>window.NotionAI.UI.Input.handleKeydown(e,handleSend));
+  document.getElementById('attachBtn').addEventListener('click',()=>document.getElementById('attachmentInput').click());
+  document.getElementById('attachmentInput').addEventListener('change',e=>{_handleAttachmentPick(e).catch(err=>console.error('Attachment read error:',err))});
   document.getElementById('sendBtn').addEventListener('click',()=>{if(STATE.isGenerating){if(STATE.controller)STATE.controller.abort()}else handleSend()});
   document.getElementById('memoryBannerClose').addEventListener('click',()=>document.getElementById('memoryBanner').classList.add('hidden'));
   document.getElementById('settingsBtn').addEventListener('click',()=>window.NotionAI.API.Settings.open());
