@@ -1697,7 +1697,6 @@ async def create_chat_completion(
                         )
                         return
                     if isinstance(exc, NotionUpstreamError) and client is not None and getattr(exc, 'retriable', False):
-                    if isinstance(exc, NotionUpstreamError) and client is not None and getattr(exc, 'retriable', False):
                         pool.mark_failed(client)
                     log_method = (
                         logger.warning
