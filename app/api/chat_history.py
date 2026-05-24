@@ -315,6 +315,45 @@ async def hydrate_thread(thread_id: str, request: Request) -> dict[str, Any]:
     }
 
 
+@router.post("/threads/{thread_id}/resume")
+async def resume_thread(thread_id: str, request: Request) -> dict[str, Any]:
+    """Create a real local conversation from one archived thread (fork or continue)."""
+    payload = await _request_payload(request)
+    mode = str(payload.get("mode") or "fork").strip().lower()
+    if mode not in {"fork", "continue"}:
+        raise HTTPException(status_code=400, detail="mode must be either 'fork' or 'continue'")
+
+    thread = _store().get_thread(thread_id)
+    if not thread:
+        raise HTTPException(status_code=404, detail="Thread not found")
+
+    manager = request.app.state.conversation_manager
+    conversation_id = manager.new_conversation()
+
+    if mode == "continue":
+        manager.set_conversation_thread_id(conversation_id, thread_id)
+
+    seeded_messages: list[dict[str, str]] = []
+    for message in thread.get("messages") or []:
+        role = str(message.get("role") or "").strip().lower()
+        if role not in {"user", "assistant", "system"}:
+            continue
+        content = str(message.get("text") or "").strip()
+        if not content:
+            continue
+        manager.add_message(conversation_id, role, content)
+        seeded_messages.append({"role": role, "content": content})
+
+    return {
+        "conversation_id": conversation_id,
+        "mode": mode,
+        "thread_id": thread_id,
+        "seeded_message_count": len(seeded_messages),
+        "title": str(thread.get("title") or thread_id),
+        "messages": seeded_messages,
+    }
+
+
 @router.get("/threads/{thread_id}/debug")
 def debug_thread(thread_id: str) -> dict[str, Any]:
     return _store().debug_thread(thread_id)

@@ -1,6 +1,13 @@
 (() => {
   const HAR_ENDPOINT = '/v1/chat-history/import/har';
   const NOTION_SYNC_ENDPOINT = '/v1/chat-history/sync/notion';
+  const AUTO_SYNC_DEFAULTS = {
+    enabled: true,
+    limit: 100,
+    pages: 5,
+    hydrate: false
+  };
+  let autoSyncStarted = false;
 
   function getBaseUrl() {
     if (window.NotionAI?.Core?.State?.get) {
@@ -41,6 +48,9 @@
       .chat-history-inline-grid{display:grid;grid-template-columns:1fr 1fr 1fr;gap:8px}
       .chat-history-inline-grid input{width:100%}
       .chat-history-checkbox-row{display:flex;align-items:center;gap:8px;margin-top:10px;font-size:12px;color:var(--text-secondary)}
+      .chat-history-advanced{margin-top:12px;border:1px solid var(--border);border-radius:8px;padding:8px 10px;background:var(--bg-secondary)}
+      .chat-history-advanced summary{cursor:pointer;font-size:12px;color:var(--text-secondary);user-select:none}
+      .chat-history-max-grid{display:grid;grid-template-columns:1fr 1fr;gap:8px}
     `;
     document.head.appendChild(style);
   }
@@ -55,7 +65,7 @@
     modal.innerHTML = `
       <div class="modal-content">
         <div class="modal-header">
-          <h3>Import Notion AI chat history</h3>
+          <h3>Refresh Notion chat history</h3>
           <button id="closeChatHistoryImportBtn" class="modal-close-btn" type="button" aria-label="Close">
             <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M18 6L6 18M6 6l12 12"/></svg>
           </button>
@@ -68,26 +78,40 @@
 
           <div id="chatHistoryPullPanel" class="chat-history-panel">
             <div class="chat-history-import-warning">
-              Pull chat-history metadata directly from the configured Notion account. Full chat content is hydrated later only when a specific chat is selected, unless you enable full-content hydration below.
+              Refresh archived chat metadata from Notion. Full content is loaded later when a specific chat is selected, unless you enable full-content hydration below.
             </div>
-            <div class="chat-history-inline-grid">
+            <div class="chat-history-max-grid">
               <div class="form-group">
-                <label>Account</label>
-                <input id="chatHistoryAccountIndex" type="number" min="0" step="1" value="0">
+                <label>Max chats</label>
+                <select id="chatHistoryMaxChats">
+                  <option value="100" selected>100</option>
+                  <option value="250">250</option>
+                  <option value="500">500</option>
+                  <option value="1000">1000</option>
+                </select>
               </div>
               <div class="form-group">
-                <label>Limit</label>
-                <input id="chatHistorySyncLimit" type="number" min="1" max="500" step="1" value="50">
-              </div>
-              <div class="form-group">
-                <label>Pages</label>
-                <input id="chatHistorySyncPages" type="number" min="1" max="20" step="1" value="2">
+                <label>Page size</label>
+                <input id="chatHistorySyncLimit" type="number" min="1" max="500" step="1" value="100">
               </div>
             </div>
             <label class="chat-history-checkbox-row">
               <input id="chatHistoryHydrateAll" type="checkbox">
               Hydrate full content for all synced chats now. Slower.
             </label>
+            <details class="chat-history-advanced">
+              <summary>Advanced</summary>
+              <div class="chat-history-inline-grid" style="margin-top:8px">
+                <div class="form-group">
+                  <label>Account index</label>
+                  <input id="chatHistoryAccountIndex" type="number" min="0" step="1" value="0">
+                </div>
+                <div class="form-group">
+                  <label>Pages</label>
+                  <input id="chatHistorySyncPages" type="number" min="1" max="20" step="1" value="1">
+                </div>
+              </div>
+            </details>
           </div>
 
           <div id="chatHistoryHarPanel" class="chat-history-panel hidden">
@@ -104,7 +128,7 @@
         </div>
         <div class="modal-footer">
           <button id="cancelChatHistoryImportBtn" class="btn-secondary" type="button">Cancel</button>
-          <button id="runChatHistoryPullBtn" class="btn-primary" type="button">Pull history</button>
+          <button id="runChatHistoryPullBtn" class="btn-primary" type="button">Refresh history</button>
           <button id="runChatHistoryHarImportBtn" class="btn-primary hidden" type="button">Import HAR</button>
         </div>
       </div>
@@ -117,11 +141,61 @@
     document.getElementById('runChatHistoryHarImportBtn').addEventListener('click', importHar);
     document.getElementById('chatHistoryPullTab').addEventListener('click', () => setMode('pull'));
     document.getElementById('chatHistoryHarTab').addEventListener('click', () => setMode('har'));
+    document.getElementById('chatHistoryMaxChats').addEventListener('change', syncPaginationFromMaxChats);
+    document.getElementById('chatHistorySyncLimit').addEventListener('change', syncPaginationFromMaxChats);
     modal.addEventListener('click', event => {
       if (event.target === modal) closeModal();
     });
 
     return modal;
+  }
+
+  function getAutoSyncConfig() {
+    const config = {
+      enabled: AUTO_SYNC_DEFAULTS.enabled,
+      limit: AUTO_SYNC_DEFAULTS.limit,
+      pages: AUTO_SYNC_DEFAULTS.pages,
+      hydrate: AUTO_SYNC_DEFAULTS.hydrate
+    };
+    if (window.NotionAI?.Core?.Constants?.AUTO_SYNC_CHAT_HISTORY !== undefined) {
+      config.enabled = Boolean(window.NotionAI.Core.Constants.AUTO_SYNC_CHAT_HISTORY);
+    }
+    if (window.NotionAI?.Core?.Constants?.AUTO_SYNC_CHAT_HISTORY_LIMIT) {
+      config.limit = Number(window.NotionAI.Core.Constants.AUTO_SYNC_CHAT_HISTORY_LIMIT) || config.limit;
+    }
+    if (window.NotionAI?.Core?.Constants?.AUTO_SYNC_CHAT_HISTORY_PAGES) {
+      config.pages = Number(window.NotionAI.Core.Constants.AUTO_SYNC_CHAT_HISTORY_PAGES) || config.pages;
+    }
+    if (window.NotionAI?.Core?.Constants?.AUTO_SYNC_CHAT_HISTORY_HYDRATE !== undefined) {
+      config.hydrate = Boolean(window.NotionAI.Core.Constants.AUTO_SYNC_CHAT_HISTORY_HYDRATE);
+    }
+    return config;
+  }
+
+  function dispatchHistoryUpdated(detail = {}) {
+    window.dispatchEvent(new CustomEvent('chat-history:updated', { detail }));
+  }
+
+  function syncPaginationFromMaxChats() {
+    const maxChats = Number.parseInt(document.getElementById('chatHistoryMaxChats')?.value || '100', 10);
+    const limit = Number.parseInt(document.getElementById('chatHistorySyncLimit')?.value || '100', 10);
+    const safeLimit = Number.isFinite(limit) && limit > 0 ? Math.min(limit, 500) : 100;
+    const pages = Math.max(1, Math.ceil((Number.isFinite(maxChats) ? maxChats : 100) / safeLimit));
+    const pagesInput = document.getElementById('chatHistorySyncPages');
+    if (pagesInput) pagesInput.value = String(Math.min(pages, 20));
+  }
+
+  function collectPullPayload() {
+    const accountIndex = Number.parseInt(document.getElementById('chatHistoryAccountIndex')?.value || '0', 10);
+    const limit = Number.parseInt(document.getElementById('chatHistorySyncLimit')?.value || '100', 10);
+    const maxPages = Number.parseInt(document.getElementById('chatHistorySyncPages')?.value || '1', 10);
+    const hydrate = Boolean(document.getElementById('chatHistoryHydrateAll')?.checked);
+    return {
+      account_index: Number.isFinite(accountIndex) ? accountIndex : 0,
+      limit: Number.isFinite(limit) ? limit : 100,
+      max_pages: Number.isFinite(maxPages) ? maxPages : 1,
+      hydrate
+    };
   }
 
   function setMode(mode) {
@@ -161,6 +235,7 @@
     const input = document.getElementById('chatHistoryHarInput');
     if (input) input.value = '';
     setMode('pull');
+    syncPaginationFromMaxChats();
     setStatus('');
     modal.classList.remove('hidden');
   }
@@ -172,10 +247,8 @@
 
   async function pullFromNotion() {
     const btn = document.getElementById('runChatHistoryPullBtn');
-    const accountIndex = Number.parseInt(document.getElementById('chatHistoryAccountIndex')?.value || '0', 10);
-    const limit = Number.parseInt(document.getElementById('chatHistorySyncLimit')?.value || '50', 10);
-    const maxPages = Number.parseInt(document.getElementById('chatHistorySyncPages')?.value || '2', 10);
-    const hydrate = Boolean(document.getElementById('chatHistoryHydrateAll')?.checked);
+    const payload = collectPullPayload();
+    const hydrate = Boolean(payload.hydrate);
 
     btn.disabled = true;
     btn.textContent = hydrate ? 'Pulling full content...' : 'Pulling metadata...';
@@ -185,12 +258,7 @@
       const response = await fetch(`${getBaseUrl()}${NOTION_SYNC_ENDPOINT}`, {
         method: 'POST',
         headers: getHeaders(),
-        body: JSON.stringify({
-          account_index: Number.isFinite(accountIndex) ? accountIndex : 0,
-          limit: Number.isFinite(limit) ? limit : 50,
-          max_pages: Number.isFinite(maxPages) ? maxPages : 2,
-          hydrate
-        })
+        body: JSON.stringify(payload)
       });
       let data = null;
       try { data = await response.json(); } catch (err) {}
@@ -200,12 +268,12 @@
         throw new Error(typeof message === 'string' ? message : JSON.stringify(message));
       }
       setStatus(resultText(hydrate ? 'Full pull complete.' : 'Metadata pull complete.', data));
-      window.NotionAI?.ChatHistoryMain?.refresh?.();
+      dispatchHistoryUpdated({ source: 'notion_sync', hydrate });
     } catch (err) {
       setStatus(err?.message || String(err), true);
     } finally {
       btn.disabled = false;
-      btn.textContent = 'Pull history';
+      btn.textContent = 'Refresh history';
     }
   }
 
@@ -243,7 +311,7 @@
         throw new Error(typeof message === 'string' ? message : JSON.stringify(message));
       }
       setStatus(resultText('HAR import complete.', data));
-      window.NotionAI?.ChatHistoryMain?.refresh?.();
+      dispatchHistoryUpdated({ source: 'har_import', hydrate: false });
     } catch (err) {
       setStatus(err?.message || String(err), true);
     } finally {
@@ -262,7 +330,7 @@
     btn.type = 'button';
     btn.innerHTML = `
       <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M12 3v12"/><path d="M7 10l5 5 5-5"/><path d="M5 21h14"/></svg>
-      Import chats
+      Refresh chats
     `;
     btn.addEventListener('click', openModal);
     footer.insertBefore(btn, footer.firstChild);
@@ -271,12 +339,38 @@
 
   function init() {
     ensureStyles();
-    if (injectButton()) return;
-    const observer = new MutationObserver(() => {
-      if (injectButton()) observer.disconnect();
-    });
-    observer.observe(document.body, { childList: true, subtree: true });
-    setTimeout(() => observer.disconnect(), 10000);
+    const autoConfig = getAutoSyncConfig();
+    if (!injectButton()) {
+      const observer = new MutationObserver(() => {
+        if (injectButton()) observer.disconnect();
+      });
+      observer.observe(document.body, { childList: true, subtree: true });
+      setTimeout(() => observer.disconnect(), 10000);
+    }
+
+    if (!autoSyncStarted && autoConfig.enabled) {
+      autoSyncStarted = true;
+      setTimeout(async () => {
+        try {
+          const response = await fetch(`${getBaseUrl()}${NOTION_SYNC_ENDPOINT}`, {
+            method: 'POST',
+            headers: getHeaders(),
+            body: JSON.stringify({
+              account_index: 0,
+              limit: autoConfig.limit,
+              max_pages: autoConfig.pages,
+              hydrate: autoConfig.hydrate
+            })
+          });
+          if (!response.ok) {
+            throw new Error(`Auto sync failed with HTTP ${response.status}`);
+          }
+          dispatchHistoryUpdated({ source: 'auto_sync', hydrate: autoConfig.hydrate });
+        } catch (err) {
+          console.warn('Auto sync chat history failed', err);
+        }
+      }, 250);
+    }
   }
 
   if (document.readyState === 'loading') {
