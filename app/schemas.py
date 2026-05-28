@@ -40,7 +40,7 @@ class ChatCompletionRequest(BaseModel):
     )
     metadata: Optional[Dict[str, Any]] = Field(
         default=None,
-        description="Optional metadata including persistence settings.",
+        description="Optional caller metadata for per-request behavior such as remote chat persistence.",
     )
 
 # ================================
