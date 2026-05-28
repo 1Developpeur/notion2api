@@ -38,6 +38,10 @@ class ChatCompletionRequest(BaseModel):
         default=None,
         description="Optional attachment descriptors. Normalized by the chat handler.",
     )
+    metadata: Optional[Dict[str, Any]] = Field(
+        default=None,
+        description="Optional caller metadata for per-request behavior such as remote chat persistence.",
+    )
 
 # ================================
 # 非流式返回 Schema
