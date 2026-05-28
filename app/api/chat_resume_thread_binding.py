@@ -83,12 +83,20 @@ def _patch_pool_for_request(request: Any, conversation_id: str) -> Callable[[], 
         bound_thread_id = _get_bound_thread_id(manager, conversation_id)
 
         @wraps(original_stream_response)
-        def patched_stream_response(transcript: Any, thread_id: str | None = None, attachments: list[Any] | None = None):
+        def patched_stream_response(
+            transcript: Any,
+            thread_id: str | None = None,
+            attachments: list[Any] | None = None,
+            *args: Any,
+            **kwargs: Any,
+        ):
             active_thread_id = thread_id or bound_thread_id
             stream = original_stream_response(
                 transcript,
                 thread_id=active_thread_id,
                 attachments=attachments,
+                *args,
+                **kwargs,
             )
 
             def generator_wrapper():

@@ -939,7 +939,16 @@ async def _handle_lite_request(
             transcript = build_lite_transcript(user_prompt, req_body.model)
 
             # 调用 Notion API（不使用 thread_id）
-            stream_gen = client.stream_response(transcript, thread_id=None, attachments=attachments if attachments else None)
+            persist_remote_chat = False
+            if req_body.metadata and isinstance(req_body.metadata, dict):
+                persist_remote_chat = req_body.metadata.get("persist_remote_chat", False)
+
+            stream_gen = client.stream_response(
+                transcript,
+                thread_id=None,
+                attachments=attachments if attachments else None,
+                persist_remote_chat=persist_remote_chat,
+            )
             first_item = next(stream_gen, None)
 
             if first_item is None:
@@ -1143,8 +1152,17 @@ async def _handle_standard_request(
             messages = cleaned_msgs
             transcript = build_standard_transcript(messages, req_body.model, account)
 
-            # 调用 Notion API（不使用 thread_id，让 Notion ��动处理）
-            stream_gen = client.stream_response(transcript, thread_id=None, attachments=attachments if attachments else None)
+            # 调用 Notion API（不使用 thread_id，让 Notion 自动处理）
+            persist_remote_chat = False
+            if req_body.metadata and isinstance(req_body.metadata, dict):
+                persist_remote_chat = req_body.metadata.get("persist_remote_chat", False)
+
+            stream_gen = client.stream_response(
+                transcript,
+                thread_id=None,
+                attachments=attachments if attachments else None,
+                persist_remote_chat=persist_remote_chat,
+            )
             first_item = next(stream_gen, None)
 
             if first_item is None:
@@ -1524,10 +1542,15 @@ async def create_chat_completion(
             if attachments and not AttachmentPolicy.from_env().enabled:
                 openai_error("Attachments are disabled for this server.", "attachments_disabled")
 
+            persist_remote_chat = False
+            if req_body.metadata and isinstance(req_body.metadata, dict):
+                persist_remote_chat = req_body.metadata.get("persist_remote_chat", False)
+
             stream_gen = client.stream_response(
                 transcript,
                 thread_id=thread_id,
                 attachments=attachments if attachments else None,
+                persist_remote_chat=persist_remote_chat,
             )
             first_item = next(stream_gen, None)
 

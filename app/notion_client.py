@@ -716,7 +716,13 @@ class NotionOpusAPI:
         """Mark one remote Notion AI thread inactive."""
         self.delete_threads([thread_id])
 
-    def stream_response(self, transcript: list, thread_id: Optional[str] = None, attachments: list | None = None) -> Generator[dict[str, Any], None, None]:
+    def stream_response(
+        self,
+        transcript: list,
+        thread_id: Optional[str] = None,
+        attachments: list | None = None,
+        persist_remote_chat: Optional[bool] = None,
+    ) -> Generator[dict[str, Any], None, None]:
         """
         发起 Notion API 请求并返回结构化流生成器。
         接收完整的 transcript 列表作为参数。
@@ -724,6 +730,7 @@ class NotionOpusAPI:
         Args:
             transcript: 对话历史记录列表
             thread_id: 可选的已有 thread_id。如果提供，将重用该线程以保持上下文
+            persist_remote_chat: 是否持久化 Notion 端的聊天线程（覆盖默认配置）
         """
         if not isinstance(transcript, list) or not transcript:
             raise ValueError("Invalid transcript payload: transcript must be a non-empty list.")
@@ -732,6 +739,18 @@ class NotionOpusAPI:
         thread_type = self._resolve_thread_type(notion_transcript)
         request_profile = self._resolve_request_profile(thread_type)
         thread_persistence = _resolve_thread_persistence()
+
+        if persist_remote_chat is not None:
+            if persist_remote_chat:
+                thread_persistence["persist"] = True
+                thread_persistence["delete_after_stream"] = False
+                thread_persistence["generate_title"] = True
+                thread_persistence["save_all_thread_operations"] = True
+                thread_persistence["set_unread_state"] = True
+            else:
+                thread_persistence["persist"] = False
+                thread_persistence["delete_after_stream"] = True
+
         if not thread_persistence["persist"]:
             request_profile["precreate_thread"] = False
 
