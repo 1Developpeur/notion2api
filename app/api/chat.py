@@ -953,9 +953,9 @@ async def _handle_lite_request(
             transcript = build_lite_transcript(user_prompt, req_body.model)
 
             # 调用 Notion API（不使用 thread_id）
-            persist_remote_chat = False
+            persist_remote_chat = None
             if req_body.metadata and isinstance(req_body.metadata, dict):
-                persist_remote_chat = req_body.metadata.get("persist_remote_chat", False)
+                persist_remote_chat = req_body.metadata.get("persist_remote_chat")
 
             stream_gen = client.stream_response(
                 transcript,
@@ -1181,9 +1181,9 @@ async def _handle_standard_request(
             transcript = build_standard_transcript(messages, req_body.model, account)
 
             # 调用 Notion API（不使用 thread_id，让 Notion 自动处理）
-            persist_remote_chat = False
+            persist_remote_chat = None
             if req_body.metadata and isinstance(req_body.metadata, dict):
-                persist_remote_chat = req_body.metadata.get("persist_remote_chat", False)
+                persist_remote_chat = req_body.metadata.get("persist_remote_chat")
 
             stream_gen = client.stream_response(
                 transcript,
@@ -1570,9 +1570,9 @@ async def create_chat_completion(
             if attachments and not AttachmentPolicy.from_env().enabled:
                 openai_error("Attachments are disabled for this server.", "attachments_disabled")
 
-            persist_remote_chat = False
+            persist_remote_chat = None
             if req_body.metadata and isinstance(req_body.metadata, dict):
-                persist_remote_chat = req_body.metadata.get("persist_remote_chat", False)
+                persist_remote_chat = req_body.metadata.get("persist_remote_chat")
 
             stream_gen = client.stream_response(
                 transcript,
