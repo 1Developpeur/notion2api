@@ -35,12 +35,12 @@ def _get_bound_thread_id(manager: Any, conversation_id: str) -> str | None:
     return clean or None
 
 
-def _set_bound_thread_id(manager: Any, conversation_id: str, thread_id: str | None) -> None:
+def _set_bound_thread_id(manager: Any, conversation_id: str, thread_id: str | None, model_name: str | None = None) -> None:
     clean = str(thread_id or "").strip()
     if not clean or not _conversation_exists(manager, conversation_id):
         return
     try:
-        manager.set_conversation_thread_id(conversation_id, clean)
+        manager.set_conversation_thread_id(conversation_id, clean, model_name=model_name)
     except Exception:
         logger.warning(
             "Unable to persist resumed chat thread binding",
@@ -55,7 +55,7 @@ def _set_bound_thread_id(manager: Any, conversation_id: str, thread_id: str | No
         )
 
 
-def _patch_pool_for_request(request: Any, conversation_id: str) -> Callable[[], None]:
+def _patch_pool_for_request(request: Any, conversation_id: str, model_name: str | None = None) -> Callable[[], None]:
     """Temporarily patch pool.get_client so standard/lite modes honor conversation thread IDs.
 
     The existing standard/lite handlers intentionally do not touch ConversationManager.
@@ -81,6 +81,25 @@ def _patch_pool_for_request(request: Any, conversation_id: str) -> Callable[[], 
             return client
 
         bound_thread_id = _get_bound_thread_id(manager, conversation_id)
+        if bound_thread_id and model_name:
+            try:
+                bound_model = manager.get_conversation_thread_model(conversation_id)
+                if bound_model and bound_model != model_name:
+                    logger.info(
+                        "Recreating Notion thread in standard/lite mode: model changed",
+                        extra={
+                            "request_info": {
+                                "event": "thread_model_switched_patched",
+                                "conversation_id": conversation_id,
+                                "old_model": bound_model,
+                                "new_model": model_name,
+                            }
+                        }
+                    )
+                    manager.clear_conversation_thread(conversation_id)
+                    bound_thread_id = None
+            except Exception as e:
+                logger.warning("Error checking model binding in standard/lite patch: %s", e)
 
         @wraps(original_stream_response)
         def patched_stream_response(
@@ -107,7 +126,7 @@ def _patch_pool_for_request(request: Any, conversation_id: str) -> Callable[[], 
                     if not bound_thread_id:
                         created_thread_id = getattr(client, "current_thread_id", None)
                         if created_thread_id:
-                            _set_bound_thread_id(manager, conversation_id, created_thread_id)
+                            _set_bound_thread_id(manager, conversation_id, created_thread_id, model_name)
 
             return generator_wrapper()
 
@@ -132,11 +151,50 @@ def _wrap_handler(handler: Callable[..., Any]) -> Callable[..., Any]:
     @wraps(handler)
     async def wrapped(request: Any, req_body: Any, *args: Any, **kwargs: Any) -> Any:
         conversation_id = _conversation_id_from_request(req_body)
+        model_name = getattr(req_body, "model", None)
         if not conversation_id:
             return await handler(request, req_body, *args, **kwargs)
-        restore = _patch_pool_for_request(request, conversation_id)
+
+        manager = _manager_from_request(request)
+        if manager and not manager.conversation_exists(conversation_id):
+            try:
+                import datetime
+                created_at = int(datetime.datetime.now().timestamp())
+                with manager._get_conn() as conn:
+                    conn.execute(
+                        "INSERT INTO conversations (id, title, created_at, next_round_index) VALUES (?, ?, ?, ?)",
+                        (conversation_id, "External Chat", created_at, 0)
+                    )
+                    conn.commit()
+                logger.info(
+                    "Auto-created conversation record for standard/lite client",
+                    extra={"request_info": {"event": "conversation_created_standard_patch", "conversation_id": conversation_id}},
+                )
+            except Exception as e:
+                logger.warning("Failed to auto-create conversation %s: %s", conversation_id, e)
+
+        restore = _patch_pool_for_request(request, conversation_id, model_name)
         try:
-            return await handler(request, req_body, *args, **kwargs)
+            res = await handler(request, req_body, *args, **kwargs)
+            # Inject X-Conversation-Id header into response if possible
+            if res is not None and hasattr(res, "headers"):
+                try:
+                    res.headers["X-Conversation-Id"] = conversation_id
+                except Exception:
+                    pass
+            for arg in args:
+                if hasattr(arg, "headers") and hasattr(arg, "status_code"):
+                    try:
+                        arg.headers["X-Conversation-Id"] = conversation_id
+                    except Exception:
+                        pass
+            for val in kwargs.values():
+                if hasattr(val, "headers") and hasattr(val, "status_code"):
+                    try:
+                        val.headers["X-Conversation-Id"] = conversation_id
+                    except Exception:
+                        pass
+            return res
         finally:
             restore()
 
