@@ -465,6 +465,17 @@ def _looks_like_search_json_fragment(text: str) -> bool:
     )
 
 
+def _looks_like_tool_call_json_fragment(text: str) -> bool:
+    stripped = text.strip().lower()
+    if not stripped.startswith("{"):
+        return False
+    return (
+        '"command"' in stripped
+        and ('"replacecontent"' in stripped or '"newstr"' in stripped or '"pageurl"' in stripped or '"block_id"' in stripped)
+    )
+
+
+
 def _extract_search_data_from_json_text(text: str) -> dict[str, Any]:
     try:
         parsed = json.loads(text)
@@ -749,6 +760,8 @@ def parse_stream(response: requests.Response) -> Generator[dict[str, Any], None,
     in_primary_attr: list[bool] = [False]
     search_json_buffer = ""
     search_json_depth = 0
+    tool_json_buffer = ""
+    tool_json_depth = 0
 
     # ---- 段落注册表 ----
     # Notion 的 /s/N 中的 N 是全局 index（包括 config/context/user 等隐含段落），
@@ -994,6 +1007,18 @@ def parse_stream(response: requests.Response) -> Generator[dict[str, Any], None,
                         yield {"type": "search", "data": sd}
                     search_json_buffer = ""
                     search_json_depth = 0
+                continue
+
+            # ========== Tool Call JSON 片段检测 ==========
+            if stripped and (tool_json_depth > 0 or _looks_like_tool_call_json_fragment(stripped)):
+                tool_json_buffer += cleaned
+                tool_json_depth += stripped.count("{") - stripped.count("}")
+                if tool_json_depth <= 0:
+                    yield {"type": "thinking", "text": tool_json_buffer}
+                    tool_json_buffer = ""
+                    tool_json_depth = 0
+                else:
+                    yield {"type": "thinking", "text": cleaned}
                 continue
 
             # 已被 search patch 处理的结构化数据不重复输出

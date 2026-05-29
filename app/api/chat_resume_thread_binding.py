@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import contextvars
 from collections.abc import Callable
 from functools import wraps
 from typing import Any
@@ -7,6 +8,8 @@ from typing import Any
 from app.logger import logger
 
 _PATCHED = False
+
+active_binding = contextvars.ContextVar("active_binding", default=None)
 
 
 def _conversation_id_from_request(req_body: Any) -> str:
@@ -55,31 +58,44 @@ def _set_bound_thread_id(manager: Any, conversation_id: str, thread_id: str | No
         )
 
 
-def _patch_pool_for_request(request: Any, conversation_id: str, model_name: str | None = None) -> Callable[[], None]:
-    """Temporarily patch pool.get_client so standard/lite modes honor conversation thread IDs.
+_ORIGINAL_STREAM_RESPONSE = None
 
-    The existing standard/lite handlers intentionally do not touch ConversationManager.
-    Rather than duplicating their full implementations, this wrapper intercepts the selected
-    Notion client and rewrites stream_response(thread_id=None) to the stored thread id when
-    one exists. If no thread id exists yet, it persists the one created by stream_response.
-    """
-    manager = _manager_from_request(request)
-    if not manager or not _conversation_exists(manager, conversation_id):
-        return lambda: None
 
-    pool = getattr(getattr(request, "app", None).state, "account_pool", None)
-    if not pool or not hasattr(pool, "get_client"):
-        return lambda: None
+def _apply_stream_response_patch() -> None:
+    global _ORIGINAL_STREAM_RESPONSE
+    if _ORIGINAL_STREAM_RESPONSE is not None:
+        return
 
-    original_get_client = pool.get_client
-    touched: list[tuple[Any, Any]] = []
+    from app.notion_client import NotionOpusAPI
+    _ORIGINAL_STREAM_RESPONSE = NotionOpusAPI.stream_response
 
-    def patched_get_client(*args: Any, **kwargs: Any) -> Any:
-        client = original_get_client(*args, **kwargs)
-        original_stream_response = getattr(client, "stream_response", None)
-        if not callable(original_stream_response):
-            return client
+    @wraps(_ORIGINAL_STREAM_RESPONSE)
+    def patched_stream_response(
+        self: NotionOpusAPI,
+        transcript: list,
+        thread_id: str | None = None,
+        attachments: list | None = None,
+        persist_remote_chat: bool | None = None,
+        *args: Any,
+        **kwargs: Any,
+    ):
+        binding = active_binding.get()
+        if not binding:
+            return _ORIGINAL_STREAM_RESPONSE(
+                self,
+                transcript,
+                thread_id=thread_id,
+                attachments=attachments,
+                persist_remote_chat=persist_remote_chat,
+                *args,
+                **kwargs,
+            )
 
+        conversation_id = binding["conversation_id"]
+        model_name = binding["model_name"]
+        manager = binding["manager"]
+
+        # Check if we already have a bound thread ID for standard/lite mode
         bound_thread_id = _get_bound_thread_id(manager, conversation_id)
         if bound_thread_id and model_name:
             try:
@@ -101,59 +117,39 @@ def _patch_pool_for_request(request: Any, conversation_id: str, model_name: str 
             except Exception as e:
                 logger.warning("Error checking model binding in standard/lite patch: %s", e)
 
-        @wraps(original_stream_response)
-        def patched_stream_response(
-            transcript: Any,
-            thread_id: str | None = None,
-            attachments: list[Any] | None = None,
-            *args: Any,
-            **kwargs: Any,
-        ):
-            active_thread_id = thread_id or bound_thread_id
-            stream = original_stream_response(
-                transcript,
-                thread_id=active_thread_id,
-                attachments=attachments,
-                *args,
-                **kwargs,
-            )
+        active_thread_id = thread_id or bound_thread_id
+        stream = _ORIGINAL_STREAM_RESPONSE(
+            self,
+            transcript,
+            thread_id=active_thread_id,
+            attachments=attachments,
+            persist_remote_chat=persist_remote_chat,
+            *args,
+            **kwargs,
+        )
 
-            def generator_wrapper():
-                try:
-                    for chunk in stream:
-                        yield chunk
-                finally:
-                    if not bound_thread_id:
-                        created_thread_id = getattr(client, "current_thread_id", None)
-                        if created_thread_id:
-                            _set_bound_thread_id(manager, conversation_id, created_thread_id, model_name)
-
-            return generator_wrapper()
-
-        client.stream_response = patched_stream_response
-        touched.append((client, original_stream_response))
-        return client
-
-    pool.get_client = patched_get_client
-
-    def restore() -> None:
-        pool.get_client = original_get_client
-        for client, original_stream_response in touched:
+        def generator_wrapper():
             try:
-                client.stream_response = original_stream_response
-            except Exception:
-                pass
+                for chunk in stream:
+                    yield chunk
+            finally:
+                if not bound_thread_id:
+                    created_thread_id = getattr(self, "current_thread_id", None)
+                    if created_thread_id:
+                        _set_bound_thread_id(manager, conversation_id, created_thread_id, model_name)
 
-    return restore
+        return generator_wrapper()
+
+    NotionOpusAPI.stream_response = patched_stream_response
 
 
 def _wrap_handler(handler: Callable[..., Any]) -> Callable[..., Any]:
     @wraps(handler)
-    async def wrapped(request: Any, req_body: Any, *args: Any, **kwargs: Any) -> Any:
+    def wrapped(request: Any, req_body: Any, *args: Any, **kwargs: Any) -> Any:
         conversation_id = _conversation_id_from_request(req_body)
         model_name = getattr(req_body, "model", None)
         if not conversation_id:
-            return await handler(request, req_body, *args, **kwargs)
+            return handler(request, req_body, *args, **kwargs)
 
         manager = _manager_from_request(request)
         if manager and not manager.conversation_exists(conversation_id):
@@ -173,9 +169,13 @@ def _wrap_handler(handler: Callable[..., Any]) -> Callable[..., Any]:
             except Exception as e:
                 logger.warning("Failed to auto-create conversation %s: %s", conversation_id, e)
 
-        restore = _patch_pool_for_request(request, conversation_id, model_name)
+        token = active_binding.set({
+            "conversation_id": conversation_id,
+            "model_name": model_name,
+            "manager": manager
+        })
         try:
-            res = await handler(request, req_body, *args, **kwargs)
+            res = handler(request, req_body, *args, **kwargs)
             # Inject X-Conversation-Id header into response if possible
             if res is not None and hasattr(res, "headers"):
                 try:
@@ -196,7 +196,7 @@ def _wrap_handler(handler: Callable[..., Any]) -> Callable[..., Any]:
                         pass
             return res
         finally:
-            restore()
+            active_binding.reset(token)
 
     return wrapped
 
@@ -205,6 +205,8 @@ def apply_chat_resume_thread_bindings() -> None:
     global _PATCHED
     if _PATCHED:
         return
+
+    _apply_stream_response_patch()
 
     from app.api import chat as chat_module
 

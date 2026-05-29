@@ -902,7 +902,7 @@ def _attachment_error_response(exc: AttachmentError) -> JSONResponse:
     )
 
 
-async def _handle_lite_request(
+def _handle_lite_request(
     request: Request,
     req_body: ChatCompletionRequest,
     response: Response | None = None,
@@ -1122,7 +1122,7 @@ async def _handle_lite_request(
     )
 
 
-async def _handle_standard_request(
+def _handle_standard_request(
     request: Request,
     req_body: ChatCompletionRequest,
     response: Response | None = None,
@@ -1442,11 +1442,13 @@ async def create_chat_completion(
 
     # Lite 模式：单轮问答，无记忆
     if is_lite_mode():
-        return await _handle_lite_request(request, req_body, response)
+        import anyio
+        return await anyio.to_thread.run_sync(_handle_lite_request, request, req_body, response)
 
     # Standard 模式：完整上下文，支持 thinking 和搜索
     if is_standard_mode():
-        return await _handle_standard_request(request, req_body, response)
+        import anyio
+        return await anyio.to_thread.run_sync(_handle_standard_request, request, req_body, response)
 
     # Heavy 模式：完整会话管理
     pool = request.app.state.account_pool
