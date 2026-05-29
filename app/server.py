@@ -71,7 +71,7 @@ async def lifespan(app: FastAPI):
 app = FastAPI(
     title="Notion Opus API",
     description="A FastAPI wrapper providing an OpenAI-compatible interface for Notion's Claude Opus backend.",
-    version="1.0.0",
+    version="1.0.1",
     lifespan=lifespan,
 )
 
