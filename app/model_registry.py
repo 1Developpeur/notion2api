@@ -2,41 +2,71 @@ from app.core.models import normalize_model_id
 
 
 MODEL_MAP: dict[str, str] = {
+    # Anthropic
+    "claude-sonnet4.6": "almond-croissant-low",
     "claude-opus4.6": "avocado-froyo-medium",
     "claude-opus4.7": "apricot-sorbet-high",
-    "claude-sonnet4.6": "almond-croissant-low",
-    "gemini-2.5flash": "vertex-gemini-2.5-flash",
-    "gemini-3.1pro": "galette-medium-thinking",
+    "claude-opus4.8": "ambrosia-tart-high",
+    # OpenAI
     "gpt-5.2": "oatmeal-cookie",
     "gpt-5.4": "oval-kumquat-medium",
+    "gpt-5.4mini": "oregon-grape-medium",
+    "gpt-5.4nano": "otaheite-apple-medium",
     "gpt-5.5": "opal-quince-medium",
+    # Google
+    "gemini-3flash": "gingerbread",
+    "gemini-3.1pro": "galette-medium-thinking",
+    "gemini-3.5flash": "vertex-gemini-3.5-flash",
+    "gemini-2.5flash": "vertex-gemini-2.5-flash",
+    # Other
     "kimi-2.6": "fireworks-kimi-k2.6",
+    "deepseek-v4pro": "baseten-deepseek-v4-pro",
 }
 
 NOTION_MODEL_REVERSE_MAP: dict[str, str] = {value: key for key, value in MODEL_MAP.items()}
 
 DISPLAY_NAMES: dict[str, str] = {
+    # Anthropic
+    "claude-sonnet4.6": "Claude Sonnet 4.6",
     "claude-opus4.6": "Claude Opus 4.6",
     "claude-opus4.7": "Claude Opus 4.7",
-    "claude-sonnet4.6": "Claude Sonnet 4.6",
-    "gemini-2.5flash": "Gemini 2.5 Flash",
-    "gemini-3.1pro": "Gemini 3.1 Pro",
+    "claude-opus4.8": "Claude Opus 4.8",
+    # OpenAI
     "gpt-5.2": "GPT-5.2",
     "gpt-5.4": "GPT-5.4",
+    "gpt-5.4mini": "GPT-5.4 Mini",
+    "gpt-5.4nano": "GPT-5.4 Nano",
     "gpt-5.5": "GPT-5.5",
+    # Google
+    "gemini-3flash": "Gemini 3 Flash",
+    "gemini-3.1pro": "Gemini 3.1 Pro",
+    "gemini-3.5flash": "Gemini 3.5 Flash",
+    "gemini-2.5flash": "Gemini 2.5 Flash",
+    # Other
     "kimi-2.6": "Kimi 2.6",
+    "deepseek-v4pro": "DeepSeek V4 Pro",
 }
 
 MODEL_ICONS: dict[str, str] = {
+    # Anthropic
+    "claude-sonnet4.6": "✳️",
     "claude-opus4.6": "✳️",
     "claude-opus4.7": "✳️",
-    "claude-sonnet4.6": "✳️",
-    "gemini-2.5flash": "✦",
-    "gemini-3.1pro": "✦",
+    "claude-opus4.8": "✳️",
+    # OpenAI
     "gpt-5.2": "⚙",
     "gpt-5.4": "⚙",
+    "gpt-5.4mini": "⚙",
+    "gpt-5.4nano": "⚙",
     "gpt-5.5": "⚙",
+    # Google
+    "gemini-3flash": "✦",
+    "gemini-3.1pro": "✦",
+    "gemini-3.5flash": "✦",
+    "gemini-2.5flash": "✦",
+    # Other
     "kimi-2.6": "🌙",
+    "deepseek-v4pro": "🔷",
 }
 
 # 默认使用 Sonnet 4.6（速度和质量的最佳平衡）
@@ -52,6 +82,7 @@ def get_notion_model(model_name: str) -> str:
 # Gemini 3.1 Pro (galette-medium-thinking) 已改为 workflow，不再走 markdown-chat
 MARKDOWN_CHAT_MODELS: set[str] = {
     "vertex-gemini-2.5-flash",
+    "vertex-gemini-3.5-flash",
 }
 
 

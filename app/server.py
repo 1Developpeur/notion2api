@@ -23,7 +23,7 @@ from app.config import ACCOUNTS, ALLOWED_ORIGINS, API_KEY, is_lite_mode, is_stan
 from app.conversation import ConversationManager
 from app.core.errors import openai_error_payload
 from app.limiter import limiter
-from app.logger import logger
+from app.logger import logger, setup_uvicorn_logging
 
 
 apply_attachment_runtime_config()
@@ -45,6 +45,9 @@ def _valid_bearer_token(auth_header: str, expected_key: str) -> bool:
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
+    # Re-patch uvicorn loggers now that uvicorn has fully initialised its handlers
+    setup_uvicorn_logging()
+
     # 启动时初始化状态
     app.state.account_pool = AccountPool(ACCOUNTS)
     # Keep durable conversation storage available in every mode so chat-history
