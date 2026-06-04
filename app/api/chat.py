@@ -145,6 +145,28 @@ def _resolve_request_model(model: str | None) -> str:
     return normalized_model
 
 
+def _local_probe_response_text(content: Any) -> str:
+    """Return a local response for health/preflight prompts that must not persist."""
+    if not isinstance(content, str):
+        return ""
+
+    normalized = " ".join(content.strip().split()).lower()
+    if normalized in {
+        "reply with ok.",
+        "reply with ok",
+        "respond with ok.",
+        "respond with ok",
+    }:
+        return "OK"
+    if normalized in {
+        "ping! respond with exactly 'pong' to verify connection.",
+        "reply with exactly: pong",
+        "reply with exactly pong",
+    }:
+        return "pong"
+    return ""
+
+
 RECALL_INTENT_KEYWORDS = [
     "之前",
     "上次",
@@ -1407,15 +1429,16 @@ async def create_chat_completion(
     req_body.model = _resolve_request_model(req_body.model)
     assert req_body.model is not None
 
-    # Check for Ping/Pong smoke test messages to avoid creating new chats in Notion
+    # Check for local smoke/preflight messages to avoid creating new chats in Notion.
     if req_body.messages:
         last_content = req_body.messages[-1].content or ""
-        if "Ping! Respond with exactly 'pong'" in last_content:
+        probe_response = _local_probe_response_text(last_content)
+        if probe_response:
             response_id = f"chatcmpl-{uuid.uuid4().hex}"
             if req_body.stream:
                 def ping_stream_generator() -> Generator[str, None, None]:
                     yield _build_stream_chunk(response_id, req_body.model, role="assistant")
-                    yield _build_stream_chunk(response_id, req_body.model, content="pong")
+                    yield _build_stream_chunk(response_id, req_body.model, content=probe_response)
                     yield _build_stream_chunk(response_id, req_body.model, finish_reason="stop")
                     yield "data: [DONE]\n\n"
                 
@@ -1435,7 +1458,7 @@ async def create_chat_completion(
                     model=req_body.model,
                     choices=[
                         ChatMessageResponseChoice(
-                            message=ChatMessage(role="assistant", content="pong")
+                            message=ChatMessage(role="assistant", content=probe_response)
                         )
                     ],
                 )
