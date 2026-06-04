@@ -57,6 +57,7 @@ debug_*.py
 
 # Claude Code local settings
 .claude/settings.local.json
+.claude/worktrees/
 
 # Docker (Optional to ignore if you want to keep configs in git, usually we keep them)
 # But we definitely ignore local-specific overrides
