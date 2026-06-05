@@ -2067,9 +2067,8 @@ def build_standard_transcript(
         }
     ]
 
-    # 收集所有 system 消息
     system_instructions = []
-    user_messages = []
+    dialog_messages: list[tuple[str, str]] = []
 
     for msg in messages:
         role = msg.get("role")
@@ -2077,44 +2076,45 @@ def build_standard_transcript(
 
         if role == "system":
             system_instructions.append(content)
-        elif role == "user":
-            user_messages.append(content)
-        elif role == "assistant":
-            # assistant 消息单独处理
-            transcript.append({
-                "id": str(uuid.uuid4()),
-                "type": "agent-inference",
-                "value": [
-                    {
-                        "type": "text",
-                        "content": content
-                    }
-                ]
-            })
+            continue
 
-    # 将 system 指令合并到第一条 user 消息（与 Lite/Heavy 模式保持一致）
-    if user_messages:
-        first_user_content = user_messages[0]
+        if role in {"user", "assistant"}:
+            dialog_messages.append((role, str(content or "")))
+
+    latest_user_index = -1
+    for idx in range(len(dialog_messages) - 1, -1, -1):
+        if dialog_messages[idx][0] == "user":
+            latest_user_index = idx
+            break
+
+    if latest_user_index >= 0:
+        latest_user_content = dialog_messages[latest_user_index][1]
+        prior_messages = dialog_messages[:latest_user_index]
+        prompt_parts = []
+
         if system_instructions:
-            merged_system = "\n".join(system_instructions)
-            first_user_content = f"[System Instructions: {merged_system}]\n\n{first_user_content}"
+            prompt_parts.append("[System Instructions]")
+            prompt_parts.append("\n".join(system_instructions))
+
+        if prior_messages:
+            history_lines = []
+            for role, content in prior_messages:
+                if not content.strip():
+                    continue
+                history_lines.append(f"{role}: {content}")
+            if history_lines:
+                prompt_parts.append("[Previous conversation context]")
+                prompt_parts.append("\n\n".join(history_lines))
+
+        prompt_parts.append("[Current user request]")
+        prompt_parts.append(latest_user_content)
 
         transcript.append({
             "id": str(uuid.uuid4()),
             "type": "user",
-            "value": [[first_user_content]],
+            "value": [["\n\n".join(prompt_parts)]],
             "userId": account.get("user_id", ""),
             "createdAt": datetime.now().astimezone().isoformat()
         })
-
-        # 添加剩余的 user 消息
-        for content in user_messages[1:]:
-            transcript.append({
-                "id": str(uuid.uuid4()),
-                "type": "user",
-                "value": [[content]],
-                "userId": account.get("user_id", ""),
-                "createdAt": datetime.now().astimezone().isoformat()
-            })
 
     return transcript

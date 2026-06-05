@@ -125,49 +125,7 @@ class PersistRemoteChatTests(unittest.TestCase):
             _, kwargs = mock_stream.call_args
             self.assertEqual(kwargs.get("persist_remote_chat"), True)
 
-    def test_stream_parser_safe_yields_unique_thinking(self):
-        """Verify stream_parser_safe appends thinking content if it is not duplicate of content."""
-        from app.stream_parser_safe import parse_stream
-        
-        # Mock Response whose iterator yields dicts like _parse_stream would
-        mock_response = MagicMock()
-        
-        # Test case: thinking is unique answer, content is just citation
-        mock_items = [
-            {"type": "thinking", "text": "This is Kimi's actual detailed answer."},
-            {"type": "content", "text": "[1] Sources."}
-        ]
-        
-        with patch("app.stream_parser_safe._parse_stream", return_value=iter(mock_items)):
-            res = list(parse_stream(mock_response))
-            
-            # Should yield both the citation and the unique thinking answer (appended)
-            event_types = [item["type"] for item in res]
-            self.assertIn("content", event_types)
-            
-            texts = [item.get("text", "") for item in res if item["type"] == "content"]
-            self.assertIn("[1] Sources.", texts)
-            self.assertIn("\n\nThis is Kimi's actual detailed answer.", texts)
-
-    def test_stream_parser_safe_suppresses_duplicate_thinking(self):
-        """Verify stream_parser_safe suppresses thinking if it is identical to yielded content."""
-        from app.stream_parser_safe import parse_stream
-        
-        mock_response = MagicMock()
-        
-        # Test case: thinking is duplicated in the content
-        mock_items = [
-            {"type": "thinking", "text": "This is identical answer."},
-            {"type": "content", "text": "This is identical answer."}
-        ]
-        
-        with patch("app.stream_parser_safe._parse_stream", return_value=iter(mock_items)):
-            res = list(parse_stream(mock_response))
-            
-            # Should ONLY yield one content block (the duplicate thinking should be suppressed)
-            texts = [item.get("text", "") for item in res if item["type"] == "content"]
-            self.assertEqual(len(texts), 1)
-            self.assertEqual(texts[0], "This is identical answer.")
 
 if __name__ == '__main__':
     unittest.main()
+

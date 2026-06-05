@@ -7,6 +7,7 @@ MODEL_MAP: dict[str, str] = {
     "claude-opus4.6": "avocado-froyo-medium",
     "claude-opus4.7": "apricot-sorbet-high",
     "claude-opus4.8": "ambrosia-tart-high",
+    "claude-haiku4.5": "anthropic-haiku-4.5",
     # OpenAI
     "gpt-5.2": "oatmeal-cookie",
     "gpt-5.4": "oval-kumquat-medium",
@@ -18,7 +19,11 @@ MODEL_MAP: dict[str, str] = {
     "gemini-3.1pro": "galette-medium-thinking",
     "gemini-3.5flash": "vertex-gemini-3.5-flash",
     "gemini-2.5flash": "vertex-gemini-2.5-flash",
+    # xAI
+    "grok-4.3": "xigua-mochi-medium",
+    "grok-build0.1": "xinomavro-cake",
     # Other
+    "minimax-m2.5": "fireworks-minimax-m2.5",
     "kimi-2.6": "fireworks-kimi-k2.6",
     "deepseek-v4pro": "baseten-deepseek-v4-pro",
 }
@@ -31,6 +36,7 @@ DISPLAY_NAMES: dict[str, str] = {
     "claude-opus4.6": "Claude Opus 4.6",
     "claude-opus4.7": "Claude Opus 4.7",
     "claude-opus4.8": "Claude Opus 4.8",
+    "claude-haiku4.5": "Claude Haiku 4.5",
     # OpenAI
     "gpt-5.2": "GPT-5.2",
     "gpt-5.4": "GPT-5.4",
@@ -42,7 +48,11 @@ DISPLAY_NAMES: dict[str, str] = {
     "gemini-3.1pro": "Gemini 3.1 Pro",
     "gemini-3.5flash": "Gemini 3.5 Flash",
     "gemini-2.5flash": "Gemini 2.5 Flash",
+    # xAI
+    "grok-4.3": "Grok 4.3",
+    "grok-build0.1": "Grok Build 0.1",
     # Other
+    "minimax-m2.5": "MiniMax M2.5",
     "kimi-2.6": "Kimi 2.6",
     "deepseek-v4pro": "DeepSeek V4 Pro",
 }
@@ -53,6 +63,7 @@ MODEL_ICONS: dict[str, str] = {
     "claude-opus4.6": "✳️",
     "claude-opus4.7": "✳️",
     "claude-opus4.8": "✳️",
+    "claude-haiku4.5": "✳️",
     # OpenAI
     "gpt-5.2": "⚙",
     "gpt-5.4": "⚙",
@@ -64,7 +75,11 @@ MODEL_ICONS: dict[str, str] = {
     "gemini-3.1pro": "✦",
     "gemini-3.5flash": "✦",
     "gemini-2.5flash": "✦",
+    # xAI
+    "grok-4.3": "◐",
+    "grok-build0.1": "◐",
     # Other
+    "minimax-m2.5": "◈",
     "kimi-2.6": "🌙",
     "deepseek-v4pro": "🔷",
 }
@@ -78,11 +93,10 @@ def get_notion_model(model_name: str) -> str:
     return MODEL_MAP.get(normalized_name, MODEL_MAP[DEFAULT_MODEL])
 
 
-# 需要走 markdown-chat 的 Notion 内部代号（vertex- 前缀的模型）
-# Gemini 3.1 Pro (galette-medium-thinking) 已改为 workflow，不再走 markdown-chat
+# Notion's public model metadata currently advertises the newer Gemini models
+# through workflow/custom-agent capable routes. Keeping them on markdown-chat
+# causes Notion upstream 502 responses.
 MARKDOWN_CHAT_MODELS: set[str] = {
-    "vertex-gemini-2.5-flash",
-    "vertex-gemini-3.5-flash",
 }
 
 
