@@ -46,26 +46,9 @@ def parse_stream(response: requests.Response) -> Generator[dict[str, Any], None,
 
         yield item
 
-    if buffered_thinking:
+    if buffered_thinking and not visible_content_seen:
         thinking_text = "".join(buffered_thinking).strip()
         if thinking_text:
             yielded_text = "".join(yielded_content_parts).strip()
             if not yielded_text:
                 yield {"type": "content", "text": thinking_text}
-            else:
-                # Normalize whitespace and lowercase to compare content
-                norm_thinking = " ".join(thinking_text.split()).lower()
-                norm_yielded = " ".join(yielded_text.split()).lower()
-                
-                is_duplicate = False
-                if norm_thinking in norm_yielded:
-                    is_duplicate = True
-                else:
-                    from difflib import SequenceMatcher
-                    ratio = SequenceMatcher(None, norm_thinking, norm_yielded).ratio()
-                    if ratio > 0.75:
-                        is_duplicate = True
-                
-                if not is_duplicate:
-                    # Append unique thinking text if it is not a duplication of already yielded content
-                    yield {"type": "content", "text": "\n\n" + thinking_text}
