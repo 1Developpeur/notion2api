@@ -93,10 +93,10 @@ def get_notion_model(model_name: str) -> str:
     return MODEL_MAP.get(normalized_name, MODEL_MAP[DEFAULT_MODEL])
 
 
-# 需要走 markdown-chat 的 Notion 内部代号（vertex- 前缀的模型）
-# Gemini 3.1 Pro (galette-medium-thinking) 已改为 workflow，不再走 markdown-chat
+# Notion's public model metadata currently advertises the newer Gemini models
+# through workflow/custom-agent capable routes. Keeping them on markdown-chat
+# causes Notion upstream 502 responses.
 MARKDOWN_CHAT_MODELS: set[str] = {
-    "vertex-gemini-2.5-flash",
 }
 
 

@@ -44,5 +44,5 @@ def test_captured_display_names_are_registered():
 
 
 def test_gemini_3_5_flash_no_longer_uses_markdown_chat_route():
-    assert get_thread_type("gemini-2.5flash") == "markdown-chat"
+    assert get_thread_type("gemini-2.5flash") == "workflow"
     assert get_thread_type("gemini-3.5flash") == "workflow"
