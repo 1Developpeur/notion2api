@@ -258,7 +258,7 @@ def _normalize_stream_item(item: Any) -> dict[str, Any]:
     if isinstance(item, dict):
         item_type = str(item.get("type", "") or "").lower()
         if item_type == "content":
-            return {"type": "content", "text": str(item.get("history", "") or "")}
+            return {"type": "content", "text": str(item.get("text") or item.get("history", "") or "")}
         if item_type == "search":
             payload = item.get("data")
             return {
@@ -266,11 +266,11 @@ def _normalize_stream_item(item: Any) -> dict[str, Any]:
                 "data": payload if isinstance(payload, dict) else {},
             }
         if item_type == "thinking":
-            return {"type": "thinking", "text": str(item.get("history", "") or "")}
+            return {"type": "thinking", "text": str(item.get("text") or item.get("history", "") or "")}
         if item_type == "final_content":
             return {
                 "type": "final_content",
-                "text": str(item.get("history", "") or ""),
+                "text": str(item.get("text") or item.get("history", "") or ""),
                 "source_type": str(item.get("source_type", "") or ""),
                 "source_length": item.get("source_length"),
             }
@@ -556,7 +556,7 @@ def _create_lite_stream_generator(
             item_type = item.get("type")
 
             if item_type == "final_content":
-                final_text = str(item.get("history", "") or "").strip()
+                final_text = str(item.get("text", "") or "").strip()
                 if final_text:
                     authoritative_final_content = final_text
                     authoritative_final_source_type = str(
@@ -571,7 +571,7 @@ def _create_lite_stream_generator(
             if item_type != "content":
                 continue
 
-            chunk_text = item.get("history", "")
+            chunk_text = item.get("text", "")
             if not chunk_text:
                 continue
 
@@ -692,7 +692,7 @@ def _create_standard_stream_generator(
             item_type = item.get("type")
 
             if item_type == "final_content":
-                final_text = str(item.get("history", "") or "").strip()
+                final_text = str(item.get("text", "") or "").strip()
                 if final_text:
                     authoritative_final_content = final_text
                     authoritative_final_source_type = str(
@@ -702,7 +702,7 @@ def _create_standard_stream_generator(
 
             # Standard text thinkingtext thinking_chunk text
             if item_type == "thinking":
-                thinking_text = item.get("history", "")
+                thinking_text = item.get("text", "")
                 if thinking_text:
                     streamed_thinking_accumulator += thinking_text
                     # text thinking_chunk text
@@ -726,7 +726,7 @@ def _create_standard_stream_generator(
             if item_type != "content":
                 continue
 
-            chunk_text = item.get("history", "")
+            chunk_text = item.get("text", "")
             if not chunk_text:
                 continue
 
@@ -1020,7 +1020,7 @@ def _handle_lite_request(
                 item_type = item.get("type")
 
                 if item_type == "final_content":
-                    final_text = str(item.get("history", "") or "").strip()
+                    final_text = str(item.get("text", "") or "").strip()
                     if final_text:
                         authoritative_final_content = final_text
                         authoritative_final_source_type = str(
@@ -1035,7 +1035,7 @@ def _handle_lite_request(
                 if item_type != "content":
                     continue
 
-                chunk_text = item.get("history", "")
+                chunk_text = item.get("text", "")
                 if chunk_text:
                     content_parts.append(chunk_text)
 
@@ -1251,7 +1251,7 @@ def _handle_standard_request(
                 item_type = item.get("type")
 
                 if item_type == "final_content":
-                    final_text = str(item.get("history", "") or "").strip()
+                    final_text = str(item.get("text", "") or "").strip()
                     if final_text:
                         authoritative_final_content = final_text
                         authoritative_final_source_type = str(
@@ -1261,7 +1261,7 @@ def _handle_standard_request(
 
                 # Standard text thinking
                 if item_type == "thinking":
-                    thinking_text = item.get("history", "")
+                    thinking_text = item.get("text", "")
                     if thinking_text:
                         thinking_parts.append(thinking_text)
                     continue
@@ -1276,7 +1276,7 @@ def _handle_standard_request(
                 if item_type != "content":
                     continue
 
-                chunk_text = item.get("history", "")
+                chunk_text = item.get("text", "")
                 if chunk_text:
                     content_parts.append(chunk_text)
 
@@ -1662,7 +1662,7 @@ async def create_chat_completion(
                             continue
 
                         if item_type == "final_content":
-                            final_text = str(item.get("history", "") or "").strip()
+                            final_text = str(item.get("text", "") or "").strip()
                             if final_text:
                                 authoritative_final_content = final_text
                                 authoritative_final_source_type = str(
@@ -1671,7 +1671,7 @@ async def create_chat_completion(
                             continue
 
                         if item_type == "thinking":
-                            thinking_text = item.get("history", "")
+                            thinking_text = item.get("text", "")
                             if thinking_text:
                                 thinking_accumulator += thinking_text
                                 # Track recent thinking for overlap detection
@@ -1699,7 +1699,7 @@ async def create_chat_completion(
                         if item_type != "content":
                             continue
 
-                        chunk_text = item.get("history", "")
+                        chunk_text = item.get("text", "")
                         if not chunk_text and not pending_search_md:
                             continue
 
@@ -1954,7 +1954,7 @@ async def create_chat_completion(
                 item = _normalize_stream_item(raw_item)
                 item_type = item.get("type")
                 if item_type == "final_content":
-                    final_text = str(item.get("history", "") or "").strip()
+                    final_text = str(item.get("text", "") or "").strip()
                     if final_text:
                         authoritative_final_content = final_text
                         authoritative_final_source_type = str(
@@ -1962,13 +1962,13 @@ async def create_chat_completion(
                         )
                     continue
                 if item_type == "thinking":
-                    thinking_text = str(item.get("history", "") or "")
+                    thinking_text = str(item.get("text", "") or "")
                     if thinking_text:
                         thinking_parts.append(thinking_text)
                     continue
                 if item_type != "content":
                     continue
-                chunk_text = item.get("history", "")
+                chunk_text = item.get("text", "")
                 if chunk_text:
                     content_parts.append(chunk_text)
 
