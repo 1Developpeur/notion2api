@@ -344,6 +344,10 @@ body{background:var(--bg);color:var(--text)}
     <div class="modal-body">
       <div class="form-group"><label>Base URL</label><input type="text" id="baseUrlInput" placeholder="http://localhost:8000"></div>
       <div class="form-group"><label>API Key</label><input type="password" id="apiKeyInput" placeholder="Optional if not set on server"></div>
+      <div class="form-group-row" style="display:flex; align-items:center; gap:8px; margin-bottom:14px;">
+        <input type="checkbox" id="persistChatsInput" style="width:16px; height:16px; margin:0; cursor:pointer;">
+        <label for="persistChatsInput" style="font-size:12px; color:var(--text-secondary); font-weight:500; cursor:pointer; user-select:none;">Persist chats in Notion</label>
+      </div>
       <div id="settingsWarningsContainer" class="settings-warnings-container hidden" style="margin-top:16px; padding:12px; border-radius:8px; background:rgba(217,48,37,0.06); border:1px solid rgba(217,48,37,0.15); display:flex; flex-direction:column; gap:8px;"></div>
     </div>
     <div class="modal-footer"><button id="saveSettingsBtn" class="btn-primary">Save changes</button></div>
@@ -974,9 +978,9 @@ window.NotionAI.API.Models = {
 
 /* ===== SETTINGS ===== */
 window.NotionAI.API.Settings = {
-  open(){document.getElementById('baseUrlInput').value=window.NotionAI.Core.State.get('baseUrl');document.getElementById('apiKeyInput').value=window.NotionAI.Core.State.get('apiKey');document.getElementById('settingsModal').classList.remove('hidden'); if(typeof checkFeatures === 'function') checkFeatures();},
+  open(){document.getElementById('baseUrlInput').value=window.NotionAI.Core.State.get('baseUrl');document.getElementById('apiKeyInput').value=window.NotionAI.Core.State.get('apiKey');document.getElementById('persistChatsInput').checked=localStorage.getItem('claude_persist_chats')==='true';document.getElementById('settingsModal').classList.remove('hidden'); if(typeof checkFeatures === 'function') checkFeatures();},
   close(){document.getElementById('settingsModal').classList.add('hidden')},
-  save(){const b=document.getElementById('baseUrlInput').value.trim().replace(/\/$/,"");const k=document.getElementById('apiKeyInput').value.trim();window.NotionAI.Core.State.set('baseUrl',b);window.NotionAI.Core.State.set('apiKey',k);localStorage.setItem('claude_base_url',b);window.NotionAI.Core.State.persistApiKey(k);this.close();window.NotionAI.API.Models.loadModels(); if(typeof checkFeatures === 'function') checkFeatures();}
+  save(){const b=document.getElementById('baseUrlInput').value.trim().replace(/\/$/,"");const k=document.getElementById('apiKeyInput').value.trim();const p=document.getElementById('persistChatsInput').checked;window.NotionAI.Core.State.set('baseUrl',b);window.NotionAI.Core.State.set('apiKey',k);localStorage.setItem('claude_base_url',b);localStorage.setItem('claude_persist_chats',p);window.NotionAI.Core.State.persistApiKey(k);this.close();window.NotionAI.API.Models.loadModels(); if(typeof checkFeatures === 'function') checkFeatures();}
 };
 
 /* ===== STORAGE ===== */
@@ -1191,7 +1195,7 @@ window.NotionAI.Chat.Streaming = {
     try {
       const response = await fetch(`${window.NotionAI.Core.State.get('baseUrl')}/v1/chat/completions`, {
         method:'POST', headers:{'Content-Type':'application/json','Authorization':`Bearer ${window.NotionAI.Core.State.get('apiKey')}`,'X-Client-Type':window.NotionAI.Core.Constants.CLIENT_TYPE},
-        body:JSON.stringify({model,messages:requestMessages,conversation_id:chat.conversationId||null,stream:true,attachments}), signal:STATE.controller.signal
+        body:JSON.stringify({model,messages:requestMessages,conversation_id:chat.conversationId||null,stream:true,attachments,metadata:{persist_remote_chat:localStorage.getItem('claude_persist_chats')==='true'}}), signal:STATE.controller.signal
       });
       if(window.NotionAI.API.Client.checkMemoryStatus(response))this.notifyMemoryDegradedOnce();
       const bid=window.NotionAI.API.Client.getConversationId(response);
