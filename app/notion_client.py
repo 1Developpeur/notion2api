@@ -19,10 +19,10 @@ from app.attachments.models import UploadedAttachment
 from app.model_registry import get_notion_model
 from app.stream_parser_safe import parse_stream
 
-# 禁用 SSL 警告
+# text SSL text
 urllib3.disable_warnings(urllib3.exceptions.InsecureRequestWarning)
 
-# 可通过环境变量覆盖 Notion 客户端版本号（Notion 更新后可能需要同步）
+# text Notion textNotion text
 NOTION_CLIENT_VERSION = os.getenv("NOTION_CLIENT_VERSION", "23.13.20260228.0625")
 
 
@@ -84,7 +84,7 @@ def _resolve_thread_persistence() -> dict[str, bool]:
 
 
 class NotionUpstreamError(RuntimeError):
-    """Notion 上游请求失败或返回异常内容。"""
+    """Notion text"""
 
     status_code: Optional[int]
     retriable: bool
@@ -107,8 +107,8 @@ class NotionUpstreamError(RuntimeError):
 class NotionOpusAPI:
     def __init__(self, account_config: dict):
         """
-        从单组账号配置初始化 Notion 客户端。
-        account_config 需要包含 token_v2, space_id, user_id, space_view_id, user_name, user_email
+        text Notion text
+        account_config text token_v2, space_id, user_id, space_view_id, user_name, user_email
         """
         self.token_v2 = account_config.get("token_v2", "")
         self.space_id = account_config.get("space_id", "")
@@ -724,13 +724,13 @@ class NotionOpusAPI:
         persist_remote_chat: Optional[bool] = None,
     ) -> Generator[dict[str, Any], None, None]:
         """
-        发起 Notion API 请求并返回结构化流生成器。
-        接收完整的 transcript 列表作为参数。
+        text Notion API text
+        text transcript text
 
         Args:
-            transcript: 对话历史记录列表
-            thread_id: 可选的已有 thread_id。如果提供，将重用该线程以保持上下文
-            persist_remote_chat: 是否持久化 Notion 端的聊天线程（覆盖默认配置）
+            transcript: text
+            thread_id: text thread_idtext
+            persist_remote_chat: text Notion text
         """
         if not isinstance(transcript, list) or not transcript:
             raise ValueError("Invalid transcript payload: transcript must be a non-empty list.")
@@ -754,13 +754,13 @@ class NotionOpusAPI:
         if not thread_persistence["persist"]:
             request_profile["precreate_thread"] = False
 
-        # 如果没有提供 thread_id，创建新的；否则重用已有的
+        # text thread_idtext
         should_create_thread = thread_id is None
         thread_id = thread_id or str(uuid.uuid4())
         trace_id = str(uuid.uuid4())
         response = None
 
-        # 保存 thread_id 以便外部访问
+        # text thread_id text
         self.current_thread_id = thread_id
 
         uploaded_attachments: list[UploadedAttachment] = []
@@ -795,13 +795,13 @@ class NotionOpusAPI:
                 request_profile["create_thread"] = True
                 request_profile["is_partial_transcript"] = False
         elif not should_create_thread:
-            # 如果重用已有线程，不要创建新线程
+            # text
             request_profile["create_thread"] = False
-            # 关键修复：设置 is_partial_transcript=True，让 Notion 接受客户端的历史消息
+            # text is_partial_transcript=Truetext Notion text
             request_profile["is_partial_transcript"] = True
 
-        # 把 cookie 直接放进 header，绕过 cloudscraper 的 cookie jar
-        # （cookie jar 可能被 Cloudflare challenge 写入含非 ASCII 字符的 cookie，导致编码错误）
+        # text cookie text headertext cloudscraper text cookie jar
+        # textcookie jar text Cloudflare challenge text ASCII text cookietext
         cookie_header = self._build_cookie_header()
 
         headers = {
@@ -889,7 +889,7 @@ class NotionOpusAPI:
                 timeout=(15, 120),
             )
             if response.status_code == 403:
-                # Cloudflare challenge 可能过期，重建 scraper 后重试一次
+                # Cloudflare challenge text scraper text
                 response.close()
                 logger.warning(
                     "Got 403, rebuilding cloudscraper to refresh Cloudflare challenge",
@@ -907,7 +907,7 @@ class NotionOpusAPI:
                 )
             if response.status_code != 200:
                 excerpt = (response.text or "").strip().replace("\n", " ")[:300]
-                # 429 和 5xx 都允许重试（换账号或等待后重试）
+                # 429 text 5xx text
                 retriable = response.status_code >= 500 or response.status_code == 429
                 raise NotionUpstreamError(
                     f"Notion upstream returned HTTP {response.status_code}.",
@@ -953,10 +953,10 @@ class NotionOpusAPI:
                         },
                     )
             else:
-                # 流结束后，不再自动删除 thread
-                # 原因：Notion API 的 workflow 模式依赖于服务器端保存的对话历史
-                # 删除 thread 会导致后续请求无法获取历史消息（AI 失忆）
-                # 保持 thread 存活可以维持对话上下文
+                # text thread
+                # textNotion API text workflow text
+                # text thread textAI text
+                # text thread text
                 logger.info(
                     "Thread completed and preserved for conversation context",
                     extra={
@@ -972,7 +972,7 @@ class NotionOpusAPI:
             raise NotionUpstreamError("Request to Notion upstream timed out.", retriable=True) from exc
         except requests.exceptions.RequestException as exc:
             logger.error(f"Request failed: {exc}", exc_info=True)
-            # 不暴露原始异常细节给用户
+            # text
             raise NotionUpstreamError("Request to Notion upstream failed. Please try again later.", retriable=True) from exc
         finally:
             if response is not None:

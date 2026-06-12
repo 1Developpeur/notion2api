@@ -6,17 +6,17 @@ import requests
 
 from app.logger import logger
 
-# 清理 Notion 内部语言/格式标记的正则集合
-# 1. 完整的 <lang ...>...</lang> 块，替换时只保留内部文本（_strip_lang_tags 的兜底）
+# text Notion text/text
+# 1. text <lang ...>...</lang> text_strip_lang_tags text
 _RE_LANG_FULL = re.compile(r"<lang\b[^>]*>(.*?)</lang>", re.DOTALL)
-# 2. 残留的 <lang ...> 孤立开标签（无对应内容或截断后留下的）
+# 2. text <lang ...> text
 _RE_LANG_OPEN = re.compile(r"<lang\b[^>]*>")
-# 3. 残留的 </lang> 闭标签
+# 3. text </lang> text
 _RE_LANG_CLOSE = re.compile(r"</lang>")
-# 4. Notion 语言属性残片：如 primary="zh-CN" 或 primary="zh" 或 primary="en"
-#    可能带或不带引号，出现在文本开头或任意位置
+# 4. Notion text primary="zh-CN" text primary="zh" text primary="en"
+#    text
 _RE_PRIMARY_ATTR = re.compile(r'\bprimary="[a-zA-Z\-]{1,15}"\s*')
-# 5. 剩余的 > 或 "> 残片（由截断的开标签留下的属性尾巴，如 -CN"> ）
+# 5. text > text "> text -CN"> text
 _RE_ATTR_TAIL = re.compile(r'^-?[a-zA-Z]{0,4}"\s*>\s*')
 _RE_PRIMARY_START = re.compile(r"\bprimary\b", re.IGNORECASE)
 
@@ -42,13 +42,13 @@ SEARCH_VALUE_KEYS = (
     "internal",
 )
 
-# ---- 段落分类：根据 Notion o:"a" patch 的 v.type 判断 ----
-# 思考类 type 关键词
+# ---- text Notion o:"a" patch text v.type text ----
+# text type text
 _THINKING_TYPES = ("agent-inference", "thinking", "reasoning", "inference")
-# 工具/搜索类 type 关键词
+# text/text type text
 _TOOL_TYPES = ("agent-tool-result", "tool_use", "tool", "search", "web", "citation")
 
-# 段落角色常量
+# text
 SEG_THINKING = "thinking"
 SEG_TOOL = "tool"
 SEG_CONTENT = "content"
@@ -100,24 +100,24 @@ def _strip_lang_tags(text: str, in_tag: list[bool]) -> str:
 
 def _clean_notion_markup(text: str) -> str:
     """
-    二次清理：移除 _strip_lang_tags 可能遗漏的 Notion 内部标记残片。
+    text _strip_lang_tags text Notion text
 
-    处理以下场景：
-    1. 完整 <lang ...>内容</lang>（_strip_lang_tags 兜底，保留内容只剥标签）
-    2. 孤立的 </lang> 闭标签
-    3. 孤立的 <lang ...> 开标签（内容已被 _strip_lang_tags 保留，只剩空壳）
-    4. primary="zh-CN" 属性残片（跨块截断后留下的属性文本）
-    5. 属性尾部残片，如 -CN"> 或 en"> 出现在文本开头
+    text
+    1. text <lang ...>text</lang>text_strip_lang_tags text
+    2. text </lang> text
+    3. text <lang ...> text _strip_lang_tags text
+    4. primary="zh-CN" text
+    5. text -CN"> text en"> text
     """
-    # 完整 <lang ...>内容</lang>：保留内容，剥掉标签
+    # text <lang ...>text</lang>text
     text = _RE_LANG_FULL.sub(r"\1", text)
-    # 移除孤立的 </lang>
+    # text </lang>
     text = _RE_LANG_CLOSE.sub("", text)
-    # 移除孤立的 <lang ...> 开标签
+    # text <lang ...> text
     text = _RE_LANG_OPEN.sub("", text)
-    # 移除 primary="zh-CN" 之类的属性残片
+    # text primary="zh-CN" text
     text = _RE_PRIMARY_ATTR.sub("", text)
-    # 移除行首的属性尾巴残片，如 -CN"> 或 "> 或 en">
+    # text -CN"> text "> text en">
     text = _RE_ATTR_TAIL.sub("", text)
     return text
 
@@ -207,7 +207,7 @@ def _extract_segment_index(path: str) -> int | None:
 
 
 def _extract_value_index(path: str) -> int | None:
-    """从 /s/N/value/M/... 形式的 path 中提取 value block 序号 M。"""
+    """text /s/N/value/M/... text path text value block text Mtext"""
     parts = [p for p in path.split("/") if p]
     for i, part in enumerate(parts):
         if part == "value" and i + 1 < len(parts):
@@ -220,8 +220,8 @@ def _extract_value_index(path: str) -> int | None:
 
 def _extract_value_add_index(path: str) -> int | None:
     """
-    从 `o:"a"` 的 `/s/N/value/<idx|->` 路径中提取新 value block 序号。
-    仅匹配 value block 本身，不匹配 `/content` 等子路径。
+    text `o:"a"` text `/s/N/value/<idx|->` text value block text
+    text value block text `/content` text
     """
     parts = [p for p in path.split("/") if p]
     if len(parts) != 4:
@@ -429,7 +429,7 @@ def _extract_text_from_patch(patch: dict[str, Any]) -> str:
                         text_parts.append(str(item.get("content", "")))
                 content = "".join(text_parts)
         elif isinstance(patch_v, dict) and "content" in patch_v:
-            # 子 value block 创建：o:"a" /s/N/value/- → {type:"text", content:"..."}
+            # text value block texto:"a" /s/N/value/- → {type:"text", content:"..."}
             raw = patch_v.get("content")
             if isinstance(raw, str):
                 content = raw
@@ -438,7 +438,7 @@ def _extract_text_from_patch(patch: dict[str, Any]) -> str:
         content = patch["v"] if isinstance(patch["v"], str) else ""
     
     elif patch_op == "p" and "v" in patch:
-        # 路径替换有时也携带文本内容
+        # text
         path = _normalize_path(patch)
         if "/content" in path or "/text" in path:
             content = patch["v"] if isinstance(patch["v"], str) else ""
@@ -618,8 +618,8 @@ def _extract_final_content_from_record_map(data: dict[str, Any]) -> dict[str, An
                 }
             )
 
-    # 智能过滤：如果同时存在高优先级的 text/markdown-chat，则忽略 agent-inference
-    # 这可以避免 Opus/GPT 模型将所有内容都放在 agent-inference 中导致的重复显示问题
+    # text text/markdown-chattext agent-inference
+    # text Opus/GPT text agent-inference text
     high_priority_types = {"text", "markdown-chat"}
     has_high_priority = any(c["step_type"] in high_priority_types for c in candidates)
 
@@ -674,8 +674,8 @@ def _extract_final_content_from_record_map(data: dict[str, Any]) -> dict[str, An
 
 def _classify_segment_type(effective_type: str) -> str:
     """
-    根据 o:"a" patch 的 type 字段判断新段落的角色。
-    这是整个分类逻辑的唯一入口——只依赖 Notion 自己标注的 type。
+    text o:"a" patch text type text
+    text——text Notion text typetext
     """
     if not effective_type:
         return SEG_CONTENT
@@ -687,7 +687,7 @@ def _classify_segment_type(effective_type: str) -> str:
         return SEG_THINKING
     if any(kw in effective_type for kw in _TOOL_TYPES):
         return SEG_TOOL
-    # 未知类型默认归正文，保证不丢内容
+    # text
     return SEG_CONTENT
 
 
@@ -700,20 +700,20 @@ def _bind_pending_segment(
     patch_path: str,
 ) -> None:
     """
-    从 pending 列表中找到最匹配的段落绑定到 Notion 的真实 index。
+    text pending text Notion text indextext
 
-    策略：优先绑定 agent-inference（thinking）段落，因为它是唯一需要
-    精确分类的段落。其他段落（tool、meta、content）即使绑错也不影响输出，
-    因为它们的文本要么被跳过（meta/tool）要么本来就是 content。
+    text agent-inferencetextthinkingtext
+    texttooltextmetatextcontenttext
+    textmeta/tooltext contenttext
     """
     if not pending:
         return
 
-    # 从 patch_path 提取 value index，用于匹配
+    # text patch_path text value indextext
     val_idx = _extract_value_index(patch_path)
 
-    # 策略：如果 path 引用了 value/0/content，优先找有 thinking value[0] 的段落
-    best_idx = 0  # 默认取第一个
+    # text path text value/0/contenttext thinking value[0] text
+    best_idx = 0  # text
     if val_idx is not None:
         for i, seg in enumerate(pending):
             vt = seg.get("value_types", {})
@@ -744,17 +744,17 @@ def _bind_pending_segment(
 
 def parse_stream(response: requests.Response) -> Generator[dict[str, Any], None, None]:
     """
-    解析 Notion NDJSON 流，输出三种结构化事件：
-      - {"type": "content",  "text": "..."}   正文
-      - {"type": "search",   "data": {...}}    搜索元数据
-      - {"type": "thinking", "text": "..."}    思考过程
+    text Notion NDJSON text
+      - {"type": "content",  "text": "..."}   text
+      - {"type": "search",   "data": {...}}    text
+      - {"type": "thinking", "text": "..."}    text
 
-    核心机制——段落注册表（Segment Registry）：
-      Notion 流中每个 o:"a" + path="/s/-" 的 patch 创建一个新的顶层段落，
-      此时 v.type 明确标注了类型（agent-inference / agent-tool-result / text 等）。
-      我们在此刻分配递增序号并记录类型。
-      后续 o:"x" + path="/s/N/..." 只是往已有段落追加文本，查表即可知归属。
-      不需要关键词猜测、不需要状态机。
+    text——textSegment Registrytext
+      Notion text o:"a" + path="/s/-" text patch text
+      text v.type textagent-inference / agent-tool-result / text text
+      text
+      text o:"x" + path="/s/N/..." text
+      text
     """
     in_lang_tag: list[bool] = [False]
     in_primary_attr: list[bool] = [False]
@@ -763,17 +763,17 @@ def parse_stream(response: requests.Response) -> Generator[dict[str, Any], None,
     tool_json_buffer = ""
     tool_json_depth = 0
 
-    # ---- 段落注册表 ----
-    # Notion 的 /s/N 中的 N 是全局 index（包括 config/context/user 等隐含段落），
-    # 但 o:"a" /s/- 不告诉我们真实 index。
-    # 策略：o:"a" /s/- 时记录到 pending dict。
-    # 当 o:"x" /s/N/... 或 o:"a" /s/N/... 首次引用未知 N 时，
-    # 从 pending 中找最匹配的段落绑定（优先匹配 agent-inference/thinking 类型）。
+    # ---- text ----
+    # Notion text /s/N text N text indextext config/context/user text
+    # text o:"a" /s/- text indextext
+    # texto:"a" /s/- text pending dicttext
+    # text o:"x" /s/N/... text o:"a" /s/N/... text N text
+    # text pending text agent-inference/thinking text
     segment_types: dict[int, str] = {}            # notion_index → SEG_THINKING / SEG_TOOL / SEG_CONTENT
-    value_types: dict[tuple[int, int], str] = {}  # (notion_index, val_index) → 类型
-    next_val_id: dict[int, int] = {}              # notion_index → 下一个 value block 序号
+    value_types: dict[tuple[int, int], str] = {}  # (notion_index, val_index) → text
+    next_val_id: dict[int, int] = {}              # notion_index → text value block text
 
-    # pending：o:"a" /s/- 注册但尚未绑定到 Notion 真实 index 的段落
+    # pendingtexto:"a" /s/- text Notion text index text
     _pending_segments: list[dict] = []  # [{seg_class, value_types_local, next_val_id_local}]
 
     for line in response.iter_lines(decode_unicode=True):
@@ -782,7 +782,7 @@ def parse_stream(response: requests.Response) -> Generator[dict[str, Any], None,
         if isinstance(line, bytes):
             line = line.decode("utf-8", errors="ignore")
 
-        # 调试日志：含搜索关键词的行
+        # text
         lowered_line = line.lower()
         if any(token in lowered_line for token in LINE_DEBUG_KEYWORDS):
             logger.debug(
@@ -834,24 +834,24 @@ def parse_stream(response: requests.Response) -> Generator[dict[str, Any], None,
                     yield {"type": event_type, "text": event_text}
                 continue
 
-            # 提取 effective type（优先 patch.type，其次 v.type）
+            # text effective typetext patch.typetext v.typetext
             patch_type = str(patch.get("type", "") or "").lower()
             nested_type = ""
             if isinstance(patch_v, dict):
                 nested_type = str(patch_v.get("type", "") or "").lower()
             effective_type = patch_type or nested_type
 
-            # ========== 段落注册：o:"a" 创建新段落 ==========
+            # ========== texto:"a" text ==========
             path_stripped = patch_path.strip("/")
             is_new_toplevel_segment = (patch_op == "a" and path_stripped == "s/-")
 
-            # 本 patch 的角色（注册时确定，用于当前 patch 的分类）
+            # text patch text patch text
             patch_role: str | None = None
 
             if is_new_toplevel_segment:
                 seg_class = _classify_segment_type(effective_type)
 
-                # 收集 value item 类型
+                # text value item text
                 local_value_types: dict[int, str] = {}
                 local_next_val_id = 0
                 if isinstance(patch_v, dict) and "value" in patch_v:
@@ -868,16 +868,16 @@ def parse_stream(response: requests.Response) -> Generator[dict[str, Any], None,
                     local_value_types[0] = seg_class
                     local_next_val_id = max(local_next_val_id, 1)
 
-                # 加入 pending 队列，等待 o:"x" /s/N 绑定真实 index
+                # text pending text o:"x" /s/N text index
                 _pending_segments.append({
                     "seg_class": seg_class,
                     "value_types": local_value_types,
                     "next_val_id": local_next_val_id,
                 })
 
-                # 初始 patch 的文本用 value[0] 的类型
+                # text patch text value[0] text
                 patch_role = local_value_types.get(0, seg_class)
-                # patch_seg 暂时设为 None，因为还不知道真实 index
+                # patch_seg text Nonetext index
                 patch_seg = None
 
                 logger.debug(
@@ -895,15 +895,15 @@ def parse_stream(response: requests.Response) -> Generator[dict[str, Any], None,
                 )
 
             elif patch_op == "a" and patch_seg is not None:
-                # o:"a" 但 path 不是 /s/-（如 /s/2/value/-），属于已有段落的子追加
-                # 先尝试绑定 pending 段落
+                # o:"a" text path text /s/-text /s/2/value/-text
+                # text pending text
                 if patch_seg not in segment_types and _pending_segments:
                     _bind_pending_segment(patch_seg, _pending_segments, segment_types, value_types, next_val_id, patch_path)
 
                 if patch_seg not in segment_types:
                     segment_types[patch_seg] = _classify_segment_type(effective_type)
 
-                # 检测 /s/N/value/<idx|-> 子块追加
+                # text /s/N/value/<idx|-> text
                 value_add_idx = _extract_value_add_index(patch_path)
                 if value_add_idx is not None:
                     vid = next_val_id.get(patch_seg, 0) if value_add_idx < 0 else value_add_idx
@@ -914,16 +914,16 @@ def parse_stream(response: requests.Response) -> Generator[dict[str, Any], None,
                     in_lang_tag[0] = False
                     in_primary_attr[0] = False
 
-            # ========== 绑定 pending 段落（o:"x" 首次引用时） ==========
+            # ========== text pending texto:"x" text ==========
             if patch_seg is not None and patch_seg not in segment_types and _pending_segments:
                 _bind_pending_segment(patch_seg, _pending_segments, segment_types, value_types, next_val_id, patch_path)
 
-            # ========== 确定当前 patch 所属的角色 ==========
+            # ========== text patch text ==========
             if patch_role is not None:
-                # 刚注册的 patch，直接用注册时的角色
+                # text patchtext
                 seg_owner = patch_role
             else:
-                # o:"x" 追加文本：先查 value block 表，再查 segment 表
+                # o:"x" text value block text segment text
                 val_idx = _extract_value_index(patch_path)
                 if val_idx is not None and patch_seg is not None and (patch_seg, val_idx) in value_types:
                     seg_owner = value_types[(patch_seg, val_idx)]
@@ -971,14 +971,14 @@ def parse_stream(response: requests.Response) -> Generator[dict[str, Any], None,
                         },
                     )
 
-            # ========== 搜索元数据（与段落角色无关，始终提取） ==========
+            # ========== text ==========
             is_search_patch = _looks_like_search_patch(patch)
             if is_search_patch:
                 search_data = _extract_search_data_from_patch(patch)
                 if search_data:
                     yield {"type": "search", "data": search_data}
 
-            # ========== 提取文本 ==========
+            # ========== text ==========
             # /content replace patch can finalize broken lang attributes.
             # Reset state here to avoid swallowing following normal text.
             if patch_op == "p" and "/content" in patch_path and isinstance(patch_v, str):
@@ -996,7 +996,7 @@ def parse_stream(response: requests.Response) -> Generator[dict[str, Any], None,
             if not cleaned:
                 continue
 
-            # ========== 搜索 JSON 片段检测 ==========
+            # ========== text JSON text ==========
             stripped = cleaned.strip()
             if stripped and (search_json_depth > 0 or _looks_like_search_json_fragment(stripped)):
                 search_json_buffer += cleaned
@@ -1009,7 +1009,7 @@ def parse_stream(response: requests.Response) -> Generator[dict[str, Any], None,
                     search_json_depth = 0
                 continue
 
-            # ========== Tool Call JSON 片段检测 ==========
+            # ========== Tool Call JSON text ==========
             if stripped and (tool_json_depth > 0 or _looks_like_tool_call_json_fragment(stripped)):
                 tool_json_buffer += cleaned
                 tool_json_depth += stripped.count("{") - stripped.count("}")
@@ -1021,11 +1021,11 @@ def parse_stream(response: requests.Response) -> Generator[dict[str, Any], None,
                     yield {"type": "thinking", "text": cleaned}
                 continue
 
-            # 已被 search patch 处理的结构化数据不重复输出
+            # text search patch text
             if is_search_patch:
                 continue
 
-            # ========== 按段落角色输出 ==========
+            # ========== text ==========
             if seg_owner == SEG_META:
                 continue
             if seg_owner in (SEG_THINKING, SEG_TOOL):

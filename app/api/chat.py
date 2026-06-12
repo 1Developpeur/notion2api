@@ -30,66 +30,65 @@ from app.schemas import (
 router = APIRouter()
 
 
-# ─── 结构化错误响应 ─────────────────────────────────────────────
+# Structured error responses
 def _classify_upstream_error(exc: NotionUpstreamError) -> dict[str, Any]:
-    """将 NotionUpstreamError 分类为结构化错误信息，前端可直接展示。"""
+    """Classify NotionUpstreamError into frontend-safe structured error details."""
     sc = exc.status_code
 
     if sc == 401:
         return {
             "code": "NOTION_401",
             "type": "upstream_auth_error",
-            "message": "Notion 认证失败 (HTTP 401)，token 可能已过期",
-            "suggestion": "请重新获取 token_v2 并更新配置",
+            "message": "Notion authentication failed (HTTP 401). The saved session may be expired.",
+            "suggestion": "Refresh the local login session and update configuration.",
         }
     if sc == 403:
         return {
             "code": "NOTION_403",
             "type": "upstream_forbidden",
-            "message": "Notion 拒绝访问 (HTTP 403)，可能被 Cloudflare 拦截或账号受限",
-            "suggestion": "检查服务器网络环境，或稍后重试",
+            "message": "Notion denied access (HTTP 403). Cloudflare or account restrictions may be involved.",
+            "suggestion": "Check server network access or retry later.",
         }
     if sc == 429:
         return {
             "code": "NOTION_429",
             "type": "upstream_rate_limit",
-            "message": "Notion 请求频率过高 (HTTP 429)",
-            "suggestion": "等待几秒后重试，或配置多个账号分散请求",
+            "message": "Notion request rate is too high (HTTP 429).",
+            "suggestion": "Wait briefly before retrying, or configure multiple accounts to spread requests.",
         }
     if sc and sc >= 500:
         return {
             "code": f"NOTION_{sc}",
             "type": "upstream_server_error",
-            "message": f"Notion 服务暂时不可用 (HTTP {sc})",
-            "suggestion": "Notion 服务端故障，请稍后重试",
+            "message": f"Notion is temporarily unavailable (HTTP {sc}).",
+            "suggestion": "The Notion upstream service failed. Retry later.",
         }
     if "timed out" in str(exc).lower():
         return {
             "code": "NETWORK_TIMEOUT",
             "type": "network_timeout",
-            "message": "连接 Notion 超时",
-            "suggestion": "检查服务器到 notion.so 的网络连通性",
+            "message": "Connection to Notion timed out.",
+            "suggestion": "Check network connectivity from the server to notion.so.",
         }
     if "failed" in str(exc).lower() and not sc:
         return {
             "code": "NETWORK_ERROR",
             "type": "network_error",
-            "message": "无法连接 Notion 服务",
-            "suggestion": "检查服务器网络和 DNS 配置",
+            "message": "Unable to connect to the Notion service.",
+            "suggestion": "Check server network and DNS configuration.",
         }
     if "empty" in str(exc).lower():
         return {
             "code": "NOTION_EMPTY",
             "type": "upstream_empty_response",
-            "message": "Notion 返回了空内容",
-            "suggestion": "请重新发送消息",
+            "message": "Notion returned empty content.",
+            "suggestion": "Send the message again.",
         }
-    # 兜底
     return {
         "code": "UPSTREAM_UNKNOWN",
         "type": "upstream_error",
         "message": str(exc),
-        "suggestion": "请稍后重试",
+        "suggestion": "Retry later.",
     }
 
 
@@ -103,7 +102,7 @@ def _build_error_response(
     suggestion: str = "",
     detail: str = "",
 ) -> JSONResponse:
-    """构建统一格式的错误 JSON 响应，前端可解析展示。"""
+    """Build a unified JSON error response that the frontend can parse."""
     content: dict[str, Any] = {
         "error": {
             "message": message,
@@ -120,7 +119,7 @@ def _build_error_response(
 
 
 def _upstream_error_response(exc: NotionUpstreamError) -> JSONResponse:
-    """将 NotionUpstreamError 转为统一的 503 JSON 响应。"""
+    """Convert NotionUpstreamError to a unified 503 JSON response."""
     info = _classify_upstream_error(exc)
     return _build_error_response(
         503,
@@ -168,19 +167,19 @@ def _local_probe_response_text(content: Any) -> str:
 
 
 RECALL_INTENT_KEYWORDS = [
-    "之前",
-    "上次",
-    "以前",
-    "你还记得",
-    "我们之前",
+    "history",
+    "history",
+    "history",
+    "history",
+    "history",
     "earlier",
     "before",
     "recall",
     "remember",
-    "之前说过",
-    "历史记录",
-    "找一下",
-    "搜索记忆",
+    "history",
+    "history",
+    "history",
+    "history",
 ]
 
 
@@ -230,17 +229,17 @@ def _build_local_ui_chunk(
 
 
 def _format_search_results_md(search_data: dict[str, Any]) -> str:
-    """将搜索数据格式化为 Markdown 引用块，以便标准客户端显示。"""
+    """Format search data as Markdown for standard clients."""
     lines = []
     queries = search_data.get("queries", [])
     if queries:
-        lines.append(f"> 🔍 **已搜索:** {', '.join(queries)}")
+        lines.append(f"> 🔍 **Searched:** {', '.join(queries)}")
 
     sources = search_data.get("sources", [])
     if sources:
-        lines.append("> 🌐 **来源:**")
-        for i, src in enumerate(sources[:5], 1):  # 最多显示5个来源，避免刷屏
-            title = src.get("title") or src.get("url") or "未知来源"
+        lines.append("> 🌐 **Searched:**")
+        for i, src in enumerate(sources[:5], 1):  # text5text
+            title = src.get("title") or src.get("url") or "Unknown source"
             url = src.get("url")
             if url:
                 lines.append(f"> {i}. [{title}]({url})")
@@ -259,7 +258,7 @@ def _normalize_stream_item(item: Any) -> dict[str, Any]:
     if isinstance(item, dict):
         item_type = str(item.get("type", "") or "").lower()
         if item_type == "content":
-            return {"type": "content", "text": str(item.get("text", "") or "")}
+            return {"type": "content", "text": str(item.get("history", "") or "")}
         if item_type == "search":
             payload = item.get("data")
             return {
@@ -267,11 +266,11 @@ def _normalize_stream_item(item: Any) -> dict[str, Any]:
                 "data": payload if isinstance(payload, dict) else {},
             }
         if item_type == "thinking":
-            return {"type": "thinking", "text": str(item.get("text", "") or "")}
+            return {"type": "thinking", "text": str(item.get("history", "") or "")}
         if item_type == "final_content":
             return {
                 "type": "final_content",
-                "text": str(item.get("text", "") or ""),
+                "text": str(item.get("history", "") or ""),
                 "source_type": str(item.get("source_type", "") or ""),
                 "source_length": item.get("source_length"),
             }
@@ -383,7 +382,7 @@ def _build_thinking_replacement(
 
     # Relax constraint: Allow replacement for more source types to fix Sonnet thinking leakage
     # But still require minimal validation for non-inference sources
-    if source not in ("agent-inference", "text", "markdown-chat", ""):
+    if source not in ("agent-inference", "history", "markdown-chat", ""):
         # Only skip for clearly non-thinking source types
         return None
 
@@ -430,7 +429,7 @@ def _build_thinking_replacement(
     if not normalized_final:
         return None
 
-    # 只在几乎没有真实正文增量时做裁决，避免误伤复杂推理场景。
+    # text
     if normalized_streamed and len(normalized_streamed) >= max(
         10, int(len(normalized_final) * 0.35)
     ):
@@ -471,7 +470,7 @@ def _extract_recall_query(text: str) -> str:
             )
         else:
             cleaned = cleaned.replace(keyword, " ")
-    cleaned = re.sub(r"[\s，。！？、,.!?;:：]+", " ", cleaned).strip()
+    cleaned = re.sub(r"[\stext,.!?;:text]+", " ", cleaned).strip()
     return cleaned or text.strip()
 
 
@@ -515,7 +514,7 @@ def _prepare_messages(
 
 
 def _prepare_messages_lite(req_body: ChatCompletionRequest) -> str:
-    """Lite 模式：只提取最后一条 user 消息，支持 system 指令合并"""
+    """Lite text user text system text"""
     system_messages = []
     user_prompt = ""
 
@@ -545,7 +544,7 @@ def _create_lite_stream_generator(
     first_item: Any,
     stream_gen: Iterable[Any],
 ) -> Generator[str, None, None]:
-    """Lite 模式流式生成器：只输出 content，忽略 thinking 和 search"""
+    """Lite text contenttext thinking text search"""
     streamed_content_accumulator = ""
     authoritative_final_content = ""
     authoritative_final_source_type = ""
@@ -557,7 +556,7 @@ def _create_lite_stream_generator(
             item_type = item.get("type")
 
             if item_type == "final_content":
-                final_text = str(item.get("text", "") or "").strip()
+                final_text = str(item.get("history", "") or "").strip()
                 if final_text:
                     authoritative_final_content = final_text
                     authoritative_final_source_type = str(
@@ -565,14 +564,14 @@ def _create_lite_stream_generator(
                     )
                 continue
 
-            # Lite 模式忽略 thinking 和 search
+            # Lite text thinking text search
             if item_type in ("thinking", "search"):
                 continue
 
             if item_type != "content":
                 continue
 
-            chunk_text = item.get("text", "")
+            chunk_text = item.get("history", "")
             if not chunk_text:
                 continue
 
@@ -605,7 +604,7 @@ def _create_lite_stream_generator(
             exc_info=True,
             extra={"request_info": {"event": "lite_stream_interrupted"}},
         )
-        error_hint = "\n\n[上游连接中断，请稍后重试。]"
+        error_hint = "\n\n[Upstream connection interrupted. Retry later.]"
         streamed_content_accumulator += error_hint
         if not assistant_started:
             assistant_started = True
@@ -618,14 +617,14 @@ def _create_lite_stream_generator(
         else:
             yield _build_stream_chunk(response_id, model_name, content=error_hint)
     finally:
-        # 选择最佳最终回复
+        # text
         final_reply, _ = _select_best_final_reply(
             streamed_content_accumulator,
             authoritative_final_content,
             authoritative_final_source_type,
         )
 
-        # 发送缺失的后缀（如果有）
+        # text
         missing_suffix = _compute_missing_suffix(
             streamed_content_accumulator, final_reply
         )
@@ -644,7 +643,7 @@ def _create_lite_stream_generator(
                 )
             streamed_content_accumulator += missing_suffix
         elif final_reply != streamed_content_accumulator:
-            # 处理分叉内容（使用最终内容）
+            # text
             if not streamed_content_accumulator and final_reply:
                 if not assistant_started:
                     assistant_started = True
@@ -671,13 +670,13 @@ def _create_standard_stream_generator(
     stream_gen: Iterable[Any],
 ) -> Generator[str, None, None]:
     """
-    Standard 模式流式生成器：使用前端定义的 SSE 事件类型
+    Standard text SSE text
 
-    前端协议：
-    - thinking_chunk: 流式思考片段
-    - thinking_replace: 完整思考替换
-    - search_metadata: 搜索结果
-    - choices[0].delta.content: 正文内容
+    text
+    - thinking_chunk: text
+    - thinking_replace: text
+    - search_metadata: text
+    - choices[0].delta.content: text
     """
     streamed_content_accumulator = ""
     streamed_thinking_accumulator = ""
@@ -693,7 +692,7 @@ def _create_standard_stream_generator(
             item_type = item.get("type")
 
             if item_type == "final_content":
-                final_text = str(item.get("text", "") or "").strip()
+                final_text = str(item.get("history", "") or "").strip()
                 if final_text:
                     authoritative_final_content = final_text
                     authoritative_final_source_type = str(
@@ -701,20 +700,20 @@ def _create_standard_stream_generator(
                     )
                 continue
 
-            # Standard 模式：处理 thinking（使用前端定义的 thinking_chunk 类型）
+            # Standard text thinkingtext thinking_chunk text
             if item_type == "thinking":
-                thinking_text = item.get("text", "")
+                thinking_text = item.get("history", "")
                 if thinking_text:
                     streamed_thinking_accumulator += thinking_text
-                    # 输出 thinking_chunk 事件
+                    # text thinking_chunk text
                     yield f"data: {json.dumps({'type': 'thinking_chunk', 'text': thinking_text}, ensure_ascii=False)}\n\n"
                 continue
 
-            # Standard 模式：处理 search（收集起来，最后输出）
+            # Standard text searchtext
             if item_type == "search":
                 search_data = item.get("data", {})
                 if isinstance(search_data, dict):
-                    # 提取 queries 和 sources
+                    # text queries text sources
                     queries = search_data.get("queries", [])
                     sources = search_data.get("sources", [])
 
@@ -727,13 +726,13 @@ def _create_standard_stream_generator(
             if item_type != "content":
                 continue
 
-            chunk_text = item.get("text", "")
+            chunk_text = item.get("history", "")
             if not chunk_text:
                 continue
 
             streamed_content_accumulator += chunk_text
 
-            # 输出标准 OpenAI 格式的 delta
+            # text OpenAI text delta
             if not assistant_started:
                 assistant_started = True
                 yield _build_stream_chunk(
@@ -764,7 +763,7 @@ def _create_standard_stream_generator(
             exc_info=True,
             extra={"request_info": {"event": "standard_stream_interrupted"}},
         )
-        error_hint = "\n\n[上游连接中断，请稍后重试。]"
+        error_hint = "\n\n[Upstream connection interrupted. Retry later.]"
         streamed_content_accumulator += error_hint
         if not assistant_started:
             assistant_started = True
@@ -777,14 +776,14 @@ def _create_standard_stream_generator(
         else:
             yield _build_stream_chunk(response_id, model_name, content=error_hint)
     finally:
-        # 选择最佳最终回复
+        # text
         final_reply, _ = _select_best_final_reply(
             streamed_content_accumulator,
             authoritative_final_content,
             authoritative_final_source_type,
         )
 
-        # 发送缺失的后缀（如果有）
+        # text
         missing_suffix = _compute_missing_suffix(
             streamed_content_accumulator, final_reply
         )
@@ -803,7 +802,7 @@ def _create_standard_stream_generator(
                 )
             streamed_content_accumulator += missing_suffix
         elif final_reply != streamed_content_accumulator:
-            # 处理分叉内容（使用最终内容）
+            # text
             if not streamed_content_accumulator and final_reply:
                 if not assistant_started:
                     assistant_started = True
@@ -819,7 +818,7 @@ def _create_standard_stream_generator(
                     )
                 streamed_content_accumulator = final_reply
 
-        # 输出搜索结果（使用前端定义的 search_metadata 类型）
+        # text search_metadata text
         if collected_search_sources or collected_search_queries:
             search_metadata = {
                 "type": "search_metadata",
@@ -843,11 +842,11 @@ def _persist_round(
     assistant_thinking: str = "",
 ) -> None:
     """
-    持久化一轮对话并触发异步预压缩。
+    text
 
-    预压缩逻辑：
-    - 当 round >= WINDOW_ROUNDS//2 时，提前压缩滑出窗口的轮次
-    - 使用 BackgroundTasks 确保不阻塞当前对话
+    text
+    - text round >= WINDOW_ROUNDS//2 text
+    - text BackgroundTasks text
     """
     round_index = manager.persist_round(
         conversation_id,
@@ -856,12 +855,12 @@ def _persist_round(
         assistant_thinking=assistant_thinking,
     )
 
-    # 异步预压缩：当窗口快满时提前压缩
-    window_rounds = 8  # 与 conversation.py 保持一致
-    precompress_threshold = window_rounds // 2  # 在第 4 轮时开始预压缩
+    # text
+    window_rounds = 8  # text conversation.py text
+    precompress_threshold = window_rounds // 2  # text 4 text
 
     if round_index >= precompress_threshold:
-        # 计算需要压缩的轮次（滑出窗口的轮次）
+        # text
         round_to_compress = round_index - window_rounds + 1
         if round_to_compress >= 0:
             background_tasks.add_task(
@@ -882,7 +881,7 @@ def _persist_round(
                 },
             )
 
-    # 保留原有的压缩逻辑作为兜底
+    # text
     background_tasks.add_task(
         compress_round_if_needed,
         manager=manager,
@@ -929,13 +928,13 @@ def _handle_lite_request(
     req_body: ChatCompletionRequest,
     response: Response | None = None,
 ) -> JSONResponse | StreamingResponse | ChatCompletionResponse:
-    """处理 Lite 模式请求（无记忆，单轮问答）"""
+    """text Lite text"""
     pool = request.app.state.account_pool
 
     req_body.model = _resolve_request_model(req_body.model)
     assert req_body.model is not None
 
-    # 提取并规范化消息与附件
+    # text
     cleaned_msgs, attachments = normalize_chat_messages([m.dict() for m in req_body.messages], getattr(req_body, "attachments", None))
     state_attachments = _request_state_attachments(request)
     if state_attachments:
@@ -945,9 +944,9 @@ def _handle_lite_request(
     if attachments and not policy.enabled:
         openai_error("Attachments are disabled for this server.", "attachments_disabled")
 
-    # 将清理后的消息注入到请求体以复用现有逻辑
+    # text
     req_body.messages = [ChatMessage(**m) for m in cleaned_msgs]
-    # 提取用户问题
+    # text
     user_prompt = _prepare_messages_lite(req_body)
 
     response_id = f"chatcmpl-{uuid.uuid4().hex}"
@@ -972,10 +971,10 @@ def _handle_lite_request(
                 except ValueError:
                     pass
 
-            # 构建 Lite transcript（无历史记忆）
+            # text Lite transcripttext
             transcript = build_lite_transcript(user_prompt, req_body.model)
 
-            # 调用 Notion API（不使用 thread_id）
+            # text Notion APItext thread_idtext
             persist_remote_chat = None
             if req_body.metadata and isinstance(req_body.metadata, dict):
                 persist_remote_chat = req_body.metadata.get("persist_remote_chat")
@@ -993,7 +992,7 @@ def _handle_lite_request(
                     "Notion upstream returned empty content.", retriable=True
                 )
 
-            # 流式响应
+            # text
             if req_body.stream:
                 stream_headers = {
                     "Cache-Control": "no-cache",
@@ -1011,7 +1010,7 @@ def _handle_lite_request(
                     headers=stream_headers,
                 )
 
-            # 非流式响应
+            # text
             content_parts: list[str] = []
             authoritative_final_content = ""
             authoritative_final_source_type = ""
@@ -1021,7 +1020,7 @@ def _handle_lite_request(
                 item_type = item.get("type")
 
                 if item_type == "final_content":
-                    final_text = str(item.get("text", "") or "").strip()
+                    final_text = str(item.get("history", "") or "").strip()
                     if final_text:
                         authoritative_final_content = final_text
                         authoritative_final_source_type = str(
@@ -1029,14 +1028,14 @@ def _handle_lite_request(
                         )
                     continue
 
-                # Lite 模式忽略 thinking 和 search
+                # Lite text thinking text search
                 if item_type in ("thinking", "search"):
                     continue
 
                 if item_type != "content":
                     continue
 
-                chunk_text = item.get("text", "")
+                chunk_text = item.get("history", "")
                 if chunk_text:
                     content_parts.append(chunk_text)
 
@@ -1097,7 +1096,7 @@ def _handle_lite_request(
                 code="POOL_COOLING",
                 message=str(exc),
                 error_type="account_pool_cooling",
-                suggestion="所有账号暂时冷却中，请等待几秒后重试",
+                suggestion="Retry later.",
             )
         except AttachmentError as exc:
             logger.warning(
@@ -1130,17 +1129,17 @@ def _handle_lite_request(
                 return _build_error_response(
                     500,
                     code="INTERNAL_ERROR",
-                    message="服务内部异常",
+                    message="Service error.",
                     error_type="internal_error",
-                    suggestion="请稍后重试，如持续出现请联系管理员",
+                    suggestion="Retry later.",
                 )
 
     return _build_error_response(
         503,
         code="RETRIES_EXHAUSTED",
-        message="所有重试均已失败",
+        message="Service error.",
         error_type="upstream_error",
-        suggestion="Notion 上游服务暂时不可用，请稍后重试",
+        suggestion="Notion text",
     )
 
 
@@ -1150,12 +1149,12 @@ def _handle_standard_request(
     response: Response | None = None,
 ) -> JSONResponse | StreamingResponse | ChatCompletionResponse:
     """
-    处理 Standard 模式请求（完整上下文，支持 thinking 和搜索）
+    text Standard text thinking text
 
-    类似 Lite 模式，但：
-    1. 发送完整 messages 历史
-    2. 保留 thinking 输出
-    3. 保留搜索结果输出
+    text Lite text
+    1. text messages text
+    2. text thinking text
+    3. text
     """
     from app.conversation import build_standard_transcript
 
@@ -1186,7 +1185,7 @@ def _handle_standard_request(
                 except ValueError:
                     pass
 
-            # 提取并规范化消息与附件
+            # text
             cleaned_msgs, attachments = normalize_chat_messages([m.dict() for m in req_body.messages], getattr(req_body, "attachments", None))
             state_attachments = _request_state_attachments(request)
             if state_attachments:
@@ -1195,8 +1194,8 @@ def _handle_standard_request(
             if attachments and not policy.enabled:
                 openai_error("Attachments are disabled for this server.", "attachments_disabled")
 
-            # 构建 Standard transcript（完整上下文）
-            # 从 client 提取账号信息
+            # text Standard transcripttext
+            # text client text
             account = {
                 "user_id": client.user_id,
                 "space_id": client.space_id,
@@ -1204,7 +1203,7 @@ def _handle_standard_request(
             messages = cleaned_msgs
             transcript = build_standard_transcript(messages, req_body.model, account)
 
-            # 调用 Notion API（不使用 thread_id，让 Notion 自动处理）
+            # text Notion APItext thread_idtext Notion text
             persist_remote_chat = None
             if req_body.metadata and isinstance(req_body.metadata, dict):
                 persist_remote_chat = req_body.metadata.get("persist_remote_chat")
@@ -1222,7 +1221,7 @@ def _handle_standard_request(
                     "Notion upstream returned empty content.", retriable=True
                 )
 
-            # 流式响应
+            # text
             if req_body.stream:
                 stream_headers = {
                     "Cache-Control": "no-cache",
@@ -1240,7 +1239,7 @@ def _handle_standard_request(
                     headers=stream_headers,
                 )
 
-            # 非流式响应
+            # text
             content_parts: list[str] = []
             thinking_parts: list[str] = []
             search_results: list[dict] = []
@@ -1252,7 +1251,7 @@ def _handle_standard_request(
                 item_type = item.get("type")
 
                 if item_type == "final_content":
-                    final_text = str(item.get("text", "") or "").strip()
+                    final_text = str(item.get("history", "") or "").strip()
                     if final_text:
                         authoritative_final_content = final_text
                         authoritative_final_source_type = str(
@@ -1260,14 +1259,14 @@ def _handle_standard_request(
                         )
                     continue
 
-                # Standard 模式：处理 thinking
+                # Standard text thinking
                 if item_type == "thinking":
-                    thinking_text = item.get("text", "")
+                    thinking_text = item.get("history", "")
                     if thinking_text:
                         thinking_parts.append(thinking_text)
                     continue
 
-                # Standard 模式：处理 search
+                # Standard text search
                 if item_type == "search":
                     search_data = item.get("data", {})
                     if search_data:
@@ -1277,7 +1276,7 @@ def _handle_standard_request(
                 if item_type != "content":
                     continue
 
-                chunk_text = item.get("text", "")
+                chunk_text = item.get("history", "")
                 if chunk_text:
                     content_parts.append(chunk_text)
 
@@ -1296,23 +1295,23 @@ def _handle_standard_request(
                 full_text if full_text.strip() else "[assistant_no_visible_content]"
             )
 
-            # 构建响应
+            # text
             response_message = ChatMessage(role="assistant", content=response_text)
 
-            # 如果有 thinking，添加到扩展字段（前端会读取）
+            # text thinkingtext
             if thinking_parts:
                 response_message.thinking = "".join(thinking_parts)
 
-            # 构建响应
+            # text
             response_obj = ChatCompletionResponse(
                 id=response_id,
                 model=req_body.model,
                 choices=[ChatMessageResponseChoice(message=response_message)],
             )
 
-            # 如果有搜索结果，添加到扩展字段（前端会读取）
+            # text
             if search_results:
-                # 提取 queries 和 sources
+                # text queries text sources
                 all_queries = []
                 all_sources = []
                 for result in search_results:
@@ -1321,7 +1320,7 @@ def _handle_standard_request(
                         all_sources.extend(result.get("sources", []))
 
                 if all_queries or all_sources:
-                    # 添加到自定义字段
+                    # text
                     response_obj.search_metadata = {
                         "queries": all_queries,
                         "sources": all_sources,
@@ -1362,7 +1361,7 @@ def _handle_standard_request(
                 code="POOL_COOLING",
                 message=str(exc),
                 error_type="account_pool_cooling",
-                suggestion="所有账号暂时冷却中，请等待几秒后重试",
+                suggestion="Retry later.",
             )
         except AttachmentError as exc:
             logger.warning(
@@ -1395,17 +1394,17 @@ def _handle_standard_request(
                 return _build_error_response(
                     500,
                     code="INTERNAL_ERROR",
-                    message="服务内部异常",
+                    message="Service error.",
                     error_type="internal_error",
-                    suggestion="请稍后重试，如持续出现请联系管理员",
+                    suggestion="Retry later.",
                 )
 
     return _build_error_response(
         503,
         code="RETRIES_EXHAUSTED",
-        message="所有重试均已失败",
+        message="Service error.",
         error_type="upstream_error",
-        suggestion="Notion 上游服务暂时不可用，请稍后重试",
+        suggestion="Notion text",
     )
 
 
@@ -1417,12 +1416,12 @@ async def create_chat_completion(
     response: Response,
 ):
     """
-    创建聊天请求，严格兼容 OpenAI API。
+    text OpenAI APItext
 
-    速率限制：
-    - Lite 模式：30/分钟（适合单轮问答）
-    - Standard 模式：25/分钟（完整上下文，支持 thinking 和搜索）
-    - Heavy 模式：20/分钟（包含会话管理）
+    text
+    - Lite text30/text
+    - Standard text25/text thinking text
+    - Heavy text20/text
     """
     from app.config import is_standard_mode
 
@@ -1463,17 +1462,17 @@ async def create_chat_completion(
                     ],
                 )
 
-    # Lite 模式：单轮问答，无记忆
+    # Lite text
     if is_lite_mode():
         import anyio
         return await anyio.to_thread.run_sync(_handle_lite_request, request, req_body, response)
 
-    # Standard 模式：完整上下文，支持 thinking 和搜索
+    # Standard text thinking text
     if is_standard_mode():
         import anyio
         return await anyio.to_thread.run_sync(_handle_standard_request, request, req_body, response)
 
-    # Heavy 模式：完整会话管理
+    # Heavy text
     pool = request.app.state.account_pool
     manager = request.app.state.conversation_manager
 
@@ -1502,19 +1501,19 @@ async def create_chat_completion(
         conversation_id = manager.new_conversation()
         restore_history = True
 
-    # 关键修复：总是持久化客户端发送的历史消息，避免上下文丢失
-    # 即使 conversation_id 已存在，也需要同步客户端发送的完整历史
+    # text
+    # text conversation_id text
     if history_messages:
-        # 检查是否需要持久化（避免重复）
+        # text
         with manager._get_conn() as conn:
             existing_count = manager._count_messages(conn, conversation_id)
             history_count = len(history_messages)
 
-            # 只有当客户端发送的历史消息多于数据库中的消息时才持久化
-            # 这样可以：
-            # 1. 避免重复持久化相同的历史
-            # 2. 确保客户端发送的完整历史被保存
-            # 3. 解决"滑动窗口缺失 AI 回复"的 bug
+            # text
+            # text
+            # 1. text
+            # 2. text
+            # 3. text"text AI text"text bug
             if history_count > existing_count:
                 _persist_history_messages(manager, conversation_id, history_messages)
                 restored_user_count = sum(
@@ -1558,18 +1557,18 @@ async def create_chat_completion(
             memory_degraded = bool(transcript_payload.get("memory_degraded"))
             memory_headers = {"X-Memory-Status": "degraded"} if memory_degraded else {}
 
-            # 获取或创建 thread_id 以保持对话上下文
+            # text thread_id text
             thread_id = manager.get_conversation_thread_id(conversation_id)
 
-            # 检测用户是否在对话中途切换了模型。Notion 的 thread 会把 config 中的 model
-            # 粘在服务端 thread 对象上，复用同一 thread 即使 transcript 里写了新 model，
-            # 上游实际仍按原始模型执行。必须丢掉旧 thread 让 Notion 按新 model 新建，
-            # 对话上下文由我们自己的滑动窗口 + 压缩摘要重建，不会失忆。
+            # textNotion text thread text config text model
+            # text thread text thread text transcript text modeltext
+            # text thread text Notion text model text
+            # text + text
             if thread_id:
                 bound_model = manager.get_conversation_thread_model(conversation_id)
-                # bound_model 为 None 表示升级前的遗留对话，没记录过模型绑定，
-                # 无法判断 thread 当初绑的是什么模型。为避免继续踩老 bug，
-                # 一律当作"可能不匹配"处理，丢弃老 thread 重新开。
+                # bound_model text None text
+                # text thread text bugtext
+                # text"text"text thread text
                 if not bound_model or bound_model != req_body.model:
                     logger.info(
                         "Recreating Notion thread: model changed or legacy binding",
@@ -1609,7 +1608,7 @@ async def create_chat_completion(
             )
             first_item = next(stream_gen, None)
 
-            # 保存 thread_id（如果是新对话或刚切换模型）
+            # text thread_idtext
             if not thread_id and hasattr(client, "current_thread_id"):
                 manager.set_conversation_thread_id(
                     conversation_id,
@@ -1663,7 +1662,7 @@ async def create_chat_completion(
                             continue
 
                         if item_type == "final_content":
-                            final_text = str(item.get("text", "") or "").strip()
+                            final_text = str(item.get("history", "") or "").strip()
                             if final_text:
                                 authoritative_final_content = final_text
                                 authoritative_final_source_type = str(
@@ -1672,7 +1671,7 @@ async def create_chat_completion(
                             continue
 
                         if item_type == "thinking":
-                            thinking_text = item.get("text", "")
+                            thinking_text = item.get("history", "")
                             if thinking_text:
                                 thinking_accumulator += thinking_text
                                 # Track recent thinking for overlap detection
@@ -1700,7 +1699,7 @@ async def create_chat_completion(
                         if item_type != "content":
                             continue
 
-                        chunk_text = item.get("text", "")
+                        chunk_text = item.get("history", "")
                         if not chunk_text and not pending_search_md:
                             continue
 
@@ -1739,7 +1738,7 @@ async def create_chat_completion(
                                 )
                                 continue
 
-                        # 在第一个正文内容发出前，把积攒的搜索信息拼上去
+                        # text
                         if pending_search_md and client_type != "web":
                             chunk_text = pending_search_md + chunk_text
 
@@ -1805,7 +1804,7 @@ async def create_chat_completion(
                             }
                         },
                     )
-                    error_hint = "\n\n[上游连接中断，请稍后重试。]"
+                    error_hint = "\n\n[Upstream connection interrupted. Retry later.]"
                     streamed_content_accumulator += error_hint
                     if not assistant_started:
                         assistant_started = True
@@ -1955,7 +1954,7 @@ async def create_chat_completion(
                 item = _normalize_stream_item(raw_item)
                 item_type = item.get("type")
                 if item_type == "final_content":
-                    final_text = str(item.get("text", "") or "").strip()
+                    final_text = str(item.get("history", "") or "").strip()
                     if final_text:
                         authoritative_final_content = final_text
                         authoritative_final_source_type = str(
@@ -1963,13 +1962,13 @@ async def create_chat_completion(
                         )
                     continue
                 if item_type == "thinking":
-                    thinking_text = str(item.get("text", "") or "")
+                    thinking_text = str(item.get("history", "") or "")
                     if thinking_text:
                         thinking_parts.append(thinking_text)
                     continue
                 if item_type != "content":
                     continue
-                chunk_text = item.get("text", "")
+                chunk_text = item.get("history", "")
                 if chunk_text:
                     content_parts.append(chunk_text)
 
@@ -2042,7 +2041,7 @@ async def create_chat_completion(
                 code="POOL_COOLING",
                 message=str(exc),
                 error_type="account_pool_cooling",
-                suggestion="所有账号暂时冷却中，请等待几秒后重试",
+                suggestion="Retry later.",
             )
         except AttachmentError as exc:
             logger.warning(
@@ -2076,17 +2075,17 @@ async def create_chat_completion(
                 return _build_error_response(
                     500,
                     code="INTERNAL_ERROR",
-                    message="服务内部异常",
+                    message="Service error.",
                     error_type="internal_error",
-                    suggestion="请稍后重试，如持续出现请联系管理员",
+                    suggestion="Retry later.",
                 )
 
     return _build_error_response(
         503,
         code="RETRIES_EXHAUSTED",
-        message="所有重试均已失败",
+        message="Service error.",
         error_type="upstream_error",
-        suggestion="Notion 上游服务暂时不可用，请稍后重试",
+        suggestion="Notion text",
     )
 
 

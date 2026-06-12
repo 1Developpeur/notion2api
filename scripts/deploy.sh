@@ -1,84 +1,58 @@
-#!/bin/bash
-# ==========================================
-# Notion-AI Docker 部署脚本
-# ==========================================
+﻿#!/bin/bash
+# Notion-AI Docker deployment script.
 
-set -e  # 遇到错误立即退出
+set -e
 
-echo "=========================================="
-echo "  Notion-AI Docker 部署脚本"
-echo "=========================================="
+echo "  Notion-AI Docker deployment script"
 
-# 检查 Docker 是否安装
+# Check Docker.
 if ! command -v docker &> /dev/null; then
-    echo "❌ Docker 未安装，请先安装 Docker"
+    echo "Docker is not installed. Install Docker first."
     exit 1
 fi
 
-# 检查 Docker Compose 是否安装
-if ! command -v docker-compose &> /dev/null && ! docker compose version &> /dev/null; then
-    echo "❌ Docker Compose 未安装，请先安装 Docker Compose"
+# Check Docker Compose.
+if ! docker compose version &> /dev/null; then
+    echo "Docker Compose is not installed. Install Docker Compose first."
     exit 1
 fi
 
-# 检查 .env 文件是否存在
+# Check .env.
 if [ ! -f .env ]; then
-    echo "⚠️  .env 文件不存在，正在从 .env.example 创建..."
+    echo ".env does not exist; creating it from .env.example..."
     if [ -f .env.example ]; then
         cp .env.example .env
-        echo "✅ 已创建 .env 文件"
-        echo "📝 请编辑 .env 文件，填入你的 Notion 账号信息"
-        echo "   编辑完成后，再次运行此脚本"
-        exit 0
+        echo "Created .env. Edit it before rerunning this script."
+        exit 1
     else
-        echo "❌ .env.example 文件不存在"
+        echo ".env.example does not exist."
         exit 1
     fi
 fi
 
-# 创建必要的目录
-echo "📁 创建数据目录..."
 mkdir -p data logs
 
-# 构建镜像
-echo "🔨 构建 Docker 镜像..."
-docker-compose build --no-cache
+echo "Building Docker image..."
+docker compose build
 
-# 启动服务
-echo "🚀 启动服务..."
-docker-compose up -d
+echo "Starting services..."
+docker compose up -d
 
-# 等待服务启动
-echo "⏳ 等待服务启动..."
+echo "Waiting for service startup..."
 sleep 5
 
-# 检查服务状态
-echo ""
-echo "📊 服务状态："
-docker-compose ps
+echo "Service status:"
+docker compose ps
 
-# 检查健康状态
-echo ""
-echo "🏥 健康检查："
-if curl -s http://localhost:8000/health > /dev/null; then
-    echo "✅ 服务运行正常！"
-    echo ""
-    echo "🌐 访问地址："
-    echo "   - Web 界面: http://localhost:8000"
-    echo "   - API 文档: http://localhost:8000/docs"
-    echo "   - 健康检查: http://localhost:8000/health"
-    echo ""
-    echo "📝 查看日志："
-    echo "   docker-compose logs -f"
-    echo ""
-    echo "🛑 停止服务："
-    echo "   docker-compose down"
+echo "Health check:"
+if curl -f http://localhost:8000/health > /dev/null 2>&1; then
+    echo "Service is healthy."
+    echo "Web UI: http://localhost:8000"
+    echo "API docs: http://localhost:8000/docs"
+    echo "Health: http://localhost:8000/health"
 else
-    echo "❌ 服务启动失败，请查看日志："
-    echo "   docker-compose logs"
+    echo "Service startup failed. Check logs with: docker compose logs -f"
+    exit 1
 fi
 
-echo ""
-echo "=========================================="
-echo "  部署完成！"
-echo "=========================================="
+echo "Deployment complete."

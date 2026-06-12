@@ -48,13 +48,13 @@ async def lifespan(app: FastAPI):
     # Re-patch uvicorn loggers now that uvicorn has fully initialised its handlers
     setup_uvicorn_logging()
 
-    # 启动时初始化状态
+    # text
     app.state.account_pool = AccountPool(ACCOUNTS)
     # Keep durable conversation storage available in every mode so chat-history
     # resume/fork can create real local conversations without forcing heavy mode.
     app.state.conversation_manager = ConversationManager()
 
-    # 确定运行模式
+    # text
     if is_lite_mode():
         mode = "lite"
         logger.info("Service starting up in LITE mode", extra={"request_info": {"event": "startup", "accounts": len(ACCOUNTS), "mode": "lite", "conversation_storage": True}})
@@ -67,7 +67,7 @@ async def lifespan(app: FastAPI):
 
     app.state.start_time = time.time()
     yield
-    # 关闭时清理
+    # text
     logger.info("Service shutting down", extra={"request_info": {"event": "shutdown"}})
 
 
@@ -78,7 +78,7 @@ app = FastAPI(
     lifespan=lifespan,
 )
 
-# 允许跨域（配合本地前端）
+# text
 app.add_middleware(
     CORSMiddleware,
     allow_origins=ALLOWED_ORIGINS,
@@ -87,10 +87,10 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
-# 注入 Limiter
+# text Limiter
 app.state.limiter = limiter
 
-# 自定义 429 速率限制响应
+# text 429 text
 def custom_rate_limit_exceeded_handler(request: Request, exc: RateLimitExceeded):
     return JSONResponse(
         status_code=429,
@@ -132,12 +132,12 @@ async def generic_exception_handler(request: Request, exc: Exception):
 # Attachment deployment guard runs before body parsing in chat/response handlers.
 app.middleware("http")(attachment_deployment_guard)
 
-# 结构化日志中间件
+# text
 @app.middleware("http")
 async def log_requests_middleware(request: Request, call_next):
     start_time = time.time()
     
-    # 跳过高频且不重要的日志打印，避免刷屏
+    # text
     skip_logging = request.url.path in ["/health", "/healthz", "/favicon.ico"]
     
     try:
@@ -168,12 +168,12 @@ async def log_requests_middleware(request: Request, call_next):
             
     return response
 
-# 简易 API Key 鉴权中间件
+# text API Key text
 @app.middleware("http")
 async def api_key_auth(request: Request, call_next):
-    # 如果环境配置中未设置 API_KEY，则全局不验证
+    # text API_KEYtext
     if API_KEY:
-        # 跳过 OPTIONS 请求和非受保护的静态路由（如果以后有的话）
+        # text OPTIONS text
         if request.url.path.startswith("/v1") and request.method != "OPTIONS":
             auth_header = request.headers.get("Authorization", "")
             if not _valid_bearer_token(auth_header, API_KEY):
@@ -187,7 +187,7 @@ async def api_key_auth(request: Request, call_next):
                 )
     return await call_next(request)
 
-# 挂载路由，前缀统一为 /v1
+# text /v1
 app.include_router(chat_router, prefix="/v1")
 app.include_router(models_router, prefix="/v1")
 app.include_router(chat_history_router, prefix="/v1")
@@ -195,7 +195,7 @@ app.include_router(chat_history_resume_router, prefix="/v1")
 app.include_router(features_router, prefix="/v1")
 app.include_router(responses_router, prefix="/v1")
 
-# 挂载健康检查
+# text
 @app.get("/favicon.ico", include_in_schema=False)
 async def favicon():
     return Response(content=b"", media_type="image/x-icon", status_code=204)
@@ -292,6 +292,6 @@ def frontend_index(request: Request):
 
     return Response(content=html, media_type="text/html")
 
-# 挂载静态前端到根目录
+# text
 if os.path.exists(frontend_dir):
     app.mount("/", StaticFiles(directory=frontend_dir, html=True), name="frontend")

@@ -9,15 +9,15 @@ def main():
     try:
         account = get_default_account()
     except ValueError as e:
-        print(f"[配置错误] {e}")
+        print(f"[Notice] {e}")
         sys.exit(1)
 
     client = NotionOpusAPI(account)
     manager = ConversationManager()
 
     print("=" * 40)
-    print("        Notion Opus 终端       ")
-    print(" 输入 'exit' 退出程序，输入 'new' 开始新对话。")
+    print("        Notion Opus Terminal       ")
+    print("Type 'exit' to quit or 'new' to start a new conversation.")
     print("=" * 40)
 
     current_conv = manager.new_conversation()
@@ -26,19 +26,19 @@ def main():
         try:
             user_input = input("\n[You]: ").strip()
         except (KeyboardInterrupt, EOFError):
-            print("\n\n退出程序...")
+            print("\n\nExiting...")
             break
 
         if not user_input:
             continue
 
         if user_input.lower() == "exit":
-            print("退出程序...")
+            print("Exiting...")
             break
 
         if user_input.lower() == "new":
             current_conv = manager.new_conversation()
-            print("\n--- 已开启新对话 ---")
+            print("\n--- New conversation started ---")
             continue
 
         transcript = manager.get_transcript(client, current_conv, user_input, "claude-opus4.6")
@@ -67,9 +67,9 @@ def main():
                     print(item, end="", flush=True)
                     full_text += item
         except KeyboardInterrupt:
-            print("\n[提示] 用户中断当前输出")
+            print("\n[Notice] Interrupted current output")
         except (AttributeError, KeyError, TypeError, ValueError) as e:
-            print(f"\n[错误]: 输出流解析异常 - {e}")
+            print(f"\n[Error]: stream parsing failed - {e}")
 
         print()
 

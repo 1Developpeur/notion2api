@@ -3,12 +3,12 @@ from typing import Any, Dict, List, Literal, Optional
 from pydantic import BaseModel, Field
 
 # ================================
-# 请求相关 Schema (Chat Completion)
+# Request schemas for chat completions.
 # ================================
 
 
 class ChatMessage(BaseModel):
-    """单条对话消息"""
+    """Chat message."""
     role: Literal["user", "assistant", "system"]
     # OpenAI-compatible clients may send either plain text or structured content
     # parts such as input_text, image_url, input_image, file, input_file.
@@ -18,8 +18,8 @@ class ChatMessage(BaseModel):
 
 class ChatCompletionRequest(BaseModel):
     """
-    OpenAI-Compatible 发起完成请求的 Payload。
-    保留 `conversation_id` 作为特定的扩展字段，若缺失则视为独立请求。
+    OpenAI-compatible request payload.
+    Keep `conversation_id` as an extension field.
 
     Attachment handling note:
     - Keep top-level `attachments` separate from `messages` at the schema layer.
@@ -44,18 +44,18 @@ class ChatCompletionRequest(BaseModel):
     )
 
 # ================================
-# 非流式返回 Schema
+# Non-streaming response schema.
 # ================================
 
 class ChatMessageResponseChoice(BaseModel):
-    """非流式响应的选项"""
+    """Chat message."""
     index: int = 0
     message: ChatMessage
     finish_reason: str = "stop"
 
 class ChatCompletionResponse(BaseModel):
     """
-    OpenAI-Compatible 完整返回 Payload。
+    OpenAI-compatible request payload.
     """
     id: str
     object: str = "chat.completion"
@@ -65,11 +65,11 @@ class ChatCompletionResponse(BaseModel):
     usage: Dict[str, int] = Field(
         default_factory=lambda: {"prompt_tokens": 0, "completion_tokens": 0, "total_tokens": 0}
     )
-    # Standard 模式扩展字段
+    # Standard-mode extension fields.
     search_metadata: Optional[Dict[str, Any]] = Field(default=None)
 
 # ================================
-# 流式返回 Schema (供内部组织)
+# Non-streaming response schema. (text)
 # ================================
 
 class ChatCompletionChunkDelta(BaseModel):

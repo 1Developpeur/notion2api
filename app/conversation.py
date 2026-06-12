@@ -12,8 +12,8 @@ from app.model_registry import get_thread_type, is_gemini_model
 class ConversationManager:
     """SQLite-backed conversation history manager with layered memory."""
 
-    WINDOW_SIZE = 16  # 16 条消息 = 8 轮对话
-    WINDOW_ROUNDS = 8  # 8 轮对话
+    WINDOW_SIZE = 16  # 16 text = 8 text
+    WINDOW_ROUNDS = 8  # 8 text
     SUMMARY_INJECT_LIMIT = 15
     RECALL_LIMIT = 5
     ASSISTANT_EMPTY_PLACEHOLDER = "[assistant_no_visible_content]"
@@ -109,7 +109,7 @@ class ConversationManager:
                 """
             )
 
-            # 新增：独立的滑动窗口表
+            # text
             cursor.execute(
                 """
                 CREATE TABLE IF NOT EXISTS sliding_window (
@@ -143,9 +143,9 @@ class ConversationManager:
             self._ensure_column(conn, "conversations", "next_round_index INTEGER DEFAULT 0")
             self._ensure_column(conn, "conversations", "compress_failed_at INTEGER")
             self._ensure_column(conn, "conversations", "thread_id TEXT")
-            # 记录当前 thread 绑定的模型。Notion 的 thread 创建后其模型是粘住的，
-            # 复用同一个 thread 再发不同 model 的 transcript，上游仍按 thread 原始模型执行。
-            # 因此当用户在对话中途切换模型时，需要凭此列检测并重建 thread。
+            # text thread textNotion text thread text
+            # text thread text model text transcripttext thread text
+            # text threadtext
             self._ensure_column(conn, "conversations", "thread_model TEXT")
             self._ensure_column(conn, "messages", "thinking TEXT")
 
@@ -217,17 +217,17 @@ class ConversationManager:
 
     def _normalize_window_messages(self, messages: List[Dict[str, str]]) -> List[Dict[str, str]]:
         """
-        规范化窗口消息，确保 user → assistant 成对出现。
+        text user → assistant text
 
-        修复前的问题：严格检查交替顺序，如果消息顺序不匹配期望就跳过，
-        导致 AI 回复被丢失。
+        text
+        text AI text
 
-        修复后的逻辑：
-        1. 保留所有有效的 user/assistant 消息
-        2. 确保 user → assistant 成对（如果不成对，跳过）
-        3. 移除末尾不完整的 user 消息（确保以 assistant 结束）
+        text
+        1. text user/assistant text
+        2. text user → assistant text
+        3. text user text assistant text
         """
-        # 第一步：收集所有有效的消息
+        # text
         normalized: List[Dict[str, str]] = []
         for msg in messages:
             role = msg.get("role", "")
@@ -251,11 +251,11 @@ class ConversationManager:
                 }
             )
 
-        # 第二步：确保消息是成对的 user → assistant
+        # text user → assistant
         paired: List[Dict[str, str]] = []
         i = 0
         while i < len(normalized):
-            # 检查当前消息和下一条消息是否构成 user → assistant 对
+            # text user → assistant text
             if i + 1 < len(normalized):
                 current = normalized[i]
                 next_msg = normalized[i + 1]
@@ -264,10 +264,10 @@ class ConversationManager:
                     i += 2
                     continue
 
-            # 如果不成对，跳过当前消息
+            # text
             i += 1
 
-        # 第三步：确保 transcript 以 assistant 消息结束（便于追加新的 user prompt）
+        # text transcript text assistant text user prompttext
         while paired and paired[-1]["role"] != "assistant":
             paired.pop()
 
@@ -551,13 +551,13 @@ class ConversationManager:
         for row in rows:
             grouped.setdefault(int(row["round_index"]), []).append(row)
 
-        role_map = {"user": "用户", "assistant": "AI", "system": "系统"}
+        role_map = {"user": "text", "assistant": "AI", "system": "text"}
         lines: List[str] = []
         for round_index in sorted(grouped.keys()):
-            lines.append(f"[第 {round_index + 1} 轮]")
+            lines.append(f"[text {round_index + 1} text]")
             for row in grouped[round_index]:
                 label = role_map.get(str(row["role"]), str(row["role"]))
-                lines.append(f"{label}：{row['content']}")
+                lines.append(f"{label}text{row['content']}")
             lines.append("")
         return "\n".join(lines).strip()
 
@@ -580,7 +580,7 @@ class ConversationManager:
         return conv_id
 
     def get_conversation_thread_id(self, conversation_id: str) -> Optional[str]:
-        """获取对话关联的 Notion thread_id"""
+        """text Notion thread_id"""
         with self._get_conn() as conn:
             row = conn.execute(
                 "SELECT thread_id FROM conversations WHERE id = ?",
@@ -589,7 +589,7 @@ class ConversationManager:
             return row["thread_id"] if row and row["thread_id"] else None
 
     def get_conversation_thread_model(self, conversation_id: str) -> Optional[str]:
-        """获取当前 thread 绑定的模型名（用于检测模型切换）。"""
+        """text thread text"""
         with self._get_conn() as conn:
             row = conn.execute(
                 "SELECT thread_model FROM conversations WHERE id = ?",
@@ -598,7 +598,7 @@ class ConversationManager:
             return row["thread_model"] if row and row["thread_model"] else None
 
     def clear_conversation_thread(self, conversation_id: str) -> None:
-        """清空 thread_id 与 thread_model，下一轮请求会创建新的 Notion thread。"""
+        """text thread_id text thread_modeltext Notion threadtext"""
         with self._get_conn() as conn:
             conn.execute(
                 "UPDATE conversations SET thread_id = NULL, thread_model = NULL WHERE id = ?",
@@ -621,7 +621,7 @@ class ConversationManager:
         thread_id: str,
         model_name: Optional[str] = None,
     ) -> None:
-        """保存对话关联的 Notion thread_id 以及当前绑定的模型名。"""
+        """text Notion thread_id text"""
         with self._get_conn() as conn:
             if model_name is not None:
                 conn.execute(
@@ -692,8 +692,8 @@ class ConversationManager:
 
             created_at = int(datetime.datetime.now().timestamp())
 
-            # 关键修复：检测并避免重复插入相同的消息
-            # 检查最后一条消息是否与当前消息相同（role + content）
+            # text
+            # textrole + contenttext
             last_message = conn.execute(
                 """
                 SELECT role, content
@@ -750,10 +750,10 @@ class ConversationManager:
     ) -> int:
         """
         Persist one complete user/assistant turn and advance round index.
-        同时更新滑动窗口表。
+        text
 
         Returns:
-            int: 当前轮次号（round_index）
+            int: textround_indextext
         """
         with self._get_conn() as conn:
             conv_row = conn.execute(
@@ -766,7 +766,7 @@ class ConversationManager:
             round_index = int(conv_row["next_round_index"] or 0)
             created_at = int(datetime.datetime.now().timestamp())
 
-            # 保留对 messages 表的写入（兼容性）
+            # text messages text
             conn.execute(
                 """
                 INSERT INTO messages (conversation_id, role, content, thinking, created_at)
@@ -793,7 +793,7 @@ class ConversationManager:
                 created_at,
             )
 
-            # 更新滑动窗口表（使用 UPSERT 确保幂等性和数据完整性）
+            # text UPSERT text
             conn.execute(
                 """
                 INSERT INTO sliding_window (
@@ -824,7 +824,7 @@ class ConversationManager:
 
         return round_index
 
-    # ==================== 滑动窗口管理 ====================
+    # ==================== text ====================
 
     def update_sliding_window(
         self,
@@ -835,9 +835,9 @@ class ConversationManager:
         assistant_thinking: str = "",
     ) -> None:
         """
-        更新滑动窗口：将当前轮对话插入 sliding_window 表。
-        使用 UPSERT 确保幂等性和数据完整性。
-        同时归档到 full_archive（已在 persist_round 中完成）。
+        text sliding_window text
+        text UPSERT text
+        text full_archivetext persist_round text
         """
         created_at = int(datetime.datetime.now().timestamp())
         with self._get_conn() as conn:
@@ -881,8 +881,8 @@ class ConversationManager:
         limit_rounds: Optional[int] = None,
     ) -> List[Dict[str, str]]:
         """
-        获取滑动窗口内容，返回最近 N 轮对话（按 round_number 降序后反转）。
-        天然成对返回 user + assistant，不再需要 _normalize_window_messages()。
+        text N text round_number text
+        text user + assistanttext _normalize_window_messages()text
         """
         if limit_rounds is None:
             limit_rounds = self.WINDOW_ROUNDS
@@ -898,7 +898,7 @@ class ConversationManager:
             (conversation_id, limit_rounds),
         ).fetchall()
 
-        # 添加调试日志（使用 INFO 级别确保可见）
+        # text INFO text
         logger.info(
             "Retrieved sliding window data",
             extra={
@@ -915,19 +915,19 @@ class ConversationManager:
         if not rows:
             return []
 
-        # 反转顺序（从旧到新），并转换为消息列表格式
+        # text
         rows_list = list(rows)
         rows_list.reverse()
 
         messages: List[Dict[str, str]] = []
         for row in rows_list:
-            # 添加 user 消息
+            # text user text
             messages.append({
                 "role": "user",
                 "content": str(row["user_content"] or ""),
                 "thinking": "",
             })
-            # 添加 assistant 消息
+            # text assistant text
             assistant_text = self._build_assistant_memory_text(
                 str(row["assistant_content"] or ""),
                 str(row["assistant_thinking"] or ""),
@@ -947,14 +947,14 @@ class ConversationManager:
         keep_rounds: Optional[int] = None,
     ) -> int:
         """
-        清理滑动窗口中的旧数据。
-        只删除 compress_status='compressed' 的记录，确保压缩完成后才清理。
-        返回删除的记录数。
+        text
+        text compress_status='compressed' text
+        text
         """
         if keep_rounds is None:
             keep_rounds = self.WINDOW_ROUNDS
 
-        # 获取当前最大轮次
+        # text
         max_round_row = conn.execute(
             """
             SELECT MAX(round_number) AS max_round
@@ -965,10 +965,10 @@ class ConversationManager:
         ).fetchone()
         max_round = int(max_round_row["max_round"] or 0) if max_round_row else 0
 
-        # 计算需要保留的最小轮次
+        # text
         min_keep_round = max(0, max_round - keep_rounds + 1)
 
-        # 只删除已压缩的旧数据
+        # text
         result = conn.execute(
             """
             DELETE FROM sliding_window
@@ -1000,7 +1000,7 @@ class ConversationManager:
         conn: sqlite3.Connection,
         conversation_id: str,
     ) -> int:
-        """获取滑动窗口中的活跃轮数。"""
+        """text"""
         row = conn.execute(
             """
             SELECT COUNT(DISTINCT round_number) AS round_count
@@ -1018,15 +1018,15 @@ class ConversationManager:
         conn: Optional[sqlite3.Connection] = None,
     ) -> int:
         """
-        将现有 messages 表中的数据迁移到 sliding_window 表。
+        text messages text sliding_window text
 
         Args:
-            conversation_id: 要迁移的对话 ID
-            batch_size: 每批处理的消息数
-            conn: 可选的数据库连接
+            conversation_id: text ID
+            batch_size: text
+            conn: text
 
         Returns:
-            int: 迁移的轮次数
+            int: text
         """
         is_internal_conn = False
         if conn is None:
@@ -1034,7 +1034,7 @@ class ConversationManager:
             is_internal_conn = True
 
         try:
-            # 检查是否已有滑动窗口数据
+            # text
             existing_rounds = self.get_sliding_window_round_count(conn, conversation_id)
             if existing_rounds > 0:
                 logger.info(
@@ -1049,7 +1049,7 @@ class ConversationManager:
                 )
                 return 0
 
-            # 获取所有消息
+            # text
             messages = conn.execute(
                 """
                 SELECT role, content, COALESCE(thinking, '') AS thinking, created_at
@@ -1063,7 +1063,7 @@ class ConversationManager:
             if not messages:
                 return 0
 
-            # 配对 user + assistant 消息
+            # text user + assistant text
             migrated_rounds = 0
             round_number = 0
             i = 0
@@ -1071,7 +1071,7 @@ class ConversationManager:
             rounds_to_insert = []
 
             while i < len(messages):
-                # 查找 user 消息
+                # text user text
                 if messages[i]["role"] != "user":
                     i += 1
                     continue
@@ -1081,7 +1081,7 @@ class ConversationManager:
                     i += 1
                     continue
 
-                # 查找对应的 assistant 消息
+                # text assistant text
                 if i + 1 >= len(messages) or messages[i + 1]["role"] != "assistant":
                     i += 1
                     continue
@@ -1105,7 +1105,7 @@ class ConversationManager:
                 i += 2
 
             if rounds_to_insert:
-                # 批量插入到 sliding_window
+                # text sliding_window
                 conn.executemany(
                     """
                     INSERT OR IGNORE INTO sliding_window (
@@ -1116,7 +1116,7 @@ class ConversationManager:
                     rounds_to_insert,
                 )
 
-                # 更新 next_round_index
+                # text next_round_index
                 conn.execute(
                     """
                     UPDATE conversations
@@ -1148,17 +1148,17 @@ class ConversationManager:
 
     def migrate_all_conversations(self) -> Dict[str, int]:
         """
-        迁移所有对话的 messages 到 sliding_window。
-        优化点：单一查询识别待处理对话，批量处理并复用连接。
+        text messages text sliding_windowtext
+        text
 
         Returns:
-            Dict[str, int]: 每个对话 ID 对应的迁移轮次数
+            Dict[str, int]: text ID text
         """
         results: Dict[str, int] = {}
 
         with self._get_conn() as conn:
-            # 找到有消息但没有滑动窗口记录的对话 ID
-            # 这里的逻辑是：对话存在于 messages 表中，但不存在于 sliding_window 表中
+            # text ID
+            # text messages text sliding_window text
             rows = conn.execute(
                 """
                 SELECT DISTINCT m.conversation_id
@@ -1173,7 +1173,7 @@ class ConversationManager:
             logger.info("No conversations need migration.")
             return results
 
-        # 批量处理以平衡性能和内存/锁持有时间
+        # text/text
         batch_size = 50
         for i in range(0, len(conversation_ids), batch_size):
             batch_ids = conversation_ids[i:i+batch_size]
@@ -1211,7 +1211,7 @@ class ConversationManager:
 
         return results
 
-    # ==================== 滑动窗口管理结束 ====================
+    # ==================== text ====================
 
     def get_transcript_payload(
         self,
@@ -1262,7 +1262,7 @@ class ConversationManager:
                     "remote_native": True,
                 }
 
-            # 强制使用新的滑动窗口表（单一数据源）
+            # text
             sliding_window_rounds = self.get_sliding_window_round_count(conn, conversation_id)
             recent_messages = self.get_sliding_window(conn, conversation_id)
 
@@ -1300,7 +1300,7 @@ class ConversationManager:
             transcript.append(
                 self._build_dialog_block(
                     "user",
-                    f"以下是本次对话的历史摘要（从早到晚）：\n{numbered}",
+                    f"text\n{numbered}",
                     notion_client,
                     gemini_mode=gemini_mode,
                 )
@@ -1308,7 +1308,7 @@ class ConversationManager:
             transcript.append(
                 self._build_dialog_block(
                     "assistant",
-                    "我已了解之前的对话背景。",
+                    "text",
                     notion_client,
                     gemini_mode=gemini_mode,
                 )
@@ -1324,7 +1324,7 @@ class ConversationManager:
                 },
             )
 
-        # 添加调试日志（使用 INFO 级别确保可见）
+        # text INFO text
         logger.info(
             "Adding recent_messages to transcript",
             extra={
@@ -1367,9 +1367,9 @@ class ConversationManager:
                 self._build_dialog_block(
                     "user",
                     (
-                        "【系统召回的相关历史记录】\n"
+                        "text\n"
                         f"{recalled_text}\n\n"
-                        "请基于以上历史回答用户的问题。"
+                        "text"
                     ),
                     notion_client,
                     gemini_mode=gemini_mode,
@@ -1378,7 +1378,7 @@ class ConversationManager:
             transcript.append(
                 self._build_dialog_block(
                     "assistant",
-                    "我已查阅相关历史记录，将综合作答。",
+                    "text",
                     notion_client,
                     gemini_mode=gemini_mode,
                 )
@@ -1425,17 +1425,17 @@ async def compress_sliding_window_round(
     round_number: int,
 ) -> bool:
     """
-    压缩滑动窗口中指定轮次的对话。
+    text
 
-    异步预压缩流程：
-    1. 检查该轮次是否已压缩（幂等性）
-    2. 标记为 'compressing' 防止并发
-    3. 调用 LLM 生成摘要
-    4. 写入 compressed_summaries
-    5. 标记为 'compressed'
+    text
+    1. text
+    2. text 'compressing' text
+    3. text LLM text
+    4. text compressed_summaries
+    5. text 'compressed'
 
     Returns:
-        bool: 压缩是否成功
+        bool: text
     """
     from app.summarizer import (
         SummarizerUnavailableError,
@@ -1445,7 +1445,7 @@ async def compress_sliding_window_round(
 
     try:
         with manager._get_conn() as conn:
-            # 检查该轮次是否存在且需要压缩
+            # text
             round_row = conn.execute(
                 """
                 SELECT round_number, user_content, assistant_content, assistant_thinking, compress_status
@@ -1480,9 +1480,9 @@ async def compress_sliding_window_round(
                         }
                     },
                 )
-                return True  # 已压缩视为成功
+                return True  # text
 
-            # 标记为正在压缩
+            # text
             conn.execute(
                 """
                 UPDATE sliding_window
@@ -1493,7 +1493,7 @@ async def compress_sliding_window_round(
             )
             conn.commit()
 
-        # 获取旧的压缩摘要
+        # text
         with manager._get_conn() as conn:
             old_summary_rows = conn.execute(
                 """
@@ -1524,7 +1524,7 @@ async def compress_sliding_window_round(
                     }
                 },
             )
-            # 恢复状态
+            # text
             with manager._get_conn() as conn:
                 conn.execute(
                     """
@@ -1560,7 +1560,7 @@ async def compress_sliding_window_round(
                     }
                 },
             )
-            # 恢复状态以便下次重试
+            # text
             with manager._get_conn() as conn:
                 conn.execute(
                     """
@@ -1584,7 +1584,7 @@ async def compress_sliding_window_round(
                     }
                 },
             )
-            # 恢复状态以便下次重试
+            # text
             with manager._get_conn() as conn:
                 conn.execute(
                     """
@@ -1609,7 +1609,7 @@ async def compress_sliding_window_round(
                     }
                 },
             )
-            # 恢复状态以便下次重试
+            # text
             with manager._get_conn() as conn:
                 conn.execute(
                     """
@@ -1622,7 +1622,7 @@ async def compress_sliding_window_round(
                 conn.commit()
             return False
 
-        # 写入压缩摘要并更新状态
+        # text
         created_at = int(datetime.datetime.now().timestamp())
         with manager._get_conn() as conn:
             conn.execute(
@@ -1676,7 +1676,7 @@ async def compress_sliding_window_round(
                 }
             },
         )
-        # 尝试恢复状态
+        # text
         try:
             with manager._get_conn() as conn:
                 conn.execute(
@@ -1697,7 +1697,7 @@ async def compress_round_if_needed(manager: ConversationManager, conversation_id
     """
     Move old turns out of sliding window, archive raw text, and summarize with LLM.
 
-    优先处理新的 sliding_window 表，兼容旧的 messages 表。
+    text sliding_window text messages text
 
     Any failure is logged only and never raised to request path.
     """
@@ -1708,11 +1708,11 @@ async def compress_round_if_needed(manager: ConversationManager, conversation_id
     )
 
     try:
-        # 优先处理新的滑动窗口表
+        # text
         with manager._get_conn() as conn:
             sliding_round_count = manager.get_sliding_window_round_count(conn, conversation_id)
             if sliding_round_count > manager.WINDOW_ROUNDS:
-                # 找到需要压缩的轮次
+                # text
                 max_round_row = conn.execute(
                     """
                     SELECT MAX(round_number) AS max_round
@@ -1723,10 +1723,10 @@ async def compress_round_if_needed(manager: ConversationManager, conversation_id
                 ).fetchone()
                 max_round = int(max_round_row["max_round"] or 0) if max_round_row else 0
 
-                # 计算需要压缩的最小轮次
+                # text
                 min_compress_round = max(0, max_round - manager.WINDOW_ROUNDS + 1)
 
-                # 获取需要压缩的轮次
+                # text
                 rounds_to_compress = conn.execute(
                     """
                     SELECT round_number
@@ -1743,11 +1743,11 @@ async def compress_round_if_needed(manager: ConversationManager, conversation_id
                     round_number = int(row["round_number"])
                     await compress_sliding_window_round(manager, conversation_id, round_number)
 
-                # 清理已压缩的旧数据
+                # text
                 manager.cleanup_old_sliding_window(conn, conversation_id)
                 return
 
-        # 兼容旧的 messages 表（如果滑动窗口为空）
+        # text messages text
         while True:
             with manager._get_conn() as conn:
                 conv_row = conn.execute(
@@ -1994,7 +1994,7 @@ async def compress_round_if_needed(manager: ConversationManager, conversation_id
 
 
 def build_lite_transcript(user_prompt: str, model_name: str) -> list[dict[str, Any]]:
-    """构建 Lite 模式的最简 transcript（只有 config + user）"""
+    """text Lite text transcripttext config + usertext"""
     from app.model_registry import get_notion_model, get_thread_type
     import uuid
 
@@ -2025,17 +2025,17 @@ def build_standard_transcript(
     account: dict
 ) -> list[dict[str, Any]]:
     """
-    构建 Standard 模式的 transcript（完整上下文）
+    text Standard text transcripttext
 
     Args:
-        messages: OpenAI 格式的 messages 数组（完整历史）
-        model_name: 模型名称
-        account: 账号信息字典，包含 user_id, space_id 等
+        messages: OpenAI text messages text
+        model_name: text
+        account: text user_id, space_id text
 
     Returns:
-        Notion transcript 数组
+        Notion transcript text
 
-    参考：notion-2api 项目的实现
+    textnotion-2api text
     """
     from app.model_registry import get_notion_model, get_thread_type
     import uuid
@@ -2043,7 +2043,7 @@ def build_standard_transcript(
     notion_model = get_notion_model(model_name)
     thread_type = get_thread_type(model_name)
 
-    # 基础 transcript：config + context
+    # text transcripttextconfig + context
     transcript = [
         {
             "id": str(uuid.uuid4()),

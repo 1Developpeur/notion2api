@@ -1,8 +1,8 @@
-# Notion2API
+﻿# Notion2API
 
 > Notion AI → OpenAI-Compatible API
 
-🌐 English | [中文](./README_CN.md)
+🌐 English | [Chinese](./README_CN.md)
 
 Notion2API reverse-engineers the Notion AI web interface and exposes it as a standard `/v1/chat/completions` endpoint, making it directly usable with Cherry Studio, Zotero, and any other OpenAI-compatible client.
 

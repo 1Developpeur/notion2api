@@ -338,7 +338,7 @@ window.NotionAI.Chat.Renderer = {
         let html = '<div class="error-card">';
         html += '<div class="error-card-header">';
         html += '<span class="error-card-icon">⚠</span>';
-        html += '<span class="error-card-title">请求失败</span>';
+        html += '<span class="error-card-title">Request failed</span>';
         if (code) {
             html += `<span class="error-card-code">${this._escapeHtml(code)}</span>`;
         }
@@ -348,7 +348,7 @@ window.NotionAI.Chat.Renderer = {
             html += `<div class="error-card-suggestion">💡 ${this._escapeHtml(suggestion)}</div>`;
         }
         if (detail) {
-            html += '<details class="error-card-details"><summary>技术详情</summary>';
+            html += '<details class="error-card-details"><summary>Technical details</summary>';
             html += `<pre>${this._escapeHtml(detail)}</pre></details>`;
         }
         html += '</div>';

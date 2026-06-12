@@ -124,7 +124,7 @@ class AccountPool
 
 ### app\api\chat.py
 ```
-async def create_chat_completion(request: Request, req_body: ChatCompletionRequest, background_tasks: BackgroundTasks, response: Response)  # 创建聊天请求，严格兼容 OpenAI API。
+async def create_chat_completion(request: Request, req_body: ChatCompletionRequest, background_tasks: BackgroundTasks, response: Response)  # text OpenAI APItext
 async def delete_conversation(conversation_id: str, request: Request)  # Delete a conversation by its ID
 POST /chat/completions  →  create_chat_completion()
 DELETE /conversations/{conversation_id}  →  delete_conversation()
@@ -158,7 +158,7 @@ GET /search  →  search()
 
 ### app\api\models.py
 ```
-async def list_models() → Dict[str, Any]  # 列出可用的模型，兼容 OpenAI 格式。
+async def list_models() → Dict[str, Any]  # text OpenAI text
 GET /models  →  list_models()
 ```
 
@@ -215,10 +215,10 @@ def get_default_chat_history_db_path() → str
 ### app\config.py
 ```
 def parse_allowed_origins(value: str | None, *, allow_unsafe_wildcard: bool) → list[str]  # Parse and harden CORS origins
-def load_accounts()  # 从 accounts
-def is_lite_mode() → bool  # Standard 模式：发送完整上下文，支持 thinking 和搜索输出
-def is_standard_mode() → bool  # Standard 模式：发送完整上下文，支持 thinking 和搜索输出
-def get_default_account()  # 获取默认账号（列表中的第一个账号）
+def load_accounts()  # text accounts
+def is_lite_mode() → bool  # Standard text thinking text
+def is_standard_mode() → bool  # Standard text thinking text
+def get_default_account()  # text
 ```
 
 ### app\conversation.py
@@ -235,10 +235,10 @@ class ConversationManager
   def add_message(conversation_id: str, role: str, content: str, thinking: str) → None
   def migrate_all_conversations() → Dict[str, int]
   def get_transcript(notion_client, conversation_id: str, new_prompt: str, model_name: str) → list
-async def compress_sliding_window_round(manager: ConversationManager, conversation_id: str, round_number: int) → bool  # 压缩滑动窗口中指定轮次的对话。
+async def compress_sliding_window_round(manager: ConversationManager, conversation_id: str, round_number: int) → bool  # text
 async def compress_round_if_needed(manager: ConversationManager, conversation_id: str) → None  # Move old turns out of sliding window, archive raw text, and 
-def build_lite_transcript(user_prompt: str, model_name: str) → list[dict[str, Any]]  # 构建 Lite 模式的最简 transcript（只有 config + user）
-def build_standard_transcript(messages: list[dict[str, Any]], model_name: str, account: dict) → list[dict[str, Any]]  # 构建 Standard 模式的 transcript（完整上下文）
+def build_lite_transcript(user_prompt: str, model_name: str) → list[dict[str, Any]]  # text Lite text transcripttext config + usertext
+def build_standard_transcript(messages: list[dict[str, Any]], model_name: str, account: dict) → list[dict[str, Any]]  # text Standard text transcripttext
 ```
 
 ### app\core\errors.py
@@ -257,14 +257,14 @@ def normalize_model_id(model: str | None) → str | None
 ```
 class JsonFormatter(logging.Formatter)
   def format(record)
-def setup_logger(name)  # 配置并返回单例全局 logger
+def setup_logger(name)  # text logger
 ```
 
 ### app\model_registry.py
 ```
-def get_notion_model(model_name: str) → str  # 判断是否为 Gemini 系列模型（用于 config block 构建等）
-def is_gemini_model(model_name: str) → bool  # 判断是否为 Gemini 系列模型（用于 config block 构建等）
-def get_thread_type(model_name: str) → str  # 根据模型确定 Notion thread type。
+def get_notion_model(model_name: str) → str  # text Gemini text config block text
+def is_gemini_model(model_name: str) → bool  # text Gemini text config block text
+def get_thread_type(model_name: str) → str  # text Notion thread typetext
 def get_standard_model(model_name: str) → str
 def list_available_models() → list[str]
 def is_supported_model(model_name: str) → bool
@@ -298,7 +298,7 @@ GET /  →  frontend_index()
 
 ### app\stream_parser.py
 ```
-def parse_stream(response: requests.Response) → Generator[dict[str, Any], N...  # 解析 Notion NDJSON 流，输出三种结构化事件：
+def parse_stream(response: requests.Response) → Generator[dict[str, Any], N...  # text Notion NDJSON text
 ```
 
 ### app\stream_parser_safe.py
@@ -310,7 +310,7 @@ def parse_stream(response: requests.Response) → Generator[dict[str, Any], N...
 ```
 class SummarizerUnavailableError(Exception)
 def is_summarizer_configured() → bool
-async def summarize_turn(old_summaries: list[str], user_msg: str, assistant_msg: str) → str  # 调用 LLM 将一轮对话压缩为简短摘要，返回摘要字符串。失败时抛出异常。
+async def summarize_turn(old_summaries: list[str], user_msg: str, assistant_msg: str) → str  # text LLM text
 ```
 
 ## frontend

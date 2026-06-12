@@ -1167,12 +1167,12 @@ window.NotionAI.Chat.Renderer = {
     if (wrapper._thinkingTimerInterval) { clearInterval(wrapper._thinkingTimerInterval); wrapper._thinkingTimerInterval = null; }
     if (wrapper.thinkingCardRef) wrapper.thinkingCardRef.classList.add('hidden');
     const esc = t => { const d = document.createElement('div'); d.textContent = t; return d.innerHTML; };
-    let h = '<div class="error-card"><div class="error-card-header"><span class="error-card-icon">⚠</span><span class="error-card-title">请求失败</span>';
+    let h = '<div class="error-card"><div class="error-card-header"><span class="error-card-icon">⚠</span><span class="error-card-title">Request failed</span>';
     if (code) h += `<span class="error-card-code">${esc(code)}</span>`;
     h += '</div>';
     h += `<div class="error-card-message">${esc(message)}</div>`;
     if (suggestion) h += `<div class="error-card-suggestion">💡 ${esc(suggestion)}</div>`;
-    if (detail) h += `<details class="error-card-details"><summary>技术详情</summary><pre>${esc(detail)}</pre></details>`;
+    if (detail) h += `<details class="error-card-details"><summary>Technical details</summary><pre>${esc(detail)}</pre></details>`;
     h += '</div>';
     mdDiv.innerHTML = h; mdDiv.classList.remove('streaming-cursor');
     window.NotionAI.Utils.DOM.scrollToBottom();

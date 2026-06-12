@@ -84,7 +84,7 @@ MODEL_ICONS: dict[str, str] = {
     "deepseek-v4pro": "🔷",
 }
 
-# 默认使用 Sonnet 4.6（速度和质量的最佳平衡）
+# Default to Sonnet 4.6 for a balance of speed and quality.
 DEFAULT_MODEL = "claude-sonnet4.6"
 
 
@@ -101,7 +101,7 @@ MARKDOWN_CHAT_MODELS: set[str] = {
 
 
 def is_gemini_model(model_name: str) -> bool:
-    """判断是否为 Gemini 系列模型（用于 config block 构建等）"""
+    """Return whether the model belongs to the Gemini family."""
     standard_name = get_standard_model(model_name)
     if standard_name.startswith("gemini-"):
         return True
@@ -111,8 +111,8 @@ def is_gemini_model(model_name: str) -> bool:
 
 def get_thread_type(model_name: str) -> str:
     """
-    根据模型确定 Notion thread type。
-    只有 vertex- 前缀的模型走 markdown-chat，其余全部走 workflow。
+    Resolve the Notion thread type for a model.
+    Only vertex-prefixed models use markdown-chat; all other models use workflow.
     """
     standard_name = get_standard_model(model_name)
     notion_model = get_notion_model(standard_name)
