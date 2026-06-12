@@ -275,6 +275,8 @@ def _append_source(out: dict[str, Any], source: dict[str, Any]) -> None:
     snippet = str(source.get("snippet", "") or "").strip()
     if not title and not url:
         return
+    if url.startswith("user://") or title.startswith("user://"):
+        return
 
     entry: dict[str, str] = {}
     if title:
