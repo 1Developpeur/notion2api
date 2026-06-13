@@ -7,3 +7,4 @@ pydantic
 slowapi
 httpx
 websocket-client
+mcp
