@@ -27,6 +27,7 @@ window.NotionAI.Core.Constants = {
                 { id: "claude-opus4.7", label: "Opus 4.7", icon: "✳️" },
                 { id: "claude-opus4.8", label: "Opus 4.8", icon: "✳️", badge: "New" },
                 { id: "claude-haiku4.5", label: "Haiku 4.5", icon: "✳️" },
+                { id: "claude-fable5", label: "Fable 5", icon: "✳️", badge: "New" },
             ]
         },
         {
@@ -82,6 +83,7 @@ window.NotionAI.Core.Constants = {
         { id: "claude-opus4.7", label: "Opus 4.7" },
         { id: "claude-opus4.8", label: "Opus 4.8" },
         { id: "claude-haiku4.5", label: "Haiku 4.5" },
+        { id: "claude-fable5", label: "Fable 5" },
         { id: "gpt-5.2", label: "GPT-5.2" },
         { id: "gpt-5.4", label: "GPT-5.4" },
         { id: "gpt-5.4mini", label: "GPT-5.4 Mini" },
@@ -106,6 +108,7 @@ window.NotionAI.Core.Constants = {
         "claude-opus4.7": "Opus 4.7",
         "claude-opus4.8": "Opus 4.8",
         "claude-haiku4.5": "Haiku 4.5",
+        "claude-fable5": "Fable 5",
         "gpt-5.2": "GPT-5.2",
         "gpt-5.4": "GPT-5.4",
         "gpt-5.4mini": "GPT-5.4 Mini",
@@ -128,6 +131,7 @@ window.NotionAI.Core.Constants = {
         "claude-opus4.7": "✳️",
         "claude-opus4.8": "✳️",
         "claude-haiku4.5": "✳️",
+        "claude-fable5": "✳️",
         "gpt-5.2": "⚙",
         "gpt-5.4": "⚙",
         "gpt-5.4mini": "⚙",

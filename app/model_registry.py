@@ -8,6 +8,7 @@ MODEL_MAP: dict[str, str] = {
     "claude-opus4.7": "apricot-sorbet-high",
     "claude-opus4.8": "ambrosia-tart-high",
     "claude-haiku4.5": "anthropic-haiku-4.5",
+    "claude-fable5": "acai-budino",
     # OpenAI
     "gpt-5.2": "oatmeal-cookie",
     "gpt-5.4": "oval-kumquat-medium",
@@ -37,6 +38,7 @@ DISPLAY_NAMES: dict[str, str] = {
     "claude-opus4.7": "Claude Opus 4.7",
     "claude-opus4.8": "Claude Opus 4.8",
     "claude-haiku4.5": "Claude Haiku 4.5",
+    "claude-fable5": "Fable 5",
     # OpenAI
     "gpt-5.2": "GPT-5.2",
     "gpt-5.4": "GPT-5.4",
@@ -64,6 +66,7 @@ MODEL_ICONS: dict[str, str] = {
     "claude-opus4.7": "✳️",
     "claude-opus4.8": "✳️",
     "claude-haiku4.5": "✳️",
+    "claude-fable5": "✳️",
     # OpenAI
     "gpt-5.2": "⚙",
     "gpt-5.4": "⚙",

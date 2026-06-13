@@ -28,6 +28,7 @@ def test_captured_notion_backend_mappings_are_registered():
         "gemini-3.1pro": "galette-medium-thinking",
         "claude-haiku4.5": "anthropic-haiku-4.5",
         "gemini-3flash": "gingerbread",
+        "claude-fable5": "acai-budino",
     }
 
     for public_name, notion_name in expected.items():
@@ -41,6 +42,7 @@ def test_captured_display_names_are_registered():
     assert get_display_name("grok-build0.1") == "Grok Build 0.1"
     assert get_display_name("minimax-m2.5") == "MiniMax M2.5"
     assert get_display_name("claude-haiku4.5") == "Claude Haiku 4.5"
+    assert get_display_name("claude-fable5") == "Fable 5"
 
 
 def test_gemini_3_5_flash_no_longer_uses_markdown_chat_route():

@@ -487,32 +487,68 @@ body{background:var(--bg);color:var(--text)}
 .message-copy-btn:hover{background:var(--bg-hover)}
 .message-copy-row{margin-top:8px;display:flex;justify-content:flex-start}
 
+/* Model verification footer */
+.model-footer{
+  display:flex;align-items:center;gap:6px;
+  margin-top:10px;padding-top:8px;
+  border-top:1px solid var(--border);
+  font-size:11px;color:var(--text-tertiary);
+  opacity:0;transition:opacity .3s ease;
+  user-select:none;
+}
+.model-footer.visible{opacity:1}
+.model-footer-check{color:#22c55e;font-size:12px;flex-shrink:0}
+.model-footer-label{font-weight:500;color:var(--text-secondary)}
+.model-footer-name{font-weight:600;color:var(--text-secondary)}
+
 /* Thinking card */
 .thinking-card{
-  border:1px solid var(--border);border-left:3px solid #ddd;
+  border:1px solid var(--border);border-left:3px solid #8b6ff0;
   border-radius:6px;background:var(--thinking-bg);
   margin-bottom:8px;overflow:hidden;
 }
 .thinking-header{
   display:flex;align-items:center;gap:6px;
   padding:8px 12px;cursor:pointer;font-size:12px;
-  color:var(--text-secondary);
+  color:var(--text-secondary);user-select:none;
+  transition:background .12s;
+}
+.thinking-header:hover{background:rgba(139,111,240,.07)}
+.thinking-header:focus-visible{
+  outline:2px solid #8b6ff0;outline-offset:-2px;
+  border-radius:6px;
 }
 .thinking-header-dot{
-  width:6px;height:6px;border-radius:50%;background:var(--text-tertiary);flex-shrink:0;
+  width:6px;height:6px;border-radius:50%;background:#8b6ff0;flex-shrink:0;
+  transition:background .2s;
+}
+.thinking-card.streaming .thinking-header-dot{
+  animation:thinking-dot-live 1.2s ease-in-out infinite;
+}
+@keyframes thinking-dot-live{
+  0%,100%{opacity:.4;transform:scale(.85)}
+  50%{opacity:1;transform:scale(1.2)}
 }
 .thinking-header-label{font-weight:500}
-.thinking-header-timer{color:var(--text-tertiary);font-size:11px}
+.thinking-header-timer{color:var(--text-tertiary);font-size:11px;margin-left:2px}
 .thinking-header-arrow{
-  margin-left:auto;font-size:10px;transition:transform .15s;color:var(--text-tertiary);
+  margin-left:auto;font-size:10px;color:var(--text-tertiary);
+  transition:transform .22s cubic-bezier(.4,0,.2,1);
 }
 .thinking-card.expanded .thinking-header-arrow{transform:rotate(90deg)}
+/* Animated expand/collapse via max-height */
 .thinking-body{
-  display:none;padding:0 12px 10px;
+  max-height:0;overflow:hidden;
+  padding:0 12px;box-sizing:border-box;
   font-size:13px;color:#666;font-style:italic;line-height:1.6;
+  transition:max-height .28s cubic-bezier(.4,0,.2,1),
+             padding .28s cubic-bezier(.4,0,.2,1);
 }
 [data-theme="dark"] .thinking-body{color:#999}
-.thinking-card.expanded .thinking-body{display:block}
+.thinking-card.expanded .thinking-body{
+  max-height:2000px;
+  padding:0 12px 10px;
+}
 
 /* Search card */
 .search-card{
@@ -735,6 +771,7 @@ window.NotionAI.Core.Constants = {
       {id:"claude-opus4.7",label:"Opus 4.7",provider:"Anthropic",badge:"New"},
       {id:"claude-opus4.8",label:"Opus 4.8",provider:"Anthropic",badge:"New"},
       {id:"claude-haiku4.5",label:"Haiku 4.5",provider:"Anthropic"},
+      {id:"claude-fable5",label:"Fable 5",provider:"Anthropic",badge:"New"},
     ]},
     {label:'OpenAI',models:[
       {id:"gpt-5.2",label:"GPT-5.2",provider:"OpenAI"},
@@ -766,7 +803,7 @@ window.NotionAI.Core.Constants = {
   MODELS:[
     {id:"claude-sonnet4.6",label:"Sonnet 4.6"},{id:"claude-opus4.6",label:"Opus 4.6"},
     {id:"claude-opus4.7",label:"Opus 4.7"},{id:"claude-opus4.8",label:"Opus 4.8"},
-    {id:"claude-haiku4.5",label:"Haiku 4.5"},{id:"gpt-5.2",label:"GPT-5.2"},
+    {id:"claude-haiku4.5",label:"Haiku 4.5"},{id:"claude-fable5",label:"Fable 5"},{id:"gpt-5.2",label:"GPT-5.2"},
     {id:"gpt-5.4",label:"GPT-5.4"},{id:"gpt-5.4mini",label:"GPT-5.4 Mini"},
     {id:"gpt-5.4nano",label:"GPT-5.4 Nano"},{id:"gpt-5.5",label:"GPT-5.5"},
     {id:"gemini-2.5flash",label:"Gemini 2.5 Flash"},{id:"gemini-3flash",label:"Gemini 3 Flash"},
@@ -778,13 +815,13 @@ window.NotionAI.Core.Constants = {
   DEFAULT_MODEL:"claude-sonnet4.6",
   MODEL_DISPLAY_NAMES:{
     "claude-sonnet4.6":"Sonnet 4.6","claude-opus4.6":"Opus 4.6","claude-opus4.7":"Opus 4.7",
-    "claude-opus4.8":"Opus 4.8","claude-haiku4.5":"Haiku 4.5",
+    "claude-opus4.8":"Opus 4.8","claude-haiku4.5":"Haiku 4.5","claude-fable5":"Fable 5",
     "gpt-5.2":"GPT-5.2","gpt-5.4":"GPT-5.4","gpt-5.4mini":"GPT-5.4 Mini","gpt-5.4nano":"GPT-5.4 Nano","gpt-5.5":"GPT-5.5",
     "gemini-2.5flash":"Gemini 2.5 Flash","gemini-3flash":"Gemini 3 Flash","gemini-3.5flash":"Gemini 3.5 Flash","gemini-3.1pro":"Gemini 3.1 Pro",
     "grok-4.3":"Grok 4.3","grok-build0.1":"Grok Build 0.1","minimax-m2.5":"MiniMax M2.5","kimi-2.6":"Kimi 2.6","deepseek-v4pro":"DeepSeek V4 Pro",
   },
   MODEL_PROVIDERS:{
-    "claude-sonnet4.6":"Anthropic","claude-opus4.6":"Anthropic","claude-opus4.7":"Anthropic","claude-opus4.8":"Anthropic","claude-haiku4.5":"Anthropic",
+    "claude-sonnet4.6":"Anthropic","claude-opus4.6":"Anthropic","claude-opus4.7":"Anthropic","claude-opus4.8":"Anthropic","claude-haiku4.5":"Anthropic","claude-fable5":"Anthropic",
     "gpt-5.2":"OpenAI","gpt-5.4":"OpenAI","gpt-5.4mini":"OpenAI","gpt-5.4nano":"OpenAI","gpt-5.5":"OpenAI",
     "gemini-2.5flash":"Google","gemini-3flash":"Google","gemini-3.5flash":"Google","gemini-3.1pro":"Google",
     "grok-4.3":"xAI","grok-build0.1":"xAI","minimax-m2.5":"MiniMax","kimi-2.6":"Moonshot","deepseek-v4pro":"DeepSeek",
@@ -1056,6 +1093,15 @@ window.NotionAI.Chat.Renderer = {
       mdDiv.querySelectorAll('pre code').forEach(b => { if(!b.dataset.highlighted) hljs.highlightElement(b) });
       window.NotionAI.Utils.DOM.addCodeBlockCopyButtons(mdDiv);
       if (wrapper._thinkingTimerInterval) { clearInterval(wrapper._thinkingTimerInterval); wrapper._thinkingTimerInterval = null }
+      // Finalize thinking panel (auto-collapse if user never toggled)
+      window.NotionAI.Chat.Renderer.updateThinkingPanel(wrapper, true);
+      // Show model verification footer
+      if (wrapper.modelFooterRef) {
+        const nameEl = wrapper.modelFooterRef.querySelector('.model-footer-name');
+        const modelName = wrapper.thinkingModelDisplayName || 'Unknown Model';
+        if (nameEl) nameEl.textContent = modelName;
+        wrapper.modelFooterRef.classList.add('visible');
+      }
     } else {
       mdDiv.classList.add('streaming-cursor');
     }
@@ -1063,21 +1109,45 @@ window.NotionAI.Chat.Renderer = {
     if (cc.scrollHeight - cc.scrollTop < cc.clientHeight + 120) window.NotionAI.Utils.DOM.scrollToBottom();
   },
 
-  updateThinkingPanel(wrapper) {
+  updateThinkingPanel(wrapper, isFinished) {
     const card = wrapper.thinkingCardRef;
     if (!card) return;
     const raw = String(wrapper.thinkingText || '');
-    if (!raw.trim()) { card.classList.add('hidden'); return }
+    if (!raw.trim()) { card.classList.add('hidden'); return; }
     card.classList.remove('hidden');
+
+    // Auto-expand while streaming; auto-collapse when done (if user hasn't manually toggled)
+    if (isFinished === true) {
+      card.classList.remove('streaming');
+      // Collapse on finish only if not manually interacted with
+      if (!wrapper._thinkingManualToggle) {
+        wrapper.thinkingExpanded = false;
+      }
+    } else if (isFinished === false) {
+      card.classList.add('streaming');
+      // Auto-expand during streaming if not manually toggled
+      if (!wrapper._thinkingManualToggle) {
+        wrapper.thinkingExpanded = true;
+      }
+    }
+
     const timer = card.querySelector('.thinking-header-timer');
     if (timer && wrapper._thinkingStartTime) {
-      timer.textContent = Math.round((Date.now() - wrapper._thinkingStartTime) / 1000) + 's';
+      const secs = Math.round((Date.now() - wrapper._thinkingStartTime) / 1000);
+      timer.textContent = secs > 0 ? secs + 's' : '';
     }
+
+    // Always render markdown so content is ready when opened
+    window.NotionAI.Utils.Markdown.setSafeMarkdown(wrapper.thinkingBodyRef, raw);
+
+    // Sync expanded state + ARIA
+    const th = card.querySelector('.thinking-header');
     if (wrapper.thinkingExpanded) {
       card.classList.add('expanded');
-      window.NotionAI.Utils.Markdown.setSafeMarkdown(wrapper.thinkingBodyRef, raw);
+      if (th) th.setAttribute('aria-expanded', 'true');
     } else {
       card.classList.remove('expanded');
+      if (th) th.setAttribute('aria-expanded', 'false');
     }
   },
 
@@ -1127,7 +1197,7 @@ window.NotionAI.Chat.Renderer = {
     // Thinking card
     const tc = document.createElement('div');
     tc.className = 'thinking-card hidden';
-    tc.innerHTML = '<div class="thinking-header"><span class="thinking-header-dot"></span><span class="thinking-header-label">Thinking</span><span class="thinking-header-timer"></span><span class="thinking-header-arrow">&#9656;</span></div><div class="thinking-body"><div class="markdown-body thinking-markdown"></div></div>';
+    tc.innerHTML = '<div class="thinking-header" role="button" tabindex="0" aria-expanded="false"><span class="thinking-header-dot" aria-hidden="true"></span><span class="thinking-header-label">Thinking</span><span class="thinking-header-timer"></span><span class="thinking-header-arrow" aria-hidden="true">&#9656;</span></div><div class="thinking-body" role="region" aria-label="Thinking steps"><div class="markdown-body thinking-markdown"></div></div>';
     container.appendChild(tc);
     // Markdown
     const md = document.createElement('div');
@@ -1151,19 +1221,33 @@ window.NotionAI.Chat.Renderer = {
     };
     copyBtnWrapper.appendChild(cb);
     container.appendChild(copyBtnWrapper);
+    // Model verification footer
+    const mf = document.createElement('div');
+    mf.className = 'model-footer';
+    mf.innerHTML = '<span class="model-footer-check" aria-label="Verified">✔</span><span class="model-footer-label">Model:</span><span class="model-footer-name"></span>';
+    container.appendChild(mf);
     return {
       bubbleRef:container, mdDivRef:md,
       searchCardRef:sc, searchExpanded:false, searchData:{queries:[],sources:[]},
       thinkingCardRef:tc, thinkingBodyRef:tc.querySelector('.thinking-body .thinking-markdown'),
       thinkingExpanded:false, thinkingText:'', thinkingModelDisplayName:modelDisplayName,
       _thinkingStartTime:isFinished?null:Date.now(), _thinkingTimerInterval:null,
+      modelFooterRef:mf,
     };
   },
 
   _setupPanelListeners(wrapper) {
     const th = wrapper.querySelector('.thinking-header');
     const sh = wrapper.querySelector('.search-header');
-    if (th) th.addEventListener('click', () => { wrapper.thinkingExpanded=!wrapper.thinkingExpanded; this.updateThinkingPanel(wrapper) });
+    const toggleThinking = () => {
+      wrapper._thinkingManualToggle = true;
+      wrapper.thinkingExpanded = !wrapper.thinkingExpanded;
+      this.updateThinkingPanel(wrapper);
+    };
+    if (th) {
+      th.addEventListener('click', toggleThinking);
+      th.addEventListener('keydown', (e) => { if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); toggleThinking(); } });
+    }
     if (sh) sh.addEventListener('click', () => { wrapper.searchExpanded=!wrapper.searchExpanded; this.updateSearchPanel(wrapper) });
   },
   showErrorCard(wrapper, message, code, suggestion, detail, httpStatus) {
@@ -1223,11 +1307,11 @@ window.NotionAI.Chat.Streaming = {
     if(!payload||payload==='[DONE]')return{thinkingText,fullAiReply};
     let d;try{d=JSON.parse(payload)}catch(e){return{thinkingText,fullAiReply}}
     if(d?.type==='search_metadata'){this.mergeSearchState(searchState,d.searches||{});aiWrapper.searchData=searchState;window.NotionAI.Chat.Renderer.updateSearchPanel(aiWrapper);return{thinkingText,fullAiReply}}
-    if(d?.type==='thinking_chunk'){const c=typeof d.text==='string'?d.text:'';if(c){thinkingText+=c;aiWrapper.thinkingText=thinkingText;window.NotionAI.Chat.Renderer.updateThinkingPanel(aiWrapper)}return{thinkingText,fullAiReply}}
+    if(d?.type==='thinking_chunk'){const c=typeof d.text==='string'?d.text:'';if(c){thinkingText+=c;aiWrapper.thinkingText=thinkingText;window.NotionAI.Chat.Renderer.updateThinkingPanel(aiWrapper,false)}return{thinkingText,fullAiReply}}
     if(d?.type==='content_replace'){const r=typeof d.content==='string'?d.content:'';if(r){fullAiReply=r;window.NotionAI.Chat.Renderer.updateAIMessage(aiWrapper,fullAiReply,false)}return{thinkingText,fullAiReply}}
-    if(d?.type==='thinking_replace'){thinkingText=typeof d.thinking==='string'?d.thinking:'';aiWrapper.thinkingText=thinkingText;window.NotionAI.Chat.Renderer.updateThinkingPanel(aiWrapper);return{thinkingText,fullAiReply}}
+    if(d?.type==='thinking_replace'){thinkingText=typeof d.thinking==='string'?d.thinking:'';aiWrapper.thinkingText=thinkingText;window.NotionAI.Chat.Renderer.updateThinkingPanel(aiWrapper,false);return{thinkingText,fullAiReply}}
     const dr=d?.choices?.[0]?.delta?.reasoning_content||'';
-    if(dr){thinkingText+=dr;aiWrapper.thinkingText=thinkingText;window.NotionAI.Chat.Renderer.updateThinkingPanel(aiWrapper);return{thinkingText,fullAiReply}}
+    if(dr){thinkingText+=dr;aiWrapper.thinkingText=thinkingText;window.NotionAI.Chat.Renderer.updateThinkingPanel(aiWrapper,false);return{thinkingText,fullAiReply}}
     const dc=d?.choices?.[0]?.delta?.content||'';
     if(dc){fullAiReply+=dc;window.NotionAI.Chat.Renderer.updateAIMessage(aiWrapper,fullAiReply,false);return{thinkingText,fullAiReply}}
     return{thinkingText,fullAiReply};
@@ -1320,8 +1404,16 @@ window.NotionAI.Chat.Manager = {
       if(msg.role==='assistant'){
         const rt=typeof msg.thinking==='string'?msg.thinking:'';
         const rs=window.NotionAI.Utils.Validation.normalizeSearchPayload(msg.search);
-        if(rt.trim()){w.thinkingText=rt;window.NotionAI.Chat.Renderer.updateThinkingPanel(w)}
+        if(rt.trim()){w.thinkingText=rt;window.NotionAI.Chat.Renderer.updateThinkingPanel(w,true)}
         if(rs.queries.length+rs.sources.length>0){w.searchData=rs;window.NotionAI.Chat.Renderer.updateSearchPanel(w)}
+        // Show model verification footer for finished (history) messages
+        if(w.modelFooterRef){
+          const nameEl=w.modelFooterRef.querySelector('.model-footer-name');
+          const modelName=msg.modelDisplayName||'Unknown Model';
+          if(nameEl)nameEl.textContent=modelName;
+          w.modelFooterRef.style.transition='none';
+          w.modelFooterRef.classList.add('visible');
+        }
       }
     });
     if(window.innerWidth<768)window.NotionAI.UI.Sidebar.close();
