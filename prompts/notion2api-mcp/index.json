@@ -1,0 +1,117 @@
+{
+  "pack": "notion2api-mcp-prompts",
+  "version": 1,
+  "kind": "mcp-prompt-pack",
+  "target": "notion2api-mcp",
+  "namespace": "notion2api",
+  "description": "Prompt definitions for Notion2API MCP operations, debugging, schema writing, validation, and redaction.",
+  "prompts": [
+    {
+      "name": "notion2api_operator",
+      "title": "Operate Notion2API MCP safely",
+      "description": "Use Notion2API MCP with safe read/write behavior, audit-friendly summaries, and non-destructive defaults.",
+      "file": "n2api-mcp-operator.prompt.md",
+      "id": "n2api.mcp.operator",
+      "arguments": []
+    },
+    {
+      "name": "notion2api_tool_router",
+      "title": "Route Notion2API MCP requests",
+      "description": "Classify a user request as read, write, update, debug, schema, admin, or export before selecting MCP actions.",
+      "file": "n2api-mcp-tool-router.prompt.md",
+      "id": "n2api.mcp.tool_router",
+      "arguments": [
+        {
+          "name": "user_request",
+          "description": "The user request to classify and route.",
+          "required": true
+        }
+      ]
+    },
+    {
+      "name": "notion2api_output_schema_writer",
+      "title": "Write MCP output schemas",
+      "description": "Create or repair predictable MCP output schemas for Notion2API tool responses.",
+      "file": "n2api-mcp-output-schema-writer.prompt.md",
+      "id": "n2api.mcp.output_schema_writer",
+      "arguments": [
+        {
+          "name": "operation_name",
+          "description": "The Notion2API or MCP operation that needs an output schema.",
+          "required": true
+        },
+        {
+          "name": "current_schema",
+          "description": "Existing schema or observed response shape, if available.",
+          "required": false
+        }
+      ]
+    },
+    {
+      "name": "notion2api_provider_debugger",
+      "title": "Debug Notion2API provider failures",
+      "description": "Diagnose Notion2API MCP, provider, model-routing, timeout, streaming, 502, 503, and empty-content failures.",
+      "file": "n2api-provider-debugger.prompt.md",
+      "id": "n2api.provider_debugger",
+      "arguments": [
+        {
+          "name": "error_log",
+          "description": "Redacted error text, status code, or failure report.",
+          "required": false
+        },
+        {
+          "name": "operation",
+          "description": "The operation or endpoint that failed.",
+          "required": false
+        }
+      ]
+    },
+    {
+      "name": "notion2api_content_sync",
+      "title": "Sync content into Notion",
+      "description": "Safely create, update, or append Notion content with idempotency and non-destructive defaults.",
+      "file": "n2api-notion-content-sync.prompt.md",
+      "id": "n2api.notion_content_sync",
+      "arguments": [
+        {
+          "name": "content",
+          "description": "The content to sync into Notion.",
+          "required": true
+        },
+        {
+          "name": "target",
+          "description": "Target page, database, parent, or workspace section.",
+          "required": false
+        }
+      ]
+    },
+    {
+      "name": "notion2api_regression_validation",
+      "title": "Validate Notion2API MCP changes",
+      "description": "Run a repeatable validation plan for Notion2API MCP fixes and integration changes.",
+      "file": "n2api-regression-validation.prompt.md",
+      "id": "n2api.regression_validation",
+      "arguments": [
+        {
+          "name": "change_summary",
+          "description": "Summary of the code, config, or behavior change to validate.",
+          "required": true
+        }
+      ]
+    },
+    {
+      "name": "notion2api_security_redaction",
+      "title": "Redact Notion2API diagnostics",
+      "description": "Redact sensitive tokens, cookies, signed URLs, API keys, and private content from Notion2API logs or reports.",
+      "file": "n2api-security-redaction.prompt.md",
+      "id": "n2api.security_redaction",
+      "arguments": [
+        {
+          "name": "raw_text",
+          "description": "The log, config, diagnostic output, or report text to redact.",
+          "required": true
+        }
+      ]
+    }
+  ]
+}
