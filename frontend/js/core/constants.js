@@ -100,7 +100,7 @@ window.NotionAI.Core.Constants = {
         { id: "deepseek-v4pro", label: "DeepSeek V4 Pro" },
     ],
 
-    DEFAULT_MODEL: "claude-sonnet4.6",
+    DEFAULT_MODEL: "claude-opus4.8",
 
     MODEL_DISPLAY_NAMES: {
         "claude-sonnet4.6": "Sonnet 4.6",

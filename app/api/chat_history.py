@@ -1,5 +1,10 @@
 from __future__ import annotations
 
+import csv
+import hashlib
+import io
+import re
+from datetime import datetime
 from typing import Any
 
 from fastapi import APIRouter, HTTPException, Query, Request
@@ -51,6 +56,201 @@ def _get_account_client(request: Request, account_index: int):
     if account_index < 0 or account_index >= len(clients):
         raise HTTPException(status_code=400, detail="account_index is out of range")
     return clients[account_index]
+
+
+def _normalized_prompt(value: Any) -> str:
+    return " ".join(str(value or "").split())
+
+
+def _group_export_rows(rows: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    grouped: dict[str, list[dict[str, Any]]] = {}
+    for row in rows:
+        prompt = _normalized_prompt(row.get("sent_message"))
+        key = hashlib.sha1(prompt.encode("utf-8", errors="replace")).hexdigest()[:12]
+        grouped.setdefault(key, []).append(row)
+    out: list[dict[str, Any]] = []
+    for key, group_rows in sorted(grouped.items(), key=lambda item: (-len(item[1]), _normalized_prompt(item[1][0].get("sent_message")))):
+        total = len(group_rows)
+        for index, row in enumerate(
+            sorted(group_rows, key=lambda item: (str(item.get("actual_model") or ""), str(item.get("received_message_time") or ""))),
+            start=1,
+        ):
+            enriched = dict(row)
+            enriched["duplicate_prompt_hash"] = key
+            enriched["duplicate_prompt_count"] = total
+            enriched["duplicate_prompt_index"] = index
+            out.append(enriched)
+    return out
+
+
+def _csv_text(rows: list[dict[str, Any]], *, include_prompt: bool = True, include_response: bool = True) -> str:
+    output = io.StringIO()
+    fieldnames = [
+        "duplicate_prompt_hash",
+        "duplicate_prompt_count",
+        "duplicate_prompt_index",
+        "thread_id",
+        "title",
+        "sent_message_time",
+        "received_message_time",
+        "response_role",
+        "response_is_error",
+        "model_provider",
+        "actual_model",
+        "requested_model",
+        "notion_requested_model",
+    ]
+    if include_prompt:
+        fieldnames.append("sent_message")
+    if include_response:
+        fieldnames.append("received_message")
+    writer = csv.DictWriter(output, fieldnames=fieldnames, extrasaction="ignore")
+    writer.writeheader()
+    for row in _group_export_rows(rows):
+        writer.writerow(row)
+    return output.getvalue()
+
+
+def _md_escape(value: Any) -> str:
+    return str(value or "").replace("\r\n", "\n").replace("\r", "\n").strip()
+
+
+def _md_model_label(row: dict[str, Any]) -> str:
+    display = _md_escape(row.get("display_model"))
+    actual = _md_escape(row.get("actual_model"))
+    requested = _md_escape(row.get("requested_model"))
+    notion_requested = _md_escape(row.get("notion_requested_model"))
+    provider = _md_escape(row.get("model_provider"))
+    model = display or actual or requested or notion_requested or "[unknown]"
+    if provider and provider != "[unknown]":
+        return f"{model} / {provider}"
+    return model
+
+
+def _md_anchor(value: Any) -> str:
+    text = re.sub(r"[^a-z0-9]+", "-", str(value or "").lower()).strip("-")
+    return text or "section"
+
+
+def _markdown_text(rows: list[dict[str, Any]], *, include_prompt: bool = True, include_response: bool = True) -> str:
+    grouped_rows = _group_export_rows(rows)
+    by_hash: dict[str, list[dict[str, Any]]] = {}
+    for row in grouped_rows:
+        by_hash.setdefault(str(row.get("duplicate_prompt_hash") or ""), []).append(row)
+
+    lines: list[str] = [
+        "# Exported Notion Message Threads",
+        "",
+        "## Navigation Index",
+        "",
+        "Use the headings, `Model:` labels, and `Thread:` IDs for fast search in Notepad++ or any Markdown renderer.",
+        "",
+        "| Prompt group | Responses | Models | Errors |",
+        "|---|---:|---|---:|",
+    ]
+    for group_hash, group in by_hash.items():
+        models = ", ".join(dict.fromkeys(_md_model_label(row) for row in group)) or "[unknown]"
+        errors = sum(1 for row in group if bool(row.get("response_is_error")))
+        lines.append(f"| `{group_hash}` | {len(group)} | {models} | {errors} |")
+    lines += ["", "---", ""]
+
+    for group_hash, group in by_hash.items():
+        prompt = _md_escape(group[0].get("sent_message"))
+        anchor = _md_anchor(group_hash)
+        lines += [
+            f"## Prompt Group: `{group_hash}`",
+            "",
+            f"Anchor: `{anchor}`",
+            f"Responses: `{len(group)}`",
+            f"Duplicate prompt hash: `{group_hash}`",
+            "",
+        ]
+        if include_prompt:
+            lines += [
+                "### Shared Sent Prompt",
+                "",
+                "The same or normalized-same prompt was used for this group. Each individual thread below still repeats its own sent-message label for search/sort consistency.",
+                "",
+                "```text",
+                prompt,
+                "```",
+                "",
+            ]
+
+        for row in group:
+            role = _md_escape(row.get("response_role")) or "response"
+            model_label = _md_model_label(row)
+            thread_id = _md_escape(row.get("thread_id"))
+            title = _md_escape(row.get("title")) or thread_id
+            sent_time = _md_escape(row.get("sent_message_time"))
+            received_time = _md_escape(row.get("received_message_time"))
+            error_flag = "true" if bool(row.get("response_is_error")) else "false"
+            response_index = row.get("duplicate_prompt_index")
+
+            lines += [
+                f"### Thread Response {response_index}: Model: {model_label}",
+                "",
+                f"Thread: `{thread_id}`",
+                f"Title: {title}",
+                f"Response role: `{role}`",
+                f"Error response: `{error_flag}`",
+                f"Model: {model_label}",
+                f"Actual model: `{_md_escape(row.get('actual_model')) or '[unknown]'}`",
+                f"Provider: `{_md_escape(row.get('model_provider')) or '[unknown]'}`",
+                f"Requested model: `{_md_escape(row.get('requested_model')) or '[unknown]'}`",
+                f"Notion requested model: `{_md_escape(row.get('notion_requested_model')) or '[unknown]'}`",
+                "",
+            ]
+            if include_prompt:
+                lines += [
+                    f"#### Sent Message ? Model: {model_label}",
+                    "",
+                    f"Sent timestamp: `{sent_time}`",
+                    f"Model: {model_label}",
+                    "",
+                    "```text",
+                    _md_escape(row.get("sent_message")),
+                    "```",
+                    "",
+                ]
+            if include_response:
+                lines += [
+                    f"#### Received Message ? Model: {model_label}",
+                    "",
+                    f"Received timestamp: `{received_time}`",
+                    f"Model: {model_label}",
+                    f"Role: `{role}`",
+                    "",
+                    "```text",
+                    _md_escape(row.get("received_message")),
+                    "```",
+                    "",
+                ]
+            lines += ["---", ""]
+    return "\n".join(lines).rstrip() + "\n"
+
+def _delete_known_threads(request: Request, thread_ids: list[str], account_index: int, *, remote: bool = True, local: bool = True) -> dict[str, Any]:
+    results: dict[str, Any] = {"success": [], "failed": []}
+    if remote:
+        client = _get_account_client(request, account_index)
+        for thread_id in thread_ids:
+            try:
+                remote_result = client.delete_threads([thread_id])
+            except NotionUpstreamError as exc:
+                results["failed"].append({"thread_id": thread_id, "stage": "remote", "error": exc.response_excerpt or str(exc)})
+                continue
+            accepted = int(remote_result.get("remote_deleted", 0) or remote_result.get("remote_accepted", 0) or 0) > 0
+            if accepted:
+                results["success"].append(thread_id)
+            else:
+                results["failed"].append({"thread_id": thread_id, "stage": "remote", "error": "Remote delete transaction was not accepted."})
+    else:
+        results["success"].extend(thread_ids)
+
+    local_result: dict[str, int] = {"threads_deleted": 0, "messages_deleted": 0, "fts_deleted": 0}
+    if local and results["success"]:
+        local_result = _store().delete_threads(results["success"])
+    return {"results": results, "local_result": local_result}
 
 
 async def _request_payload(request: Request) -> dict[str, Any]:
@@ -156,6 +356,7 @@ def status() -> dict[str, Any]:
             "bulk_delete_post_fallback",
             "hydration_diagnostics",
             "thread_debug",
+            "model_response_stats",
             "local_archive",
             "local_search",
             "markdown_export",
@@ -238,9 +439,118 @@ async def sync_from_notion(request: Request) -> dict[str, Any]:
     }
 
 
+@router.get("/model-stats")
+def model_stats() -> dict[str, Any]:
+    return _store().model_response_stats()
+
+
 @router.get("/threads")
 def list_threads(limit: int = Query(50, ge=1, le=200), offset: int = Query(0, ge=0)) -> dict[str, Any]:
     return {"threads": _store().list_threads(limit=limit, offset=offset)}
+
+
+@router.post("/threads/cleanup-single-message")
+@router.delete("/threads/cleanup-single-message")
+async def cleanup_single_message_threads(request: Request) -> dict[str, Any]:
+    payload = await _request_payload(request)
+    requested_ids = _clean_thread_ids(payload.get("thread_ids") or payload.get("threadIds") or [])
+    if not requested_ids:
+        raise HTTPException(status_code=400, detail="thread_ids must contain at least one thread id")
+    account_index = int(payload.get("account_index", 0) or 0)
+    remote = _bool_payload(payload.get("remote"), default=True)
+    local = _bool_payload(payload.get("local"), default=True)
+    eligible_ids = _store().single_message_thread_ids(requested_ids or None)
+    delete_result = (
+        _delete_known_threads(request, eligible_ids, account_index, remote=remote, local=local)
+        if eligible_ids
+        else {"results": {"success": [], "failed": []}, "local_result": {"threads_deleted": 0, "messages_deleted": 0, "fts_deleted": 0}}
+    )
+    return {
+        "requested": len(requested_ids),
+        "eligible": len(eligible_ids),
+        "thread_ids": eligible_ids,
+        **delete_result,
+    }
+
+
+@router.post("/threads/cleanup-error-threads")
+async def cleanup_error_threads(request: Request) -> dict[str, Any]:
+    payload = await _request_payload(request)
+    requested_ids = _clean_thread_ids(payload.get("thread_ids") or payload.get("threadIds") or [])
+    if not requested_ids:
+        raise HTTPException(status_code=400, detail="thread_ids must contain at least one thread id")
+    account_index = int(payload.get("account_index", 0) or 0)
+    remote = _bool_payload(payload.get("remote"), default=True)
+    local = _bool_payload(payload.get("local"), default=True)
+    eligible_ids = _store().errored_thread_ids(requested_ids or None)
+    delete_result = _delete_known_threads(request, eligible_ids, account_index, remote=remote, local=local) if eligible_ids else {"results": {"success": [], "failed": []}, "local_result": {"threads_deleted": 0, "messages_deleted": 0, "fts_deleted": 0}}
+    return {
+        "requested": len(requested_ids),
+        "eligible": len(eligible_ids),
+        "thread_ids": eligible_ids,
+        **delete_result,
+    }
+
+
+@router.post("/threads/export-two-message-responses")
+async def export_two_message_responses(request: Request) -> dict[str, Any]:
+    payload = await _request_payload(request)
+    requested_ids = _clean_thread_ids(payload.get("thread_ids") or payload.get("threadIds") or [])
+    if not requested_ids:
+        raise HTTPException(status_code=400, detail="thread_ids must contain at least one thread id")
+    account_index = int(payload.get("account_index", 0) or 0)
+    delete_after_export = _bool_payload(payload.get("delete_after_export") or payload.get("deleteAfterExport"), default=False)
+    remote = _bool_payload(payload.get("remote"), default=True) if delete_after_export else False
+    local = _bool_payload(payload.get("local"), default=True) if delete_after_export else False
+    export_format = str(payload.get("format") or payload.get("export_format") or "csv").strip().lower()
+    if export_format in {"excel", "spreadsheet", "xlsx"}:
+        export_format = "csv"
+    if export_format not in {"csv", "md", "markdown"}:
+        raise HTTPException(status_code=400, detail="format must be csv or md")
+    if export_format == "markdown":
+        export_format = "md"
+
+    include_errors = _bool_payload(payload.get("include_errors") or payload.get("includeErrors"), default=False)
+    include_prompt = _bool_payload(payload.get("include_prompt") if "include_prompt" in payload else payload.get("includePrompt"), default=True)
+    include_response = _bool_payload(payload.get("include_response") if "include_response" in payload else payload.get("includeResponse"), default=True)
+    if not include_prompt and not include_response:
+        raise HTTPException(status_code=400, detail="At least one of include_prompt or include_response must be true")
+
+    export_data = _store().two_message_export_rows(requested_ids or None, include_errors=include_errors)
+    rows = export_data.get("rows", []) if isinstance(export_data, dict) else []
+    grouped_rows = _group_export_rows(rows)
+    eligible_ids = export_data.get("thread_ids", []) if isinstance(export_data, dict) else []
+    stamp = datetime.utcnow().strftime('%Y%m%d-%H%M%S')
+    if export_format == "md":
+        content = _markdown_text(rows, include_prompt=include_prompt, include_response=include_response)
+        filename = f"notion-two-message-responses-{stamp}.md"
+        content_type = "text/markdown"
+    else:
+        content = _csv_text(rows, include_prompt=include_prompt, include_response=include_response)
+        filename = f"notion-two-message-responses-{stamp}.csv"
+        content_type = "text/csv"
+    if delete_after_export and rows and eligible_ids:
+        delete_result = _delete_known_threads(request, eligible_ids, account_index, remote=remote, local=local)
+    else:
+        delete_result = {"results": {"success": [], "failed": []}, "local_result": {"threads_deleted": 0, "messages_deleted": 0, "fts_deleted": 0}}
+    return {
+        "requested": len(requested_ids),
+        "eligible": len(eligible_ids),
+        "exported": len(rows),
+        "format": export_format,
+        "include_errors": include_errors,
+        "include_prompt": include_prompt,
+        "include_response": include_response,
+        "delete_after_export": delete_after_export,
+        "filename": filename,
+        "content_type": content_type,
+        "content": content,
+        "csv": content if export_format == "csv" else "",
+        "markdown": content if export_format == "md" else "",
+        "rows": grouped_rows,
+        "duplicate_prompt_groups": len({row.get("duplicate_prompt_hash") for row in grouped_rows}),
+        **delete_result,
+    }
 
 
 @router.delete("/threads")

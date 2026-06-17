@@ -62,6 +62,10 @@ class ChatCompletionResponse(BaseModel):
     created: int = Field(default_factory=lambda: int(time.time()))
     model: str
     choices: List[ChatMessageResponseChoice]
+    requested_model: Optional[str] = Field(default=None)
+    notion_requested_model: Optional[str] = Field(default=None)
+    actual_model: Optional[str] = Field(default=None)
+    model_metadata: Optional[Dict[str, Any]] = Field(default=None)
     usage: Dict[str, int] = Field(
         default_factory=lambda: {"prompt_tokens": 0, "completion_tokens": 0, "total_tokens": 0}
     )

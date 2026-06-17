@@ -33,13 +33,17 @@ window.NotionAI.Utils.Validation = {
                             const thinking = typeof msg.thinking === 'string' ? msg.thinking : '';
                             const search = this.normalizeSearchPayload(msg.search);
                             const modelDisplayName = typeof msg.modelDisplayName === 'string' ? msg.modelDisplayName : null;
+                            const requestedModelDisplayName = typeof msg.requestedModelDisplayName === 'string' ? msg.requestedModelDisplayName : null;
+                            const modelMetadata = (msg.modelMetadata && typeof msg.modelMetadata === 'object') ? msg.modelMetadata : null;
 
                             return {
                                 role: 'assistant',
                                 content,
                                 thinking,
                                 search,
-                                modelDisplayName
+                                modelDisplayName,
+                                requestedModelDisplayName,
+                                modelMetadata
                             };
                         })
                         .filter(Boolean)

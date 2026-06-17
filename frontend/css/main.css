@@ -545,16 +545,18 @@ body {
 .assistant-meta {
     display: flex;
     align-items: center;
+    justify-content: flex-end;
     gap: 8px;
-    margin-bottom: 6px;
+    margin-top: 8px;
+    width: 100%;
 }
 
 .assistant-model-name {
-    font-size: 12px;
+    font-size: 11px;
     font-weight: 600;
-    color: var(--accent);
-    text-transform: uppercase;
-    letter-spacing: 0.03em;
+    color: var(--text-tertiary);
+    text-transform: none;
+    letter-spacing: 0;
 }
 
 .message-timestamp {
@@ -573,7 +575,7 @@ body {
     font-family: var(--font-sans);
     cursor: pointer;
     transition: all 0.15s;
-    margin-left: auto;
+    margin-right: auto;
 }
 .message-copy-btn:hover {
     color: var(--text-primary);

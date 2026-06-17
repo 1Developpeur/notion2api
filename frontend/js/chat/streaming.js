@@ -132,6 +132,7 @@ window.NotionAI.Chat.Streaming = {
     async processStream(response, aiWrapper, searchState, thinkingText, fullAiReply) {
         const reader = response.body.getReader();
         const decoder = new TextDecoder('utf-8');
+        const modelState = { metadata: null, displayName: null, requestedModel: model };
         let sseBuffer = '';
 
         while (true) {
@@ -149,7 +150,7 @@ window.NotionAI.Chat.Streaming = {
                     if (!line.startsWith('data:')) continue;
 
                     const payload = line.slice(5).trim();
-                    const result = this.consumePayload(payload, aiWrapper, searchState, thinkingText, fullAiReply);
+                    const result = this.consumePayload(payload, aiWrapper, searchState, thinkingText, fullAiReply, modelState);
 
                     if (result.thinkingText !== undefined) {
                         thinkingText = result.thinkingText;
@@ -164,7 +165,7 @@ window.NotionAI.Chat.Streaming = {
         // Process remaining buffer
         if (sseBuffer.trim().startsWith('data:')) {
             const payload = sseBuffer.trim().slice(5).trim();
-            const result = this.consumePayload(payload, aiWrapper, searchState, thinkingText, fullAiReply);
+            const result = this.consumePayload(payload, aiWrapper, searchState, thinkingText, fullAiReply, modelState);
             if (result.thinkingText !== undefined) {
                 thinkingText = result.thinkingText;
             }
@@ -173,7 +174,13 @@ window.NotionAI.Chat.Streaming = {
             }
         }
 
-        return { fullAiReply, thinkingText, searchState };
+        return {
+            fullAiReply,
+            thinkingText,
+            searchState,
+            modelMetadata: modelState.metadata,
+            modelDisplayName: modelState.displayName
+        };
     },
 
     /**
@@ -185,7 +192,7 @@ window.NotionAI.Chat.Streaming = {
      * @param {string} fullAiReply - Current AI reply
      * @returns {Object} Updated state
      */
-    consumePayload(payload, aiWrapper, searchState, thinkingText, fullAiReply) {
+    consumePayload(payload, aiWrapper, searchState, thinkingText, fullAiReply, modelState = null) {
         if (!payload || payload === '[DONE]') {
             return { thinkingText, fullAiReply };
         }
@@ -195,6 +202,47 @@ window.NotionAI.Chat.Streaming = {
             dataObj = JSON.parse(payload);
         } catch (e) {
             return { thinkingText, fullAiReply };
+        }
+
+        // Handle actual model metadata. This may arrive after the content stream,
+        // so update the already-rendered footer label in-place.
+        if (dataObj?.type === 'model_metadata') {
+            const metadata = (dataObj.model_metadata && typeof dataObj.model_metadata === 'object')
+                ? dataObj.model_metadata
+                : ((dataObj.data && typeof dataObj.data === 'object') ? dataObj.data : {});
+            const displayName = window.NotionAI.API.Models.getResponseModelDisplayName(
+                metadata,
+                dataObj.model || metadata.requested_model || ''
+            );
+            if (displayName) {
+                window.NotionAI.Chat.Renderer.updateModelLabel(aiWrapper, displayName, metadata);
+                if (modelState) {
+                    modelState.metadata = metadata;
+                    modelState.displayName = displayName;
+                }
+            }
+            return { thinkingText, fullAiReply };
+        }
+
+        // Handle actual-model metadata embedded in ordinary chunks.
+        // Do not treat a bare chunk.model as actual unless paired with actual_model
+        // or model_metadata, because older chunks used the requested alias there.
+        const embeddedMetadata = (dataObj.model_metadata && typeof dataObj.model_metadata === 'object')
+            ? dataObj.model_metadata
+            : null;
+        const embeddedActual = dataObj.actual_model || embeddedMetadata?.actual_model || embeddedMetadata?.notion_model_name || embeddedMetadata?.notion_step_model || '';
+        if (embeddedMetadata || embeddedActual) {
+            const metadata = {
+                ...(embeddedMetadata || {}),
+                ...(embeddedActual ? { actual_model: embeddedActual } : {}),
+                requested_model: embeddedMetadata?.requested_model || modelState?.requestedModel || ''
+            };
+            const displayName = window.NotionAI.API.Models.getResponseModelDisplayName(metadata, modelState?.requestedModel || '');
+            window.NotionAI.Chat.Renderer.updateModelLabel(aiWrapper, displayName, metadata);
+            if (modelState) {
+                modelState.metadata = metadata;
+                modelState.displayName = displayName;
+            }
         }
 
         // Handle search metadata

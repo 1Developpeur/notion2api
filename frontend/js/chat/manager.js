@@ -48,11 +48,21 @@ window.NotionAI.Chat.Manager = {
         document.getElementById('headerTitle').classList.remove('hidden');
 
         chat.messages.forEach(msg => {
+            const restoredModelName = msg.role === 'assistant'
+                ? (msg.modelMetadata
+                    ? window.NotionAI.API.Models.getResponseModelDisplayName(msg.modelMetadata, msg.requestedModel || '')
+                    : (msg.requestedModelDisplayName
+                        ? `Requested ${msg.requestedModelDisplayName} · unverified`
+                        : (msg.modelDisplayName && /^requested/i.test(String(msg.modelDisplayName))
+                            ? msg.modelDisplayName
+                            : 'Model unverified')))
+                : null;
             const wrapper = window.NotionAI.Chat.Renderer.appendMessage(
                 msg.role,
                 msg.content,
                 true,
-                msg.modelDisplayName || null
+                restoredModelName,
+                msg.createdAt || msg.created_at || msg.timestamp || null
             );
 
             if (msg.role === 'assistant') {
@@ -79,31 +89,66 @@ window.NotionAI.Chat.Manager = {
         this.renderChatList();
     },
 
+    _visibleLocalChats() {
+        const chats = window.NotionAI.Core.State.get('chats') || [];
+        const query = (document.getElementById('searchInput')?.value || '').trim().toLowerCase();
+        if (!query) return chats.slice();
+        return chats.filter(chat => {
+            const text = [
+                chat?.title,
+                chat?.id,
+                ...(Array.isArray(chat?.messages) ? chat.messages.map(msg => msg?.content || '') : [])
+            ].map(value => String(value || '').toLowerCase()).join('\n');
+            return text.includes(query);
+        });
+    },
+
+    _sortedLocalChats(chats) {
+        const sort = localStorage.getItem('notion_local_chat_sort') || 'date_desc';
+        const copy = chats.slice();
+        copy.sort((a, b) => {
+            if (sort === 'messages_desc') {
+                return this._chatMessageCount(b) - this._chatMessageCount(a) || this._chatLastTimestamp(b) - this._chatLastTimestamp(a);
+            }
+            if (sort === 'messages_asc') {
+                return this._chatMessageCount(a) - this._chatMessageCount(b) || this._chatLastTimestamp(b) - this._chatLastTimestamp(a);
+            }
+            if (sort === 'date_asc') {
+                return this._chatLastTimestamp(a) - this._chatLastTimestamp(b);
+            }
+            return this._chatLastTimestamp(b) - this._chatLastTimestamp(a);
+        });
+        return copy;
+    },
+
+    _groupByDay(chats) {
+        const groups = [];
+        const byLabel = new Map();
+        for (const chat of chats) {
+            const label = this._chatDayLabel(chat);
+            if (!byLabel.has(label)) {
+                const group = { label, items: [] };
+                byLabel.set(label, group);
+                groups.push(group);
+            }
+            byLabel.get(label).items.push(chat);
+        }
+        return groups;
+    },
+
     handleChatClick(e, chatId) {
         if (window.NotionAI.Core.State.get('isGenerating')) return;
-        const chats = window.NotionAI.Core.State.get('chats');
-        const starred = chats.filter(c => c.starred).sort((a, b) => b.id - a.id);
-        const recent = chats.filter(c => !c.starred).sort((a, b) => b.id - a.id);
-        const searchVal = (document.getElementById('searchInput')?.value || '').trim().toLowerCase();
-        const filter = searchVal ? c => c.title.toLowerCase().includes(searchVal) : null;
-        
-        const starredFiltered = filter ? starred.filter(filter) : starred;
-        const recentFiltered = filter ? recent.filter(filter) : recent;
-        const allRendered = [...starredFiltered, ...recentFiltered];
-        
+        const allRendered = this._sortedLocalChats(this._visibleLocalChats());
         let selected = [...(window.NotionAI.Core.State.get('selectedChatIds') || [])];
-        
+
         if (e.ctrlKey || e.metaKey) {
             if (selected.includes(chatId)) {
                 selected = selected.filter(id => id !== chatId);
                 window.NotionAI.Core.State.set('selectedChatIds', selected);
                 if (window.NotionAI.Core.State.get('currentChatId') === chatId) {
                     const nextActive = selected[selected.length - 1] || null;
-                    if (nextActive) {
-                        this.selectChat(nextActive);
-                    } else {
-                        this.startNewChat();
-                    }
+                    if (nextActive) this.selectChat(nextActive);
+                    else this.startNewChat();
                 } else {
                     this.renderChatList();
                 }
@@ -116,12 +161,11 @@ window.NotionAI.Chat.Manager = {
             const endIdx = allRendered.findIndex(c => c.id === chatId);
             let startIdx = allRendered.findIndex(c => c.id === window.NotionAI.Core.State.get('currentChatId'));
             if (startIdx === -1) startIdx = 0;
-            
             const minIdx = Math.min(startIdx, endIdx);
             const maxIdx = Math.max(startIdx, endIdx);
             const newSelected = [];
             for (let i = minIdx; i <= maxIdx; i++) {
-                newSelected.push(allRendered[i].id);
+                if (allRendered[i]?.id) newSelected.push(allRendered[i].id);
             }
             window.NotionAI.Core.State.set('selectedChatIds', newSelected);
             this.selectChat(chatId);
@@ -165,11 +209,8 @@ window.NotionAI.Chat.Manager = {
 
         const currentChatId = window.NotionAI.Core.State.get('currentChatId');
         if (targets.includes(currentChatId)) {
-            if (newSelected.length > 0) {
-                this.selectChat(newSelected[newSelected.length - 1]);
-            } else {
-                this.startNewChat();
-            }
+            if (newSelected.length > 0) this.selectChat(newSelected[newSelected.length - 1]);
+            else this.startNewChat();
         } else {
             this.renderChatList();
         }
@@ -177,12 +218,8 @@ window.NotionAI.Chat.Manager = {
 
     renameChat(chatId, newTitle) {
         window.NotionAI.Chat.Storage.updateChatTitle(chatId, newTitle);
-
         const currentChatId = window.NotionAI.Core.State.get('currentChatId');
-        if (currentChatId === chatId) {
-            document.getElementById('headerTitle').textContent = newTitle;
-        }
-
+        if (currentChatId === chatId) document.getElementById('headerTitle').textContent = newTitle;
         this.renderChatList();
     },
 
@@ -191,27 +228,91 @@ window.NotionAI.Chat.Manager = {
         this.renderChatList();
     },
 
-    renderChatList() {
+    _messageTimestamp(message) {
+        const value = message?.createdAt || message?.created_at || message?.timestamp || message?.time || '';
+        if (typeof value === 'number') return value;
+        const text = String(value || '').trim();
+        if (/^\d+$/.test(text)) return Number(text);
+        const parsed = Date.parse(text);
+        return Number.isFinite(parsed) ? parsed : 0;
+    },
+
+    _chatLastTimestamp(chat) {
+        const messages = Array.isArray(chat?.messages) ? chat.messages : [];
+        for (let i = messages.length - 1; i >= 0; i--) {
+            const ts = this._messageTimestamp(messages[i]);
+            if (ts) return ts;
+        }
+        const fallback = chat?.updatedAt || chat?.createdAt || chat?.id || '';
+        if (typeof fallback === 'number') return fallback;
+        const text = String(fallback || '').trim();
+        if (/^\d+$/.test(text)) return Number(text);
+        const parsed = Date.parse(text);
+        return Number.isFinite(parsed) ? parsed : 0;
+    },
+
+    _chatTimeLabel(chat) {
+        const ts = this._chatLastTimestamp(chat);
+        if (!ts) return 'Unknown time';
+        const date = new Date(ts);
+        if (Number.isNaN(date.getTime())) return 'Unknown time';
+        return date.toLocaleTimeString(undefined, { hour: 'numeric', minute: '2-digit', hour12: true });
+    },
+
+    _chatDayLabel(chat) {
+        const ts = this._chatLastTimestamp(chat);
+        if (!ts) return 'Unknown date';
+        const date = new Date(ts);
+        if (Number.isNaN(date.getTime())) return 'Unknown date';
+        const today = new Date();
+        const startToday = new Date(today.getFullYear(), today.getMonth(), today.getDate()).getTime();
+        const startDate = new Date(date.getFullYear(), date.getMonth(), date.getDate()).getTime();
+        const diffDays = Math.round((startToday - startDate) / 86400000);
+        if (diffDays === 0) return 'Today';
+        if (diffDays === 1) return 'Yesterday';
+        return date.toLocaleDateString(undefined, { month: 'short', day: 'numeric' });
+    },
+
+    _chatMessageCount(chat) {
+        return Array.isArray(chat?.messages) ? chat.messages.length : 0;
+    },
+
+    renderChatList(options = {}) {
         const chatList = document.getElementById('chatList');
+        if (!chatList) return;
         chatList.innerHTML = '';
+        if (options.suppressLocal) return;
 
-        const chats = window.NotionAI.Core.State.get('chats');
         const currentChatId = window.NotionAI.Core.State.get('currentChatId');
-
-        const starred = chats.filter(c => c.starred).sort((a, b) => b.id - a.id);
-        const recent = chats.filter(c => !c.starred).sort((a, b) => b.id - a.id);
+        const selected = window.NotionAI.Core.State.get('selectedChatIds') || [];
+        const sortedChats = this._sortedLocalChats(this._visibleLocalChats());
+        const groups = this._groupByDay(sortedChats);
 
         const renderItems = (items) => {
             items.forEach(chat => {
                 const item = document.createElement('div');
-                const selected = window.NotionAI.Core.State.get('selectedChatIds') || [];
                 const isSelected = selected.includes(chat.id);
                 item.className = `chat-item${chat.id === currentChatId ? ' active' : ''}${isSelected ? ' selected' : ''}`;
                 item.onclick = (e) => this.handleChatClick(e, chat.id);
 
+                const textWrap = document.createElement('div');
+                textWrap.style.minWidth = '0';
+                textWrap.style.flex = '1';
+                textWrap.style.display = 'flex';
+                textWrap.style.flexDirection = 'column';
+                textWrap.style.gap = '2px';
+
                 const title = document.createElement('span');
                 title.className = 'chat-item-title';
-                title.textContent = chat.title;
+                title.textContent = `${chat.starred ? '★ ' : ''}${chat.title || chat.id}`;
+
+                const meta = document.createElement('span');
+                meta.className = 'chat-history-main-meta';
+                const localCount = this._chatMessageCount(chat);
+                meta.textContent = `${localCount} message${localCount === 1 ? '' : 's'} · Last ${this._chatTimeLabel(chat)}`;
+
+                textWrap.appendChild(title);
+                textWrap.appendChild(meta);
 
                 const menuContainer = document.createElement('div');
                 menuContainer.className = 'chat-dropdown-container';
@@ -228,30 +329,29 @@ window.NotionAI.Chat.Manager = {
                 };
 
                 const dropdown = this._createDropdown(chat);
-
                 menuContainer.appendChild(menuBtn);
                 menuContainer.appendChild(dropdown);
 
-                item.appendChild(title);
+                item.appendChild(textWrap);
                 item.appendChild(menuContainer);
                 chatList.appendChild(item);
             });
         };
 
-        if (starred.length > 0) {
-            const header = document.createElement('div');
-            header.className = 'chat-section-header';
-            header.textContent = 'Starred';
-            chatList.appendChild(header);
-            renderItems(starred);
+        if (!groups.length) {
+            const empty = document.createElement('div');
+            empty.className = 'chat-history-main-empty';
+            empty.textContent = 'No local chats match this filter.';
+            chatList.appendChild(empty);
+            return;
         }
 
-        if (recent.length > 0) {
+        for (const group of groups) {
             const header = document.createElement('div');
             header.className = 'chat-section-header';
-            header.textContent = 'Recents';
+            header.textContent = group.label;
             chatList.appendChild(header);
-            renderItems(recent);
+            renderItems(group.items);
         }
     },
 
@@ -299,9 +399,7 @@ window.NotionAI.Chat.Manager = {
 
     toggleChatDropdown(e, chatId) {
         e.stopPropagation();
-        if (this._activeDropdownId && this._activeDropdownId !== chatId) {
-            this.closeChatDropdown();
-        }
+        if (this._activeDropdownId && this._activeDropdownId !== chatId) this.closeChatDropdown();
         const menu = document.getElementById(`dropdown-${chatId}`);
         if (menu) {
             if (menu.classList.contains('open')) {

@@ -21,48 +21,50 @@ window.NotionAI.Chat.Renderer = {
             return { wrapper, bubble };
         }
 
-        // Assistant message
         const content = document.createElement('div');
         content.className = 'assistant-content';
-
-        // Meta row: model name + timestamp + copy btn
-        const meta = document.createElement('div');
-        meta.className = 'assistant-meta';
-
-        const modelLabel = document.createElement('span');
-        modelLabel.className = 'assistant-model-name';
-        modelLabel.textContent = modelDisplayName;
-        meta.appendChild(modelLabel);
-
-        const timestamp = document.createElement('span');
-        timestamp.className = 'message-timestamp';
-        timestamp.textContent = this._formatTime(new Date());
-        meta.appendChild(timestamp);
-
-        const copyBtn = document.createElement('button');
-        copyBtn.className = 'message-copy-btn';
-        copyBtn.textContent = 'Copy';
-        copyBtn.onclick = () => {
-            const mdDiv = wrapper.mdDivRef;
-            if (mdDiv) {
-                navigator.clipboard.writeText(mdDiv.innerText).then(() => {
-                    copyBtn.textContent = 'Copied!';
-                    setTimeout(() => copyBtn.textContent = 'Copy', 2000);
-                });
-            }
-        };
-        meta.appendChild(copyBtn);
-
-        content.appendChild(meta);
         wrapper.appendChild(content);
 
         return { wrapper, bubble: content };
     },
 
-    _formatTime(date) {
-        const h = date.getHours().toString().padStart(2, '0');
-        const m = date.getMinutes().toString().padStart(2, '0');
-        return `${h}:${m}`;
+    _coerceDate(value) {
+        if (value instanceof Date) return value;
+        if (typeof value === 'number' && Number.isFinite(value)) return new Date(value);
+        const text = String(value || '').trim();
+        if (/^\d+$/.test(text)) return new Date(Number(text));
+        const parsed = Date.parse(text);
+        return Number.isFinite(parsed) ? new Date(parsed) : new Date();
+    },
+
+    _formatTime(value) {
+        const date = this._coerceDate(value);
+        if (Number.isNaN(date.getTime())) return '';
+        return date.toLocaleTimeString(undefined, { hour: 'numeric', minute: '2-digit', hour12: true });
+    },
+
+    /**
+     * Updates assistant model label after backend actual-model metadata arrives.
+     */
+    updateModelLabel(wrapper, modelDisplayName, metadata = null) {
+        if (!wrapper || !modelDisplayName) return;
+        const label = wrapper.querySelector('.assistant-model-name');
+        if (!label) return;
+        label.textContent = modelDisplayName;
+        wrapper.modelDisplayName = modelDisplayName;
+        if (metadata && typeof metadata === 'object') {
+            wrapper.modelMetadata = metadata;
+            const requested = metadata.requested_model || '';
+            const notionRequested = metadata.notion_requested_model || '';
+            const actual = metadata.actual_model || metadata.notion_model_name || metadata.notion_step_model || '';
+            const provider = metadata.model_provider || '';
+            const details = [];
+            if (actual) details.push(`Actual: ${actual}`);
+            if (provider) details.push(`Provider: ${provider}`);
+            if (requested) details.push(`Requested: ${requested}`);
+            if (notionRequested) details.push(`Notion requested: ${notionRequested}`);
+            label.title = details.join('\n');
+        }
     },
 
     /**
@@ -202,18 +204,15 @@ window.NotionAI.Chat.Renderer = {
     /**
      * Appends a message to the chat container
      */
-    appendMessage(role, content, isFinished = false, modelDisplayName = null) {
-        const resolvedName = (modelDisplayName ||
-            window.NotionAI.API.Models.getModelDisplayName(
-                window.NotionAI.API.Models.getCurrentModel()
-            )).trim() || 'Assistant';
+    appendMessage(role, content, isFinished = false, modelDisplayName = null, timestamp = null) {
+        const resolvedName = (modelDisplayName || (role === 'assistant' ? 'Model unverified' : '')).trim() || 'Assistant';
 
         const { wrapper, bubble } = this.createMessageElement(role, resolvedName);
 
         if (role === 'user') {
             bubble.textContent = content;
         } else {
-            const refs = this._buildAssistantContent(bubble, content, isFinished, resolvedName);
+            const refs = this._buildAssistantContent(bubble, content, isFinished, resolvedName, timestamp);
             Object.assign(wrapper, refs);
             this._setupPanelListeners(wrapper);
         }
@@ -225,7 +224,7 @@ window.NotionAI.Chat.Renderer = {
     /**
      * Builds assistant message content (thinking card + search card + markdown)
      */
-    _buildAssistantContent(container, content, isFinished, modelDisplayName) {
+    _buildAssistantContent(container, content, isFinished, modelDisplayName, timestamp = null) {
         // Search card
         const searchCard = document.createElement('div');
         searchCard.className = 'search-card hidden';
@@ -276,6 +275,31 @@ window.NotionAI.Chat.Renderer = {
                 window.NotionAI.Utils.DOM.addCodeBlockCopyButtons(mdDiv);
             }
         }
+
+        const footer = document.createElement('div');
+        footer.className = 'assistant-meta';
+
+        const copyBtn = document.createElement('button');
+        copyBtn.className = 'message-copy-btn';
+        copyBtn.textContent = 'Copy';
+        copyBtn.onclick = () => {
+            navigator.clipboard.writeText(mdDiv.innerText).then(() => {
+                copyBtn.textContent = 'Copied!';
+                setTimeout(() => copyBtn.textContent = 'Copy', 2000);
+            });
+        };
+        footer.appendChild(copyBtn);
+
+        const modelLabel = document.createElement('span');
+        modelLabel.className = 'assistant-model-name';
+        modelLabel.textContent = modelDisplayName;
+        footer.appendChild(modelLabel);
+
+        const timestampEl = document.createElement('span');
+        timestampEl.className = 'message-timestamp';
+        timestampEl.textContent = this._formatTime(timestamp || new Date());
+        footer.appendChild(timestampEl);
+        container.appendChild(footer);
 
         return {
             bubbleRef: container,

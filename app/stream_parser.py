@@ -569,6 +569,59 @@ def _safe_int(value: Any) -> int:
         return 0
 
 
+def _non_empty_str(value: Any) -> str:
+    if isinstance(value, str):
+        return value.strip()
+    if isinstance(value, (int, float)) and not isinstance(value, bool):
+        return str(value)
+    return ""
+
+
+def _extract_model_metadata_from_step(
+    step: dict[str, Any],
+    *,
+    message_id: str = "",
+    outer_value: dict[str, Any] | None = None,
+    inner_value: dict[str, Any] | None = None,
+) -> dict[str, Any]:
+    if not isinstance(step, dict):
+        return {}
+    notion_model_name = _non_empty_str(step.get("notionModelName"))
+    notion_step_model = _non_empty_str(step.get("model"))
+    model_provider = _non_empty_str(step.get("modelProvider"))
+    for part in step.get("value", []) if isinstance(step.get("value"), list) else []:
+        if not isinstance(part, dict):
+            continue
+        notion_model_name = notion_model_name or _non_empty_str(part.get("notionModelName"))
+        model_provider = model_provider or _non_empty_str(part.get("modelProvider"))
+    actual_model = notion_model_name or notion_step_model
+    if not any((actual_model, notion_step_model, notion_model_name, model_provider)):
+        return {}
+    out: dict[str, Any] = {
+        "actual_model": actual_model,
+        "notion_step_model": notion_step_model,
+        "notion_model_name": notion_model_name,
+        "model_provider": model_provider,
+        "source_step_type": _non_empty_str(step.get("type")),
+        "source_message_id": message_id,
+        "trace_id": _non_empty_str(step.get("traceId")),
+    }
+    if isinstance(inner_value, dict):
+        data = inner_value.get("data")
+        if isinstance(data, dict):
+            inference_id = _non_empty_str(data.get("inference_id"))
+            if inference_id:
+                out["inference_id"] = inference_id
+        created_time = inner_value.get("created_time")
+        if created_time is not None:
+            out["message_created_time"] = created_time
+    if isinstance(outer_value, dict):
+        role = _non_empty_str(outer_value.get("role"))
+        if role:
+            out["record_role"] = role
+    return {k: v for k, v in out.items() if v not in (None, "", [], {})}
+
+
 def _extract_final_content_from_record_map(data: dict[str, Any]) -> dict[str, Any] | None:
     record_map = data.get("recordMap")
     if not isinstance(record_map, dict):
@@ -594,6 +647,12 @@ def _extract_final_content_from_record_map(data: dict[str, Any]) -> dict[str, An
         if not isinstance(step, dict):
             continue
 
+        model_metadata = _extract_model_metadata_from_step(
+            step,
+            message_id=str(msg_id),
+            outer_value=outer_value,
+            inner_value=inner_value,
+        )
         step_type = str(step.get("type", "") or "").lower()
         content = ""
 
@@ -617,6 +676,7 @@ def _extract_final_content_from_record_map(data: dict[str, Any]) -> dict[str, An
                     "edited_at": _safe_int(outer_value.get("last_edited_time")),
                     "length": len(cleaned),
                     "text": cleaned,
+                    "model_metadata": model_metadata,
                 }
             )
 
@@ -671,6 +731,7 @@ def _extract_final_content_from_record_map(data: dict[str, Any]) -> dict[str, An
         "source_type": str(best.get("step_type", "") or "unknown"),
         "source_message_id": str(best.get("message_id", "") or ""),
         "source_length": int(best.get("length", 0)),
+        "model_metadata": best.get("model_metadata") if isinstance(best.get("model_metadata"), dict) else {},
     }
 
 
@@ -802,6 +863,9 @@ def parse_stream(response: requests.Response) -> Generator[dict[str, Any], None,
         if data_type == "record-map":
             final_payload = _extract_final_content_from_record_map(data)
             if final_payload and final_payload.get("text"):
+                model_metadata = final_payload.get("model_metadata")
+                if isinstance(model_metadata, dict) and model_metadata:
+                    yield {"type": "model_metadata", "data": model_metadata}
                 yield {"type": "final_content", **final_payload}
             continue
 

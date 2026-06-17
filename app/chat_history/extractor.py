@@ -107,8 +107,42 @@ def _strip_internal_markup(text: str) -> str:
     return re.sub(r"<lang\b[^>]*/>", "", text or "").strip()
 
 
+def message_model_metadata(value: dict[str, Any]) -> dict[str, Any]:
+    if not isinstance(value, dict):
+        return {}
+    step = value.get("step") if isinstance(value.get("step"), dict) else value
+    if not isinstance(step, dict):
+        return {}
+    values = step.get("value") if isinstance(step.get("value"), list) else []
+    notion_step_model = _first_scalar_text(step, ("model",)) or ""
+    notion_model_name = _first_scalar_text(step, ("notionModelName",)) or ""
+    model_provider = _first_scalar_text(step, ("modelProvider",)) or ""
+    for part in values:
+        if not isinstance(part, dict):
+            continue
+        notion_model_name = notion_model_name or _first_scalar_text(part, ("notionModelName",)) or ""
+        model_provider = model_provider or _first_scalar_text(part, ("modelProvider",)) or ""
+    actual_model = notion_model_name or notion_step_model
+    if not any((actual_model, notion_step_model, notion_model_name, model_provider)):
+        return {}
+    data_value = value.get("data")
+    inference_id = data_value.get("inference_id") if isinstance(data_value, dict) else ""
+    out = {
+        "actual_model": actual_model,
+        "notion_step_model": notion_step_model,
+        "notion_model_name": notion_model_name,
+        "model_provider": model_provider,
+        "source_step_type": str(step.get("type") or value.get("type") or ""),
+        "trace_id": _first_scalar_text(step, ("traceId",)) or "",
+        "inference_id": inference_id or "",
+    }
+    return {k: v for k, v in out.items() if v not in (None, "", [], {})}
+
+
 def visible_message_text(value: dict[str, Any]) -> str:
     """Return only the text Notion shows as chat content, excluding thinking/tool bookkeeping."""
+    if isinstance(value.get("step"), dict):
+        return visible_message_text(value["step"])
     message_type = str(value.get("type") or "").strip()
     if message_type == "agent-inference" and isinstance(value.get("value"), list):
         chunks: list[str] = []
@@ -129,6 +163,8 @@ def visible_message_text(value: dict[str, Any]) -> str:
 
 
 def visible_message_role(value: dict[str, Any]) -> str | None:
+    if isinstance(value.get("step"), dict):
+        return visible_message_role(value["step"])
     message_type = str(value.get("type") or "").strip()
     if message_type == "agent-inference":
         return "assistant"
@@ -312,12 +348,17 @@ def normalize_message(message_id: str | None, raw: dict[str, Any], fallback_thre
     if role is None:
         return None
     created_at = _first_scalar_text(value, THREAD_CREATED_FIELDS)
+    model_metadata = message_model_metadata(value)
     return {
         "id": str(resolved_id or _synthetic_message_id(thread_id, text)),
         "thread_id": thread_id,
         "role": role,
         "text": text,
         "created_time": created_at or value.get("created_time") or value.get("createdTime"),
+        "actual_model": model_metadata.get("actual_model"),
+        "model_provider": model_metadata.get("model_provider"),
+        "notion_model_name": model_metadata.get("notion_model_name"),
+        "model_metadata": model_metadata,
         "raw": value,
     }
 

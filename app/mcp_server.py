@@ -4,6 +4,7 @@ import argparse
 import json
 import os
 import re
+import sqlite3
 import uuid
 from pathlib import Path
 from typing import Any, Literal
@@ -21,11 +22,11 @@ except ImportError:
 if load_dotenv:
     load_dotenv()
 
-DEFAULT_BASE_URL = "http://127.0.0.1:8000"
+DEFAULT_BASE_URL = "http://127.0.0.1:8120"
 DEFAULT_MCP_HOST = "127.0.0.1"
 DEFAULT_MCP_PORT = 8130
 DEFAULT_MCP_PATH = "/mcp"
-DEFAULT_TIMEOUT_SECONDS = 180.0
+DEFAULT_TIMEOUT_SECONDS = 900.0
 DEFAULT_MODEL = "claude-opus4.8"
 DEFAULT_SESSION_NAME = "op"
 DEFAULT_SESSION_STATE_PATH = Path(
@@ -47,12 +48,19 @@ class HealthOutput(BaseModel):
     raw: dict[str, Any] = Field(default_factory=dict, description="Raw backend health response.")
 
 
+class ModelInfo(BaseModel):
+    id: str = Field(description="Model id.")
+    object: str | None = Field(default=None, description="OpenAI-style object type, usually model.")
+    created: int | None = Field(default=None, description="Creation timestamp, if supplied.")
+    owned_by: str | None = Field(default=None, description="Provider or owner, if supplied.")
+
+
 class ListModelsOutput(BaseModel):
     ok: bool = Field(description="Whether the models call succeeded.")
     status_code: int | None = Field(default=None, description="HTTP status code returned by Notion2API.")
     count: int = Field(default=0, description="Number of model entries returned.")
-    models: list[dict[str, Any]] = Field(default_factory=list, description="Raw OpenAI-style model entries.")
-    raw: dict[str, Any] = Field(default_factory=dict, description="Raw backend model response.")
+    models: list[ModelInfo] = Field(default_factory=list, description="JSON-safe OpenAI-style model entries.")
+    error: str | None = Field(default=None, description="Error summary if the backend did not return models.")
 
 
 class ChatOutput(BaseModel):
@@ -61,6 +69,12 @@ class ChatOutput(BaseModel):
     model: str = Field(description="Requested model id passed through the MCP wrapper.")
     actual_model: str = Field(default="", description="Actual Notion model/provider route used, if returned.")
     model_metadata: dict[str, Any] | None = Field(default=None, description="Notion2API model metadata, if any.")
+    requested_model: str = Field(default="", description="Requested model id originally passed to the MCP wrapper.")
+    backend_base_url: str = Field(default="", description="Canonical Notion2API backend URL used by this MCP wrapper.")
+    timeout_seconds: float | None = Field(default=None, description="HTTP timeout used by the MCP wrapper for backend calls.")
+    session_state_path: str = Field(default="", description="Path to the MCP session state file.")
+    local_conversations_db: str = Field(default="", description="Expected local Notion2API conversations DB path.")
+    imported_history_db: str = Field(default="", description="Expected imported Notion history DB path.")
     session_name: str | None = Field(default=None, description="Normalized MCP session name.")
     conversation_id: str | None = Field(default=None, description="Stable Notion2API conversation id used for the request.")
     session_created: bool | None = Field(default=None, description="True when the wrapper created a new MCP conversation binding.")
@@ -74,13 +88,14 @@ class ResponsesOutput(BaseModel):
     model: str = Field(description="Requested model id passed through the MCP wrapper.")
     actual_model: str = Field(default="", description="Actual Notion model/provider route used, if returned.")
     model_metadata: dict[str, Any] | None = Field(default=None, description="Notion2API model metadata, if any.")
+    requested_model: str = Field(default="", description="Requested model id originally passed to the MCP wrapper.")
+    backend_base_url: str = Field(default="", description="Canonical Notion2API backend URL used by this MCP wrapper.")
+    timeout_seconds: float | None = Field(default=None, description="HTTP timeout used by the MCP wrapper for backend calls.")
+    session_state_path: str = Field(default="", description="Path to the MCP session state file.")
+    local_conversations_db: str = Field(default="", description="Expected local Notion2API conversations DB path.")
+    imported_history_db: str = Field(default="", description="Expected imported Notion history DB path.")
     response_text: str = Field(default="", description="Extracted response output text.")
     raw: dict[str, Any] = Field(default_factory=dict, description="Raw backend response.")
-
-
-class SessionInfo(BaseModel):
-    session_name: str = Field(description="Normalized MCP session name.")
-    conversation_id: str = Field(description="Stable conversation id bound to this MCP session.")
 
 
 class ListSessionsOutput(BaseModel):
@@ -88,7 +103,7 @@ class ListSessionsOutput(BaseModel):
     count: int = Field(description="Number of known MCP sessions.")
     default_session: str = Field(description="Default session name used by OP calls.")
     state_path: str = Field(description="Path to the MCP session state file.")
-    sessions: list[SessionInfo] = Field(default_factory=list, description="Known named MCP session bindings.")
+    sessions: list[dict[str, str]] = Field(default_factory=list, description="Known named MCP session bindings.")
 
 
 class SessionActionOutput(BaseModel):
@@ -100,6 +115,28 @@ class SessionActionOutput(BaseModel):
     previous_conversation_id: str | None = Field(default=None, description="Prior conversation id replaced or renamed, if any.")
     overwritten: bool = Field(default=False, description="Whether an existing target session was overwritten.")
     state_path: str = Field(description="Path to the MCP session state file.")
+
+
+class MessagesOutput(BaseModel):
+    ok: bool = Field(description="Whether local conversation messages were read successfully.")
+    session_name: str = Field(default="", description="Normalized MCP session name used for lookup.")
+    conversation_id: str = Field(default="", description="Resolved conversation id.")
+    count: int = Field(default=0, description="Number of returned messages.")
+    total_count: int = Field(default=0, description="Total local message count for the conversation.")
+    db_path: str = Field(default="", description="Local Notion2API conversations database path.")
+    messages: list[dict[str, Any]] = Field(default_factory=list, description="Messages in chronological order.")
+    error: str | None = Field(default=None, description="Error summary if messages could not be read.")
+
+
+class LastResponseOutput(BaseModel):
+    ok: bool = Field(description="Whether the local last-response lookup completed.")
+    found: bool = Field(default=False, description="Whether an assistant response was found.")
+    session_name: str = Field(default="", description="Normalized MCP session name used for lookup.")
+    conversation_id: str = Field(default="", description="Resolved conversation id.")
+    response_text: str = Field(default="", description="Latest assistant visible response content.")
+    message: dict[str, Any] | None = Field(default=None, description="Latest assistant message record, if found.")
+    db_path: str = Field(default="", description="Local Notion2API conversations database path.")
+    error: str | None = Field(default=None, description="Error summary if lookup failed.")
 
 
 class Notion2APIClient:
@@ -145,6 +182,51 @@ def _json_or_error(response: httpx.Response) -> dict[str, Any]:
         data.setdefault("status_code", response.status_code)
         return data
     return {"ok": True, "status_code": response.status_code, "data": data}
+
+
+def _string_or_none(value: Any) -> str | None:
+    if isinstance(value, str) and value.strip():
+        return value.strip()
+    return None
+
+
+def _int_or_none(value: Any) -> int | None:
+    if isinstance(value, bool):
+        return None
+    if isinstance(value, int):
+        return value
+    return None
+
+
+def _model_info_from_entry(entry: Any) -> ModelInfo | None:
+    if not isinstance(entry, dict):
+        return None
+    model_id = _string_or_none(entry.get("id"))
+    if not model_id:
+        return None
+    return ModelInfo(
+        id=model_id,
+        object=_string_or_none(entry.get("object")),
+        created=_int_or_none(entry.get("created")),
+        owned_by=_string_or_none(entry.get("owned_by")),
+    )
+
+
+def _error_summary(data: dict[str, Any]) -> str | None:
+    error = data.get("error") if isinstance(data, dict) else None
+    if error is None:
+        return None
+    if isinstance(error, str):
+        return error[:1000]
+    if isinstance(error, dict):
+        message = error.get("message")
+        if isinstance(message, str) and message.strip():
+            return message.strip()[:1000]
+        try:
+            return json.dumps(error, ensure_ascii=False)[:1000]
+        except Exception:
+            return str(error)[:1000]
+    return str(error)[:1000]
 
 
 def _extract_actual_model(data: dict[str, Any]) -> str:
@@ -193,6 +275,27 @@ def _extract_responses_text(data: dict[str, Any]) -> str:
             if isinstance(block, dict) and isinstance(block.get("text"), str):
                 parts.append(block["text"])
     return "\n".join(parts)
+
+
+def _local_conversation_db_path() -> Path:
+    root = Path(__file__).resolve().parents[1]
+    configured = os.getenv("DB_PATH", "").strip()
+    if configured:
+        path = Path(configured)
+        return path if path.is_absolute() else root / path
+    return root / "data" / "conversations.db"
+
+
+def _runtime_audit(client: Notion2APIClient, requested_model: str) -> dict[str, Any]:
+    root = Path(__file__).resolve().parents[1]
+    return {
+        "requested_model": requested_model,
+        "backend_base_url": client.base_url,
+        "timeout_seconds": client.timeout,
+        "session_state_path": str(DEFAULT_SESSION_STATE_PATH),
+        "local_conversations_db": str(_local_conversation_db_path()),
+        "imported_history_db": str(root / "data" / "chat_history.db"),
+    }
 
 
 def _session_key(session_name: str | None) -> str:
@@ -246,6 +349,91 @@ def _extract_conversation_id(data: dict[str, Any]) -> str:
             if isinstance(value, str) and value.strip():
                 return value.strip()
     return ""
+
+
+def _resolve_session_conversation_id(session_name: str | None = None, conversation_id: str | None = None) -> tuple[str, str, str | None]:
+    key = _session_key(session_name)
+    explicit = (conversation_id or "").strip()
+    if explicit:
+        return key, explicit, None
+    sessions = _load_session_state()
+    resolved = sessions.get(key, "").strip()
+    if not resolved:
+        return key, "", f"No conversation id is bound to MCP session '{key}'."
+    return key, resolved, None
+
+
+def _read_local_messages(session_name: str | None = None, conversation_id: str | None = None, limit: int = 10) -> MessagesOutput:
+    key, resolved_id, error = _resolve_session_conversation_id(session_name, conversation_id)
+    db_path = _local_conversation_db_path()
+    if error:
+        return MessagesOutput(ok=False, session_name=key, conversation_id=resolved_id, db_path=str(db_path), error=error)
+    if not db_path.exists():
+        return MessagesOutput(ok=False, session_name=key, conversation_id=resolved_id, db_path=str(db_path), error="Local conversations database does not exist.")
+    safe_limit = max(1, min(int(limit or 10), 100))
+    try:
+        with sqlite3.connect(str(db_path), timeout=10) as conn:
+            conn.row_factory = sqlite3.Row
+            total_row = conn.execute("SELECT COUNT(1) AS cnt FROM messages WHERE conversation_id = ?", (resolved_id,)).fetchone()
+            total = int(total_row["cnt"] or 0) if total_row else 0
+            rows = conn.execute(
+                """
+                SELECT id, role, content, COALESCE(thinking, '') AS thinking, created_at
+                FROM messages
+                WHERE conversation_id = ?
+                ORDER BY created_at DESC, id DESC
+                LIMIT ?
+                """,
+                (resolved_id, safe_limit),
+            ).fetchall()
+        messages = [
+            {
+                "id": int(row["id"]),
+                "role": str(row["role"] or ""),
+                "content": str(row["content"] or ""),
+                "thinking": str(row["thinking"] or ""),
+                "created_at": int(row["created_at"] or 0),
+            }
+            for row in rows
+        ]
+        messages.reverse()
+        return MessagesOutput(ok=True, session_name=key, conversation_id=resolved_id, count=len(messages), total_count=total, db_path=str(db_path), messages=messages)
+    except Exception as exc:
+        return MessagesOutput(ok=False, session_name=key, conversation_id=resolved_id, db_path=str(db_path), error=f"{type(exc).__name__}: {exc}")
+
+
+def _read_last_local_response(session_name: str | None = None, conversation_id: str | None = None) -> LastResponseOutput:
+    key, resolved_id, error = _resolve_session_conversation_id(session_name, conversation_id)
+    db_path = _local_conversation_db_path()
+    if error:
+        return LastResponseOutput(ok=False, session_name=key, conversation_id=resolved_id, db_path=str(db_path), error=error)
+    if not db_path.exists():
+        return LastResponseOutput(ok=False, session_name=key, conversation_id=resolved_id, db_path=str(db_path), error="Local conversations database does not exist.")
+    try:
+        with sqlite3.connect(str(db_path), timeout=10) as conn:
+            conn.row_factory = sqlite3.Row
+            row = conn.execute(
+                """
+                SELECT id, role, content, COALESCE(thinking, '') AS thinking, created_at
+                FROM messages
+                WHERE conversation_id = ? AND role = 'assistant'
+                ORDER BY created_at DESC, id DESC
+                LIMIT 1
+                """,
+                (resolved_id,),
+            ).fetchone()
+        if not row:
+            return LastResponseOutput(ok=True, found=False, session_name=key, conversation_id=resolved_id, db_path=str(db_path))
+        message = {
+            "id": int(row["id"]),
+            "role": str(row["role"] or ""),
+            "content": str(row["content"] or ""),
+            "thinking": str(row["thinking"] or ""),
+            "created_at": int(row["created_at"] or 0),
+        }
+        return LastResponseOutput(ok=True, found=True, session_name=key, conversation_id=resolved_id, response_text=message["content"], message=message, db_path=str(db_path))
+    except Exception as exc:
+        return LastResponseOutput(ok=False, found=False, session_name=key, conversation_id=resolved_id, db_path=str(db_path), error=f"{type(exc).__name__}: {exc}")
 
 
 PROMPT_PACK_DIR = Path(
@@ -399,14 +587,19 @@ def create_server(
     @server.tool(description="List Notion2API models from the configured backend.", structured_output=True)
     async def notion2api_list_models() -> ListModelsOutput:
         data = await client.get("/v1/models")
-        models = data.get("data") if isinstance(data, dict) else None
-        model_list = models if isinstance(models, list) else []
+        raw_models = data.get("data") if isinstance(data, dict) else None
+        model_list = []
+        if isinstance(raw_models, list):
+            for entry in raw_models:
+                info = _model_info_from_entry(entry)
+                if info is not None:
+                    model_list.append(info)
         return ListModelsOutput(
             ok=bool(data.get("ok", False)),
             status_code=data.get("status_code"),
             count=len(model_list),
             models=model_list,
-            raw=data,
+            error=_error_summary(data),
         )
 
     @server.tool(description="Send a single prompt to Notion2API through /v1/chat/completions and return the assistant text. Uses a persistent MCP session unless start_new_chat=true.", structured_output=True)
@@ -440,9 +633,10 @@ def create_server(
         return {
             "ok": data.get("ok", False),
             "status_code": data.get("status_code"),
-            "model": model,
+            "model": _extract_actual_model(data) or data.get("model") or model,
             "actual_model": _extract_actual_model(data),
             "model_metadata": data.get("model_metadata") if isinstance(data.get("model_metadata"), dict) else None,
+            **_runtime_audit(client, model),
             "session_name": session_key,
             "conversation_id": conversation_id,
             "session_created": session_created,
@@ -476,9 +670,10 @@ def create_server(
         return {
             "ok": data.get("ok", False),
             "status_code": data.get("status_code"),
-            "model": model,
+            "model": _extract_actual_model(data) or data.get("model") or model,
             "actual_model": _extract_actual_model(data),
             "model_metadata": data.get("model_metadata") if isinstance(data.get("model_metadata"), dict) else None,
+            **_runtime_audit(client, model),
             "session_name": session_key,
             "conversation_id": conversation_id,
             "session_created": session_created,
@@ -504,9 +699,10 @@ def create_server(
         return {
             "ok": data.get("ok", False),
             "status_code": data.get("status_code"),
-            "model": model,
+            "model": _extract_actual_model(data) or data.get("model") or model,
             "actual_model": _extract_actual_model(data),
             "model_metadata": data.get("model_metadata") if isinstance(data.get("model_metadata"), dict) else None,
+            **_runtime_audit(client, model),
             "response_text": _extract_responses_text(data),
             "raw": data,
         }
@@ -515,15 +711,31 @@ def create_server(
     async def notion2api_list_sessions() -> ListSessionsOutput:
         sessions = _load_session_state()
         items = [
-            SessionInfo(session_name=name, conversation_id=conversation_id)
+            {"session_name": name, "conversation_id": conversation_id}
             for name, conversation_id in sorted(sessions.items())
         ]
         return ListSessionsOutput(
+            ok=True,
             count=len(items),
             default_session=DEFAULT_SESSION_NAME,
             state_path=str(DEFAULT_SESSION_STATE_PATH),
             sessions=items,
         )
+
+    @server.tool(description="Read recent locally persisted messages for a persistent Notion2API MCP session without sending a new chat message. Useful after a client-side timeout.", structured_output=True)
+    async def notion2api_get_messages(
+        session_name: str = DEFAULT_SESSION_NAME,
+        limit: int = 10,
+        conversation_id: str | None = None,
+    ) -> MessagesOutput:
+        return _read_local_messages(session_name=session_name, conversation_id=conversation_id, limit=limit)
+
+    @server.tool(description="Read the latest locally persisted assistant response for a persistent Notion2API MCP session without sending a new chat message. Useful after a client-side timeout.", structured_output=True)
+    async def notion2api_get_last_response(
+        session_name: str = DEFAULT_SESSION_NAME,
+        conversation_id: str | None = None,
+    ) -> LastResponseOutput:
+        return _read_last_local_response(session_name=session_name, conversation_id=conversation_id)
 
     @server.tool(description="Start a fresh persistent Notion2API MCP chat for a named session.", structured_output=True)
     async def notion2api_reset_session(session_name: str = DEFAULT_SESSION_NAME) -> SessionActionOutput:

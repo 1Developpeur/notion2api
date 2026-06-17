@@ -381,7 +381,7 @@ async function handleSend() {
 
     // Monkey-patch streaming to intercept first token
     const originalConsume = window.NotionAI.Chat.Streaming.consumePayload.bind(window.NotionAI.Chat.Streaming);
-    window.NotionAI.Chat.Streaming.consumePayload = function(payload, aw, searchState, thinkingText, fullAiReply) {
+    window.NotionAI.Chat.Streaming.consumePayload = function(payload, aw, searchState, thinkingText, fullAiReply, modelState = null) {
         if (!firstTokenReceived && payload && payload !== '[DONE]') {
             try {
                 const obj = JSON.parse(payload);
@@ -393,12 +393,13 @@ async function handleSend() {
                 }
             } catch(e) {}
         }
-        return originalConsume(payload, aw, searchState, thinkingText, fullAiReply);
+        return originalConsume(payload, aw, searchState, thinkingText, fullAiReply, modelState);
     };
 
     try {
         // Create AI message wrapper
-        aiWrapper = window.NotionAI.Chat.Renderer.appendMessage('assistant', '', false, selectedModelDisplayName);
+        aiWrapper = window.NotionAI.Chat.Renderer.appendMessage('assistant', '', false, `Requested ${selectedModelDisplayName} · waiting for actual`);
+        aiWrapper.requestedModelDisplayName = selectedModelDisplayName;
         aiWrapper._thinkingStartTime = Date.now();
 
         // Start thinking timer on the card
@@ -429,12 +430,22 @@ async function handleSend() {
 
         if (result.fullAiReply.trim()) {
             window.NotionAI.Chat.Renderer.updateAIMessage(aiWrapper, result.fullAiReply, true);
+            const resolvedModelMetadata = result.modelMetadata || aiWrapper?.modelMetadata || null;
+            const resolvedModelDisplayName = result.modelDisplayName
+                || (resolvedModelMetadata ? window.NotionAI.API.Models.getResponseModelDisplayName(resolvedModelMetadata, selectedModel) : null)
+                || `Requested ${selectedModelDisplayName} · unverified`;
+            window.NotionAI.Chat.Renderer.updateModelLabel(aiWrapper, resolvedModelDisplayName, resolvedModelMetadata || {
+                requested_model: selectedModel,
+                requested_model_display: selectedModelDisplayName
+            });
             chat.messages.push({
                 role: 'assistant',
                 content: result.fullAiReply,
                 thinking: result.thinkingText,
                 search: normalizedSearch,
-                modelDisplayName: selectedModelDisplayName
+                modelDisplayName: resolvedModelDisplayName,
+                requestedModelDisplayName: selectedModelDisplayName,
+                modelMetadata: resolvedModelMetadata
             });
             window.NotionAI.Chat.Storage.saveChats();
         } else {

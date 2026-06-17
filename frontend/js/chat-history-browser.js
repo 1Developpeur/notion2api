@@ -1,5 +1,6 @@
 (() => {
   const THREADS_ENDPOINT = '/v1/chat-history/threads';
+  const MODEL_STATS_ENDPOINT = '/v1/chat-history/model-stats';
   const PAGE_SIZE = 50;
   const browserState = {
     threads: [],
@@ -7,7 +8,9 @@
     offset: 0,
     hasMore: false,
     loading: false,
-    activeThreadId: null
+    activeThreadId: null,
+    modelStats: null,
+    modelFilter: ''
   };
 
   function getBaseUrl() {
@@ -45,6 +48,13 @@
       .chat-history-browser-modal .modal-content{width:min(1180px,92vw);height:min(760px,86vh);display:flex;flex-direction:column}
       .chat-history-browser-modal .modal-body{flex:1;min-height:0;display:flex;flex-direction:column;padding:0}
       .chat-history-browser-summary{padding:12px 20px;border-bottom:1px solid var(--border);font-size:12px;color:var(--text-secondary);display:flex;gap:14px;flex-wrap:wrap;align-items:center}
+      .chat-history-browser-summary-row{display:flex;gap:14px;flex-wrap:wrap;align-items:center;width:100%}
+      .chat-history-model-chip{display:inline-flex;align-items:center;gap:4px;border:1px solid var(--border);border-radius:999px;padding:2px 8px;background:var(--bg-secondary);font-size:11px;color:var(--text-secondary);font:inherit;line-height:1.35}
+      button.chat-history-model-chip{cursor:pointer}
+      button.chat-history-model-chip:hover{border-color:var(--border-hover);background:var(--bg-hover);color:var(--text)}
+      .chat-history-model-chip.active{border-color:var(--border-active);color:var(--text);background:var(--bg-hover)}
+      .chat-history-model-chip strong{color:var(--text);font-weight:600}
+      .chat-history-model-stats{display:flex;gap:6px;flex-wrap:wrap;align-items:center;width:100%}
       .chat-history-browser-layout{flex:1;min-height:0;display:grid;grid-template-columns:340px 1fr}
       .chat-history-browser-list{border-right:1px solid var(--border);overflow:auto;padding:12px}
       .chat-history-browser-preview{overflow:auto;padding:24px}
@@ -108,6 +118,13 @@
     document.getElementById('clearChatHistoryBrowserSelectionBtn').addEventListener('click', clearSelection);
     document.getElementById('deleteChatHistoryBrowserBtn').addEventListener('click', deleteSelectedThreads);
     modal.addEventListener('click', event => {
+      const chip = event.target?.closest?.('[data-chat-history-model-filter]');
+      if (chip) {
+        event.preventDefault();
+        event.stopPropagation();
+        setModelFilter(chip.dataset.chatHistoryModelFilter || '');
+        return;
+      }
       if (event.target === modal) closeModal();
     });
     return modal;
@@ -126,10 +143,113 @@
     updateSummary();
   }
 
+  function simpleModelName(model, displayModel) {
+    const display = String(displayModel || '').trim();
+    if (display) return display;
+    const actual = String(model || '[unknown]').trim() || '[unknown]';
+    const map = {
+      'almond-croissant-low': 'Sonnet 4.6',
+      'avocado-froyo-medium': 'Opus 4.6',
+      'apricot-sorbet-high': 'Opus 4.7',
+      'ambrosia-tart-high': 'Opus 4.8',
+      'anthropic-haiku-4.5': 'Haiku 4.5',
+      'acai-budino': 'Fable 5',
+      'oatmeal-cookie': 'GPT 5.2',
+      'oval-kumquat-medium': 'GPT 5.4',
+      'oregon-grape-medium': 'GPT 5.4 Mini',
+      'otaheite-apple-medium': 'GPT 5.4 Nano',
+      'opal-quince-medium': 'GPT 5.5',
+      'gingerbread': 'Gemini 3 Flash',
+      'galette-medium-thinking': 'Gemini 3.1 Pro',
+      'vertex-gemini-3.5-flash': 'Gemini 3.5 Flash',
+      'vertex-gemini-2.5-flash': 'Gemini 2.5 Flash',
+      'xigua-mochi-medium': 'Grok 4.3',
+      'xinomavro-cake': 'Grok Build 0.1',
+      'fireworks-minimax-m2.5': 'MiniMax M2.5',
+      'fireworks-kimi-k2.6': 'Kimi 2.6',
+      'baseten-deepseek-v4-pro': 'DeepSeek V4 Pro'
+    };
+    return map[actual] || actual;
+  }
+
+  function formatModelLabel(model, provider, displayModel) {
+    return simpleModelName(model, displayModel);
+  }
+
+  function modelFilterKey(model) {
+    return String(model || '[unknown]').trim() || '[unknown]';
+  }
+
+  function threadMatchesModelFilter(thread) {
+    if (!browserState.modelFilter) return true;
+    const stats = Array.isArray(thread?.model_stats) ? thread.model_stats : [];
+    return stats.some(item => modelFilterKey(item.actual_model) === browserState.modelFilter);
+  }
+
+  function visibleThreads() {
+    return browserState.threads.filter(threadMatchesModelFilter);
+  }
+
+  function setModelFilter(modelName) {
+    const next = modelFilterKey(modelName);
+    browserState.modelFilter = browserState.modelFilter === next ? '' : next;
+    renderThreadList(visibleThreads());
+    updateSelectionControls();
+    setIdlePreview(visibleThreads());
+  }
+
+  function renderModelStatsChips(stats) {
+    const models = Array.isArray(stats?.models) ? stats.models : [];
+    if (!models.length) {
+      return '<span class="chat-history-model-chip">Agent response models: <strong>none hydrated yet</strong></span>';
+    }
+    const chips = [];
+    if (browserState.modelFilter) {
+      chips.push(`<button type="button" class="chat-history-model-chip" data-chat-history-model-filter="${esc(browserState.modelFilter)}" title="Clear model filter">All models</button>`);
+    }
+    for (const item of models) {
+      const modelName = modelFilterKey(item.actual_model);
+      const label = formatModelLabel(item.actual_model, item.model_provider, item.display_model);
+      const responses = Number(item.responses || 0);
+      const threads = Number(item.threads || 0);
+      const active = browserState.modelFilter === modelName ? ' active' : '';
+      chips.push(`<button type="button" class="chat-history-model-chip${active}" data-chat-history-model-filter="${esc(modelName)}" title="Filter conversations by ${esc(label)}"><strong>${esc(label)}</strong>${responses} response${responses === 1 ? '' : 's'} - ${threads} chat${threads === 1 ? '' : 's'}</button>`);
+    }
+    return chips.join('');
+  }
+
+  function renderThreadModelStats(thread) {
+    const stats = Array.isArray(thread?.model_stats) ? thread.model_stats : [];
+    if (!stats.length) return '<span>Agent response models: none detected</span>';
+    return stats.map(item => {
+      const label = formatModelLabel(item.actual_model, item.model_provider, item.display_model);
+      const responses = Number(item.responses || 0);
+      return `<span class="chat-history-model-chip"><strong>${esc(label)}</strong>${responses} response${responses === 1 ? '' : 's'}</span>`;
+    }).join('');
+  }
+
   function updateSummary() {
-    const hydrated = browserState.threads.filter(t => Number(t.message_count || 0) > 0).length;
+    const shownThreads = visibleThreads();
+    const hydrated = shownThreads.filter(t => Number(t.message_count || 0) > 0).length;
     const selected = browserState.selectedIds.size;
-    setSummary(`Loaded threads: ${browserState.threads.length}${browserState.hasMore ? '+' : ''} · Selected: ${selected} · Hydrated: ${hydrated} · Empty: ${browserState.threads.length - hydrated}`);
+    const stats = browserState.modelStats || {};
+    const assistantCount = Number(stats.assistant_response_count || 0);
+    const knownCount = Number(stats.known_response_count || 0);
+    const unknownCount = Number(stats.unknown_response_count || 0);
+    setSummaryHtml(`
+      <div class="chat-history-browser-summary-row">
+        <span>Loaded threads: ${browserState.threads.length}${browserState.hasMore ? '+' : ''}</span>
+        <span>Shown: ${shownThreads.length}</span>
+        <span>Selected: ${selected}</span>
+        <span>Hydrated: ${hydrated}</span>
+        <span>Empty: ${shownThreads.length - hydrated}</span>
+        <span>Model filter: ${browserState.modelFilter ? esc(browserState.modelFilter) : 'All'}</span>
+        <span>Agent responses: ${assistantCount}</span>
+        <span>Known models: ${knownCount}</span>
+        <span>Unknown models: ${unknownCount}</span>
+      </div>
+      <div class="chat-history-model-stats">${renderModelStatsChips(stats)}</div>
+    `);
   }
 
   function setSummary(text) {
@@ -137,14 +257,27 @@
     if (el) el.textContent = text;
   }
 
+  function setSummaryHtml(html) {
+    const el = document.getElementById('chatHistoryBrowserSummary');
+    if (el) el.innerHTML = html;
+  }
+
   function setIdlePreview(threads) {
     const preview = document.getElementById('chatHistoryBrowserPreview');
     if (!preview) return;
     const total = Array.isArray(threads) ? threads.length : 0;
+    const loadedTotal = browserState.threads.length;
+    const stats = browserState.modelStats || {};
     preview.innerHTML = `
       <div class="chat-history-browser-summary" style="padding:0 0 12px;border-bottom:0">
-        <span>Total loaded threads: ${total}</span>
-        <span>Full content: loaded on selection</span>
+        <div class="chat-history-browser-summary-row">
+          <span>Shown threads: ${total}</span>
+          <span>Loaded threads: ${loadedTotal}${browserState.hasMore ? '+' : ''}</span>
+          <span>Archived threads: ${Number(stats.thread_count || 0)}</span>
+          <span>Hydrated threads: ${Number(stats.hydrated_thread_count || 0)}</span>
+          <span>Agent responses: ${Number(stats.assistant_response_count || 0)}</span>
+        </div>
+        <div class="chat-history-model-stats">${renderModelStatsChips(stats)}</div>
       </div>
       <div class="chat-history-browser-markdown">Select a synced thread to hydrate and load its markdown. Use the checkboxes to bulk-delete remote chat history.</div>
     `;
@@ -246,7 +379,7 @@
   }
 
   function selectLoadedThreads() {
-    for (const thread of browserState.threads) {
+    for (const thread of visibleThreads()) {
       if (thread?.id) browserState.selectedIds.add(thread.id);
     }
     updateSelectionControls();
@@ -286,7 +419,7 @@
       for (const failedItem of failed) {
         if (failedItem?.thread_id) browserState.selectedIds.add(failedItem.thread_id);
       }
-      renderThreadList(browserState.threads);
+      renderThreadList(visibleThreads());
       updateSelectionControls();
       window.NotionAI?.ChatHistoryMain?.refresh?.();
       const failureHtml = failed.length
@@ -382,15 +515,21 @@
       updateThreadListItem(thread.id, { message_count: selectedCount, hydrated: selectedHydrated });
       window.NotionAI?.ChatHistoryMain?.refresh?.();
       preview.innerHTML = `<div class="chat-history-browser-markdown">Loading ${esc(thread.title || thread.id)}...</div>`;
+      const threadDetails = await fetchJson(`${THREADS_ENDPOINT}/${encodeURIComponent(thread.id)}`).catch(() => null);
+      if (threadDetails?.model_stats) thread.model_stats = threadDetails.model_stats;
+      const selectedModelStatsHtml = renderThreadModelStats(threadDetails || thread);
       const markdown = await fetchText(`${THREADS_ENDPOINT}/${encodeURIComponent(thread.id)}/markdown`);
       const warning = selectedCount === 0
         ? '<div class="chat-history-empty-warning"><strong>Empty hydrated message set.</strong><br>This thread record exists, but no message rows are attached yet. Run a larger sync, then check the debug endpoint for raw message fields.</div>'
         : '';
       preview.innerHTML = `
         <div class="chat-history-browser-summary" style="padding:0 0 12px;border-bottom:0">
-          <span>Total synced threads: ${threads.length}</span>
-          <span>Selected messages: ${selectedCount}</span>
-          <span>Hydrated: ${selectedHydrated ? 'yes' : 'no'}</span>
+          <div class="chat-history-browser-summary-row">
+            <span>Total synced threads: ${threads.length}</span>
+            <span>Selected messages: ${selectedCount}</span>
+            <span>Hydrated: ${selectedHydrated ? 'yes' : 'no'}</span>
+          </div>
+          <div class="chat-history-model-stats">${selectedModelStatsHtml}</div>
         </div>
         ${warning}
         <div class="chat-history-browser-markdown">${renderMarkdown(markdown)}</div>
@@ -419,17 +558,21 @@
       renderThreadList(browserState.threads);
     }
     try {
-      const data = await fetchJson(`${THREADS_ENDPOINT}?limit=${PAGE_SIZE}&offset=${browserState.offset}`);
+      const [data, stats] = await Promise.all([
+        fetchJson(`${THREADS_ENDPOINT}?limit=${PAGE_SIZE}&offset=${browserState.offset}`),
+        fetchJson(MODEL_STATS_ENDPOINT).catch(() => null)
+      ]);
+      if (stats) browserState.modelStats = stats;
       const page = Array.isArray(data?.threads) ? data.threads : [];
       browserState.threads = append ? browserState.threads.concat(page) : page;
       browserState.offset += page.length;
       browserState.hasMore = page.length === PAGE_SIZE;
       browserState.loading = false;
       updateSummary();
-      renderThreadList(browserState.threads);
+      renderThreadList(visibleThreads());
       updateSelectionControls();
       if (!browserState.activeThreadId) {
-        setIdlePreview(browserState.threads);
+        setIdlePreview(visibleThreads());
       }
     } catch (err) {
       browserState.loading = false;

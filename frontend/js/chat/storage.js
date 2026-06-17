@@ -36,7 +36,10 @@ window.NotionAI.Chat.Storage = {
         const currentChatId = window.NotionAI.Core.State.get('currentChatId');
         const chat = chats.find(c => c.id === currentChatId);
         if (chat) {
-            chat.messages.push(message);
+            const stamped = { ...message };
+            if (!stamped.createdAt && !stamped.timestamp) stamped.createdAt = Date.now();
+            chat.messages.push(stamped);
+            chat.updatedAt = stamped.createdAt || stamped.timestamp || Date.now();
             window.NotionAI.Core.State.set('chats', chats);
             this.saveChats();
         }
@@ -95,5 +98,80 @@ window.NotionAI.Chat.Storage = {
             window.NotionAI.Core.State.set('chats', chats);
             this.saveChats();
         }
+    },
+
+    /**
+     * Downloads a complete browser-local chat backup as JSON.
+     * @returns {Object} Backup summary
+     */
+    backupChats() {
+        const chats = window.NotionAI.Core.State.get('chats') || [];
+        const messageCount = chats.reduce((total, chat) => total + (Array.isArray(chat?.messages) ? chat.messages.length : 0), 0);
+        const exportedAt = new Date().toISOString();
+        const backup = {
+            version: 1,
+            app: 'Notion AI Studio',
+            source: 'browser-localStorage:claude_chats',
+            exportedAt,
+            chatCount: chats.length,
+            messageCount,
+            chats
+        };
+        const safeStamp = exportedAt.replace(/[:.]/g, '-');
+        const blob = new Blob([JSON.stringify(backup, null, 2)], { type: 'application/json' });
+        const url = URL.createObjectURL(blob);
+        const link = document.createElement('a');
+        link.href = url;
+        link.download = `notion-ai-local-chat-backup-${safeStamp}.json`;
+        document.body.appendChild(link);
+        link.click();
+        link.remove();
+        setTimeout(() => URL.revokeObjectURL(url), 1000);
+        return { chatCount: chats.length, messageCount, exportedAt };
+    },
+
+    _normalizePingPongText(value) {
+        return String(value || '')
+            .trim()
+            .toLowerCase()
+            .replace(/^assistant\s*:\s*/, '')
+            .replace(/^response\s*:\s*/, '')
+            .replace(/[.!?。]+$/g, '')
+            .trim();
+    },
+
+    isPingPongTestChat(chat) {
+        const messages = Array.isArray(chat?.messages) ? chat.messages : [];
+        if (messages.length !== 2) return false;
+        const second = messages[1];
+        if (!second || second.role !== 'assistant') return false;
+        const content = this._normalizePingPongText(second.content);
+        return content === 'ping' || content === 'pong';
+    },
+
+    /**
+     * Deletes local two-message ping/pong test conversations.
+     * @returns {Object} Cleanup summary
+     */
+    deletePingPongTestChats() {
+        const chats = window.NotionAI.Core.State.get('chats') || [];
+        const deleted = chats.filter(chat => this.isPingPongTestChat(chat));
+        if (!deleted.length) {
+            return { deletedCount: 0, deletedIds: [] };
+        }
+        const deletedIds = new Set(deleted.map(chat => chat.id));
+        const remaining = chats.filter(chat => !deletedIds.has(chat.id));
+        window.NotionAI.Core.State.set('chats', remaining);
+        this.saveChats();
+
+        const currentChatId = window.NotionAI.Core.State.get('currentChatId');
+        if (deletedIds.has(currentChatId)) {
+            window.NotionAI.Core.State.set('currentChatId', remaining[0]?.id || Date.now().toString());
+            window.NotionAI.Core.State.set('selectedChatIds', remaining[0]?.id ? [remaining[0].id] : []);
+        } else {
+            const selected = window.NotionAI.Core.State.get('selectedChatIds') || [];
+            window.NotionAI.Core.State.set('selectedChatIds', selected.filter(id => !deletedIds.has(id)));
+        }
+        return { deletedCount: deleted.length, deletedIds: Array.from(deletedIds) };
     }
 };

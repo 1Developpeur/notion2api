@@ -8,7 +8,8 @@ import os
 import sqlite3
 from typing import Any
 
-from app.chat_history.extractor import describe_thread_record, visible_message_role, visible_message_text
+from app.chat_history.extractor import describe_thread_record, message_model_metadata, visible_message_role, visible_message_text
+from app.model_registry import NOTION_MODEL_REVERSE_MAP
 
 DDL = """
 CREATE TABLE IF NOT EXISTS chat_threads (
@@ -27,6 +28,10 @@ CREATE TABLE IF NOT EXISTS chat_messages (
   role TEXT,
   text TEXT NOT NULL DEFAULT '',
   created_time TEXT,
+  requested_model TEXT,
+  notion_requested_model TEXT,
+  actual_model TEXT,
+  model_provider TEXT,
   raw_json TEXT NOT NULL DEFAULT '{}',
   imported_at INTEGER NOT NULL DEFAULT (strftime('%s','now'))
 );
@@ -143,6 +148,71 @@ def _time_sort_value(value: Any) -> tuple[int, str]:
         return (0, text)
 
 
+def _simple_model_display_name(actual_model: Any) -> str:
+    model = str(actual_model or "").strip()
+    if not model:
+        return "[unknown]"
+    standard = NOTION_MODEL_REVERSE_MAP.get(model, model)
+    simple_names = {
+        "claude-sonnet4.6": "Sonnet 4.6",
+        "claude-opus4.6": "Opus 4.6",
+        "claude-opus4.7": "Opus 4.7",
+        "claude-opus4.8": "Opus 4.8",
+        "claude-haiku4.5": "Haiku 4.5",
+        "claude-fable5": "Fable 5",
+        "gpt-5.2": "GPT 5.2",
+        "gpt-5.4": "GPT 5.4",
+        "gpt-5.4mini": "GPT 5.4 Mini",
+        "gpt-5.4nano": "GPT 5.4 Nano",
+        "gpt-5.5": "GPT 5.5",
+        "gemini-3flash": "Gemini 3 Flash",
+        "gemini-3.1pro": "Gemini 3.1 Pro",
+        "gemini-3.5flash": "Gemini 3.5 Flash",
+        "gemini-2.5flash": "Gemini 2.5 Flash",
+        "grok-4.3": "Grok 4.3",
+        "grok-build0.1": "Grok Build 0.1",
+        "minimax-m2.5": "MiniMax M2.5",
+        "kimi-2.6": "Kimi 2.6",
+        "deepseek-v4pro": "DeepSeek V4 Pro",
+    }
+    return simple_names.get(standard, standard)
+
+
+
+def _message_model_metadata(message: dict[str, Any]) -> dict[str, str]:
+    raw = message.get("raw") if isinstance(message.get("raw"), dict) else {}
+    step = raw.get("step") if isinstance(raw.get("step"), dict) else raw
+    data = raw.get("data") if isinstance(raw.get("data"), dict) else {}
+    value_parts = step.get("value") if isinstance(step.get("value"), list) else []
+
+    def first_text(*values: Any) -> str:
+        for value in values:
+            if isinstance(value, str) and value.strip():
+                return value.strip()
+            if isinstance(value, (int, float)) and not isinstance(value, bool):
+                return str(value)
+        return ""
+
+    notion_model_name = first_text(step.get("notionModelName"), raw.get("notionModelName"))
+    notion_step_model = first_text(step.get("model"), raw.get("model"))
+    model_provider = first_text(step.get("modelProvider"), raw.get("modelProvider"))
+    requested_model = first_text(raw.get("requested_model"), data.get("requested_model"))
+    notion_requested_model = first_text(raw.get("notion_requested_model"), data.get("notion_requested_model"))
+
+    for part in value_parts:
+        if not isinstance(part, dict):
+            continue
+        notion_model_name = notion_model_name or first_text(part.get("notionModelName"))
+        model_provider = model_provider or first_text(part.get("modelProvider"))
+
+    actual_model = first_text(raw.get("actual_model"), data.get("actual_model"), notion_model_name, notion_step_model)
+    return {
+        "requested_model": requested_model,
+        "notion_requested_model": notion_requested_model,
+        "actual_model": actual_model,
+        "model_provider": model_provider,
+    }
+
 def _display_message(message: dict[str, Any]) -> dict[str, Any] | None:
     raw = message.get("raw") if isinstance(message.get("raw"), dict) else {}
     text = visible_message_text(raw) if raw else str(message.get("text") or "").strip()
@@ -161,10 +231,19 @@ def _display_message(message: dict[str, Any]) -> dict[str, Any] | None:
     created_time = str(message.get("created_time") or "").strip()
     if not created_time and raw:
         created_time = _text(raw.get("createdAt") or raw.get("created_time") or raw.get("startedAt"))
-    out = dict(message)
+    out = {key: value for key, value in dict(message).items() if key != "raw"}
+    metadata = message.get("model_metadata") if isinstance(message.get("model_metadata"), dict) else {}
+    if not metadata:
+        metadata = _message_model_metadata(message)
     out["role"] = role
     out["text"] = text
     out["created_time"] = created_time
+    if metadata:
+        out["model_metadata"] = metadata
+        out["actual_model"] = metadata.get("actual_model")
+        out["display_model"] = _simple_model_display_name(metadata.get("actual_model"))
+        out["model_provider"] = metadata.get("model_provider")
+        out["notion_model_name"] = metadata.get("notion_model_name")
     return out
 
 
@@ -311,21 +390,26 @@ class ChatHistoryStore:
                 role = _text(m.get("role"))
                 text = _text(m.get("text"))
                 created_time = _text(m.get("created_time"))
+                metadata = _message_model_metadata(m)
                 proposed = (
                     thread_id,
                     role,
                     text,
                     created_time,
+                    _text(metadata.get("requested_model")),
+                    _text(metadata.get("notion_requested_model")),
+                    _text(metadata.get("actual_model")),
+                    _text(metadata.get("model_provider")),
                     _json_dumps(m.get("raw"), {}),
                 )
                 existing = conn.execute(
-                    "SELECT thread_id,role,text,created_time,raw_json FROM chat_messages WHERE id=?",
+                    "SELECT thread_id,role,text,created_time,requested_model,notion_requested_model,actual_model,model_provider,raw_json FROM chat_messages WHERE id=?",
                     (message_id,),
                 ).fetchone()
                 conn.execute(
-                    """INSERT INTO chat_messages(id,thread_id,role,text,created_time,raw_json)
-                    VALUES(?,?,?,?,?,?)
-                    ON CONFLICT(id) DO UPDATE SET thread_id=excluded.thread_id,role=excluded.role,text=excluded.text,created_time=excluded.created_time,raw_json=excluded.raw_json""",
+                    """INSERT INTO chat_messages(id,thread_id,role,text,created_time,requested_model,notion_requested_model,actual_model,model_provider,raw_json)
+                    VALUES(?,?,?,?,?,?,?,?,?,?)
+                    ON CONFLICT(id) DO UPDATE SET thread_id=excluded.thread_id,role=excluded.role,text=excluded.text,created_time=excluded.created_time,requested_model=excluded.requested_model,notion_requested_model=excluded.notion_requested_model,actual_model=excluded.actual_model,model_provider=excluded.model_provider,raw_json=excluded.raw_json""",
                     (message_id, *proposed),
                 )
                 conn.execute("DELETE FROM chat_messages_fts WHERE id=?", (message_id,))
@@ -407,7 +491,11 @@ class ChatHistoryStore:
                   t.last_edited_time,
                   {order_expr} AS updated_at,
                   t.alive,
-                  COUNT(m.id) AS message_count,
+                  COUNT(m.id) AS raw_message_count,
+                  SUM(CASE WHEN m.role IN ('user','assistant') THEN 1 ELSE 0 END) AS visible_message_count,
+                  SUM(CASE WHEN m.role='user' THEN 1 ELSE 0 END) AS user_message_count,
+                  SUM(CASE WHEN m.role='assistant' THEN 1 ELSE 0 END) AS assistant_message_count,
+                  SUM(CASE WHEN m.role='error' THEN 1 ELSE 0 END) AS error_message_count,
                   MIN(m.created_time) AS first_message_time,
                   MAX(m.created_time) AS last_message_time,
                   (
@@ -432,28 +520,267 @@ class ChatHistoryStore:
             out: list[dict[str, Any]] = []
             for row in rows:
                 item = dict(row)
-                item["message_count"] = int(item.get("message_count") or 0)
-                item["hydrated"] = item["message_count"] > 0
+                item["raw_message_count"] = int(item.get("raw_message_count") or 0)
+                item["visible_message_count"] = int(item.get("visible_message_count") or 0)
+                item["message_count"] = item["visible_message_count"]
+                item["user_message_count"] = int(item.get("user_message_count") or 0)
+                item["assistant_message_count"] = int(item.get("assistant_message_count") or 0)
+                item["error_message_count"] = int(item.get("error_message_count") or 0)
+                item["export_success_eligible"] = item["raw_message_count"] == 2 and item["user_message_count"] == 1 and item["assistant_message_count"] == 1
+                item["export_error_eligible"] = item["raw_message_count"] == 2 and item["user_message_count"] == 1 and item["error_message_count"] == 1
+                item["hydrated"] = item["raw_message_count"] > 0
                 item["first_message_preview"] = _preview(item.pop("first_message_text", ""))
                 item["last_message_preview"] = _preview(item.pop("last_message_text", ""))
                 out.append(item)
+            self._attach_model_stats_to_threads(conn, out)
             return out
+
+    def _attach_model_stats_to_threads(self, conn: sqlite3.Connection, threads: list[dict[str, Any]]) -> None:
+        ids = [str(item.get("id") or "").strip() for item in threads if str(item.get("id") or "").strip()]
+        for item in threads:
+            item["model_stats"] = []
+        if not ids:
+            return
+        placeholders = ",".join("?" for _ in ids)
+        rows = conn.execute(
+            f"""
+            SELECT
+              thread_id,
+              COALESCE(NULLIF(actual_model,''), '[unknown]') AS actual_model,
+              COALESCE(NULLIF(model_provider,''), '[unknown]') AS model_provider,
+              COUNT(1) AS responses
+            FROM chat_messages
+            WHERE role='assistant' AND thread_id IN ({placeholders})
+            GROUP BY thread_id,
+                     COALESCE(NULLIF(actual_model,''), '[unknown]'),
+                     COALESCE(NULLIF(model_provider,''), '[unknown]')
+            ORDER BY responses DESC, actual_model ASC
+            """,
+            ids,
+        ).fetchall()
+        by_thread: dict[str, list[dict[str, Any]]] = {thread_id: [] for thread_id in ids}
+        for row in rows:
+            by_thread.setdefault(str(row["thread_id"]), []).append(
+                {
+                    "actual_model": str(row["actual_model"]),
+                    "display_model": _simple_model_display_name(row["actual_model"]),
+                    "model_provider": str(row["model_provider"]),
+                    "responses": int(row["responses"] or 0),
+                }
+            )
+        for item in threads:
+            item["model_stats"] = by_thread.get(str(item.get("id") or ""), [])
+
+    def single_message_thread_ids(self, thread_ids: list[Any] | None = None) -> list[str]:
+        ids = _clean_ids(thread_ids or [])
+        params: list[Any] = []
+        where = ""
+        if ids:
+            where = "WHERE t.id IN (" + ",".join("?" for _ in ids) + ")"
+            params.extend(ids)
+        with self._conn() as conn:
+            rows = conn.execute(
+                f"""
+                SELECT t.id
+                FROM chat_threads t
+                JOIN chat_messages m ON m.thread_id=t.id
+                {where}
+                GROUP BY t.id
+                HAVING SUM(CASE WHEN m.role IN ('user','assistant') THEN 1 ELSE 0 END)=1
+                ORDER BY COALESCE(MAX(m.created_time), t.last_edited_time, t.created_time) DESC
+                """,
+                params,
+            ).fetchall()
+        return [str(row["id"]) for row in rows]
+
+    def errored_thread_ids(self, thread_ids: list[Any] | None = None) -> list[str]:
+        """Return threads that contain error messages and no successful assistant response."""
+        ids = _clean_ids(thread_ids or [])
+        params: list[Any] = []
+        where = ""
+        if ids:
+            where = "WHERE t.id IN (" + ",".join("?" for _ in ids) + ")"
+            params.extend(ids)
+        with self._conn() as conn:
+            rows = conn.execute(
+                f"""
+                SELECT t.id
+                FROM chat_threads t
+                JOIN chat_messages m ON m.thread_id=t.id
+                {where}
+                GROUP BY t.id
+                HAVING SUM(CASE WHEN m.role='error' THEN 1 ELSE 0 END) >= 1
+                   AND SUM(CASE WHEN m.role='assistant' THEN 1 ELSE 0 END) = 0
+                ORDER BY COALESCE(MAX(m.created_time), t.last_edited_time, t.created_time) DESC
+                """,
+                params,
+            ).fetchall()
+        return [str(row["id"]) for row in rows]
+
+    def two_message_export_rows(self, thread_ids: list[Any] | None = None, *, include_errors: bool = False) -> dict[str, Any]:
+        ids = _clean_ids(thread_ids or [])
+        params: list[Any] = []
+        where = ""
+        if ids:
+            where = "WHERE t.id IN (" + ",".join("?" for _ in ids) + ")"
+            params.extend(ids)
+        response_role_clause = "SUM(CASE WHEN m.role='assistant' THEN 1 ELSE 0 END)=1"
+        if include_errors:
+            response_role_clause = "(SUM(CASE WHEN m.role='assistant' THEN 1 ELSE 0 END)=1 OR SUM(CASE WHEN m.role='error' THEN 1 ELSE 0 END)=1)"
+        with self._conn() as conn:
+            candidate_rows = conn.execute(
+                f"""
+                SELECT t.id
+                FROM chat_threads t
+                JOIN chat_messages m ON m.thread_id=t.id
+                {where}
+                GROUP BY t.id
+                HAVING COUNT(m.id)=2
+                   AND SUM(CASE WHEN m.role='user' THEN 1 ELSE 0 END)=1
+                   AND {response_role_clause}
+                ORDER BY COALESCE(MAX(m.created_time), t.last_edited_time, t.created_time) DESC
+                """,
+                params,
+            ).fetchall()
+            eligible_ids = [str(row["id"]) for row in candidate_rows]
+            if not eligible_ids:
+                return {"thread_ids": [], "rows": []}
+            placeholders = ",".join("?" for _ in eligible_ids)
+            msg_rows = conn.execute(
+                f"""
+                SELECT
+                  t.id AS thread_id,
+                  t.title,
+                  t.created_time AS thread_created_time,
+                  t.last_edited_time AS thread_last_edited_time,
+                  m.id AS message_id,
+                  m.role,
+                  m.text,
+                  m.created_time AS message_created_time,
+                  m.requested_model,
+                  m.notion_requested_model,
+                  m.actual_model,
+                  m.model_provider
+                FROM chat_threads t
+                JOIN chat_messages m ON m.thread_id=t.id
+                WHERE t.id IN ({placeholders})
+                ORDER BY t.id, m.created_time, m.id
+                """,
+                eligible_ids,
+            ).fetchall()
+        grouped: dict[str, dict[str, Any]] = {}
+        for row in msg_rows:
+            item = grouped.setdefault(
+                str(row["thread_id"]),
+                {
+                    "thread_id": str(row["thread_id"]),
+                    "title": str(row["title"] or ""),
+                    "thread_created_time": str(row["thread_created_time"] or ""),
+                    "thread_last_edited_time": str(row["thread_last_edited_time"] or ""),
+                    "sent_message": "",
+                    "sent_message_time": "",
+                    "received_message": "",
+                    "received_message_time": "",
+                    "response_role": "",
+                    "response_is_error": False,
+                    "actual_model": "",
+                    "display_model": "",
+                    "model_provider": "",
+                    "requested_model": "",
+                    "notion_requested_model": "",
+                },
+            )
+            role = str(row["role"] or "")
+            if role == "user":
+                item["sent_message"] = str(row["text"] or "")
+                item["sent_message_time"] = str(row["message_created_time"] or "")
+            elif role == "assistant" or (include_errors and role == "error"):
+                item["received_message"] = str(row["text"] or "")
+                item["received_message_time"] = str(row["message_created_time"] or "")
+                item["response_role"] = role
+                item["response_is_error"] = role == "error"
+                item["actual_model"] = str(row["actual_model"] or "")
+                item["display_model"] = _simple_model_display_name(item["actual_model"])
+                item["model_provider"] = str(row["model_provider"] or "")
+                item["requested_model"] = str(row["requested_model"] or "")
+                item["notion_requested_model"] = str(row["notion_requested_model"] or "")
+        rows = [grouped[thread_id] for thread_id in eligible_ids if thread_id in grouped and grouped[thread_id].get("sent_message") and grouped[thread_id].get("received_message")]
+        return {"thread_ids": [row["thread_id"] for row in rows], "rows": rows}
+
+    def model_response_stats(self) -> dict[str, Any]:
+        """Return aggregate model ownership stats for hydrated assistant responses."""
+        with self._conn() as conn:
+            thread_count = conn.execute("SELECT COUNT(1) FROM chat_threads").fetchone()[0]
+            hydrated_thread_count = conn.execute(
+                "SELECT COUNT(DISTINCT thread_id) FROM chat_messages WHERE COALESCE(thread_id,'') <> ''"
+            ).fetchone()[0]
+            assistant_response_count = conn.execute(
+                "SELECT COUNT(1) FROM chat_messages WHERE role='assistant'"
+            ).fetchone()[0]
+            rows = conn.execute(
+                """
+                SELECT
+                  COALESCE(NULLIF(actual_model,''), '[unknown]') AS actual_model,
+                  COALESCE(NULLIF(model_provider,''), '[unknown]') AS model_provider,
+                  COUNT(1) AS responses,
+                  COUNT(DISTINCT thread_id) AS threads
+                FROM chat_messages
+                WHERE role='assistant'
+                GROUP BY COALESCE(NULLIF(actual_model,''), '[unknown]'),
+                         COALESCE(NULLIF(model_provider,''), '[unknown]')
+                ORDER BY responses DESC, actual_model ASC
+                """
+            ).fetchall()
+        models = []
+        for row in rows:
+            item = dict(row)
+            item["display_model"] = _simple_model_display_name(item.get("actual_model"))
+            models.append(item)
+        known_response_count = sum(int(item.get("responses") or 0) for item in models if item.get("actual_model") != "[unknown]")
+        unknown_response_count = sum(int(item.get("responses") or 0) for item in models if item.get("actual_model") == "[unknown]")
+        return {
+            "thread_count": int(thread_count or 0),
+            "hydrated_thread_count": int(hydrated_thread_count or 0),
+            "assistant_response_count": int(assistant_response_count or 0),
+            "known_response_count": int(known_response_count),
+            "unknown_response_count": int(unknown_response_count),
+            "models": models,
+        }
 
     def get_thread(self, thread_id: str) -> dict[str, Any] | None:
         with self._conn() as conn:
             t = conn.execute("SELECT * FROM chat_threads WHERE id=?", (thread_id,)).fetchone()
             if not t:
                 return None
-            msgs = conn.execute("SELECT id,thread_id,role,text,created_time,raw_json FROM chat_messages WHERE thread_id=? ORDER BY created_time,id", (thread_id,)).fetchall()
+            msgs = conn.execute("SELECT id,thread_id,role,text,created_time,requested_model,notion_requested_model,actual_model,model_provider,raw_json FROM chat_messages WHERE thread_id=? ORDER BY created_time,id", (thread_id,)).fetchall()
         out = dict(t)
         out["message_ids"] = json.loads(out.pop("message_ids_json") or "[]")
-        out["raw"] = _json_object(out.pop("raw_json") or "{}")
+        # Keep full raw thread/message records in SQLite, but do not return them from
+        # the normal thread endpoint. Notion assistant records can contain very large
+        # encryptedContent fields that make the frontend history view fail to fetch.
+        out.pop("raw_json", None)
         messages: list[dict[str, Any]] = []
         for row in msgs:
             message = dict(row)
             message["raw"] = _json_object(message.pop("raw_json") or "{}")
             messages.append(message)
         out["messages"] = _visible_messages(messages)
+        thread_model_counts: dict[tuple[str, str], dict[str, Any]] = {}
+        for message in out["messages"]:
+            if str(message.get("role") or "") != "assistant":
+                continue
+            actual_model = str(message.get("actual_model") or "[unknown]").strip() or "[unknown]"
+            model_provider = str(message.get("model_provider") or "[unknown]").strip() or "[unknown]"
+            key = (actual_model, model_provider)
+            entry = thread_model_counts.setdefault(
+                key,
+                {"actual_model": actual_model, "display_model": _simple_model_display_name(actual_model), "model_provider": model_provider, "responses": 0},
+            )
+            entry["responses"] += 1
+        out["model_stats"] = sorted(
+            thread_model_counts.values(),
+            key=lambda item: (-int(item.get("responses") or 0), str(item.get("actual_model") or "")),
+        )
         out["steps"] = _process_steps(messages)
         out["message_count"] = len(out["messages"])
         out["hydrated"] = out["message_count"] > 0
@@ -491,5 +818,17 @@ class ChatHistoryStore:
         if not thread.get("messages"):
             lines += ["> This thread exists in the archive, but no message records are hydrated yet.", ""]
         for msg in thread.get("messages", []):
-            lines += [f"## {str(msg.get('role') or 'message').title()}", "", str(msg.get("text") or ""), ""]
+            lines += [f"## {str(msg.get('role') or 'message').title()}", ""]
+            model_bits = []
+            if msg.get("actual_model"):
+                model_bits.append(f"Actual model: `{msg.get('actual_model')}`")
+            if msg.get("model_provider"):
+                model_bits.append(f"Provider: `{msg.get('model_provider')}`")
+            if msg.get("requested_model"):
+                model_bits.append(f"Requested model: `{msg.get('requested_model')}`")
+            if msg.get("notion_requested_model"):
+                model_bits.append(f"Notion requested model: `{msg.get('notion_requested_model')}`")
+            if model_bits:
+                lines += model_bits + [""]
+            lines += [str(msg.get("text") or ""), ""]
         return "\n".join(lines)

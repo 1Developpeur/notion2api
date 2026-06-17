@@ -273,6 +273,13 @@ def _normalize_stream_item(item: Any) -> dict[str, Any]:
                 "text": str(item.get("text") or item.get("history", "") or ""),
                 "source_type": str(item.get("source_type", "") or ""),
                 "source_length": item.get("source_length"),
+                "model_metadata": item.get("model_metadata") if isinstance(item.get("model_metadata"), dict) else {},
+            }
+        if item_type == "model_metadata":
+            payload = item.get("data")
+            return {
+                "type": "model_metadata",
+                "data": payload if isinstance(payload, dict) else {},
             }
 
     return {"type": "unknown"}
@@ -285,6 +292,66 @@ def _iter_stream_items(
         yield first_item
     for item in stream_gen:
         yield item
+
+
+def _merge_model_metadata(current: dict[str, Any] | None, item: dict[str, Any]) -> dict[str, Any]:
+    merged: dict[str, Any] = dict(current or {})
+    payload: Any = None
+    item_type = str(item.get("type", "") or "")
+    if item_type == "model_metadata":
+        payload = item.get("data")
+    elif item_type == "final_content":
+        payload = item.get("model_metadata")
+    if not isinstance(payload, dict):
+        return merged
+    for key, value in payload.items():
+        if value not in (None, "", [], {}):
+            merged[str(key)] = value
+    return merged
+
+
+def _response_model_metadata(requested_model: str, model_metadata: dict[str, Any] | None) -> dict[str, Any]:
+    payload = dict(model_metadata or {})
+    requested = normalize_model_id(requested_model) or requested_model
+    if requested:
+        payload.setdefault("requested_model", requested)
+        try:
+            from app.model_registry import get_notion_model
+            payload.setdefault("notion_requested_model", get_notion_model(requested))
+        except Exception:
+            pass
+    actual = payload.get("actual_model") or payload.get("notion_model_name") or payload.get("notion_step_model")
+    if actual:
+        payload["actual_model"] = actual
+    return {k: v for k, v in payload.items() if v not in (None, "", [], {})}
+
+
+def _attach_response_model_metadata(response_obj: ChatCompletionResponse, requested_model: str, model_metadata: dict[str, Any] | None) -> None:
+    payload = _response_model_metadata(requested_model, model_metadata)
+    if not payload:
+        return
+    response_obj.requested_model = payload.get("requested_model")
+    response_obj.notion_requested_model = payload.get("notion_requested_model")
+    response_obj.actual_model = payload.get("actual_model")
+    response_obj.model_metadata = payload
+
+    # The OpenAI-compatible response `model` should identify the responder,
+    # not merely the user's requested alias. Preserve the alias separately in
+    # requested_model / notion_requested_model.
+    actual_model = payload.get("actual_model")
+    if isinstance(actual_model, str) and actual_model.strip():
+        response_obj.model = actual_model.strip()
+
+
+def _build_model_metadata_event(requested_model: str, model_metadata: dict[str, Any] | None) -> str:
+    payload = _response_model_metadata(requested_model, model_metadata)
+    if not payload:
+        return ""
+    actual_model = payload.get("actual_model")
+    if isinstance(actual_model, str) and actual_model.strip():
+        payload["display_model"] = actual_model.strip()
+    event = {"type": "model_metadata", "model_metadata": payload}
+    return f"data: {json.dumps(event, ensure_ascii=False)}\n\n"
 
 
 def _compute_missing_suffix(current_text: str, final_text: str) -> str:
@@ -548,12 +615,17 @@ def _create_lite_stream_generator(
     streamed_content_accumulator = ""
     authoritative_final_content = ""
     authoritative_final_source_type = ""
+    model_metadata: dict[str, Any] = {}
     assistant_started = False
 
     try:
         for raw_item in _iter_stream_items(first_item, stream_gen):
             item = _normalize_stream_item(raw_item)
             item_type = item.get("type")
+
+            model_metadata = _merge_model_metadata(model_metadata, item)
+            if item_type == "model_metadata":
+                continue
 
             if item_type == "final_content":
                 final_text = str(item.get("text", "") or "").strip()
@@ -659,6 +731,10 @@ def _create_lite_stream_generator(
                     )
                 streamed_content_accumulator = final_reply
 
+        metadata_event = _build_model_metadata_event(model_name, model_metadata)
+        if metadata_event:
+            yield metadata_event
+
         yield _build_stream_chunk(response_id, model_name, finish_reason="stop")
         yield "data: [DONE]\n\n"
 
@@ -684,12 +760,17 @@ def _create_standard_stream_generator(
     collected_search_queries = []
     authoritative_final_content = ""
     authoritative_final_source_type = ""
+    model_metadata: dict[str, Any] = {}
     assistant_started = False
 
     try:
         for raw_item in _iter_stream_items(first_item, stream_gen):
             item = _normalize_stream_item(raw_item)
             item_type = item.get("type")
+
+            model_metadata = _merge_model_metadata(model_metadata, item)
+            if item_type == "model_metadata":
+                continue
 
             if item_type == "final_content":
                 final_text = str(item.get("text", "") or "").strip()
@@ -828,6 +909,10 @@ def _create_standard_stream_generator(
                 },
             }
             yield f"data: {json.dumps(search_metadata, ensure_ascii=False)}\n\n"
+
+        metadata_event = _build_model_metadata_event(model_name, model_metadata)
+        if metadata_event:
+            yield metadata_event
 
         yield _build_stream_chunk(response_id, model_name, finish_reason="stop")
         yield "data: [DONE]\n\n"
@@ -1014,10 +1099,15 @@ def _handle_lite_request(
             content_parts: list[str] = []
             authoritative_final_content = ""
             authoritative_final_source_type = ""
+            model_metadata: dict[str, Any] = {}
 
             for raw_item in _iter_stream_items(first_item, stream_gen):
                 item = _normalize_stream_item(raw_item)
                 item_type = item.get("type")
+
+                model_metadata = _merge_model_metadata(model_metadata, item)
+                if item_type == "model_metadata":
+                    continue
 
                 if item_type == "final_content":
                     final_text = str(item.get("text", "") or "").strip()
@@ -1053,7 +1143,7 @@ def _handle_lite_request(
             response_text = (
                 full_text if full_text.strip() else "[assistant_no_visible_content]"
             )
-            return ChatCompletionResponse(
+            response_obj = ChatCompletionResponse(
                 id=response_id,
                 model=req_body.model,
                 choices=[
@@ -1062,6 +1152,8 @@ def _handle_lite_request(
                     )
                 ],
             )
+            _attach_response_model_metadata(response_obj, req_body.model, model_metadata)
+            return response_obj
 
         except NotionUpstreamError as exc:
             if client is not None and exc.retriable:
@@ -1245,10 +1337,15 @@ def _handle_standard_request(
             search_results: list[dict] = []
             authoritative_final_content = ""
             authoritative_final_source_type = ""
+            model_metadata: dict[str, Any] = {}
 
             for raw_item in _iter_stream_items(first_item, stream_gen):
                 item = _normalize_stream_item(raw_item)
                 item_type = item.get("type")
+
+                model_metadata = _merge_model_metadata(model_metadata, item)
+                if item_type == "model_metadata":
+                    continue
 
                 if item_type == "final_content":
                     final_text = str(item.get("text", "") or "").strip()
@@ -1308,6 +1405,7 @@ def _handle_standard_request(
                 model=req_body.model,
                 choices=[ChatMessageResponseChoice(message=response_message)],
             )
+            _attach_response_model_metadata(response_obj, req_body.model, model_metadata)
 
             # text
             if search_results:
