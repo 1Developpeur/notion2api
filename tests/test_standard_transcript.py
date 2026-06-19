@@ -19,5 +19,5 @@ def test_standard_transcript_answers_latest_user_turn():
     assert "[Previous conversation context]" in prompt
     assert "user: first question" in prompt
     assert "assistant: first answer" in prompt
-    assert "[Current user request]" in prompt
+    assert "[Current user request]" not in prompt
     assert prompt.endswith("second question")

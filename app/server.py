@@ -225,7 +225,15 @@ def _frontend_js_response(filename: str):
     if not os.path.exists(script_path):
         return Response(content=b"", media_type="application/javascript", status_code=404)
     with open(script_path, "rb") as f:
-        return Response(content=f.read(), media_type="application/javascript")
+        return Response(
+            content=f.read(),
+            media_type="application/javascript",
+            headers={
+                "Cache-Control": "no-store, no-cache, must-revalidate, max-age=0",
+                "Pragma": "no-cache",
+                "Expires": "0",
+            }
+        )
 
 
 @app.get("/chat-history-import.js", include_in_schema=False)

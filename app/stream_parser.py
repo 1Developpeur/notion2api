@@ -594,11 +594,13 @@ def _extract_model_metadata_from_step(
             continue
         notion_model_name = notion_model_name or _non_empty_str(part.get("notionModelName"))
         model_provider = model_provider or _non_empty_str(part.get("modelProvider"))
-    actual_model = notion_model_name or notion_step_model
+    # `step.model` is often the requested/route model, not proof of the model
+    # that actually produced the response. Only `notionModelName` is treated
+    # as observed responder metadata.
+    actual_model = notion_model_name
     if not any((actual_model, notion_step_model, notion_model_name, model_provider)):
         return {}
     out: dict[str, Any] = {
-        "actual_model": actual_model,
         "notion_step_model": notion_step_model,
         "notion_model_name": notion_model_name,
         "model_provider": model_provider,
@@ -606,6 +608,15 @@ def _extract_model_metadata_from_step(
         "source_message_id": message_id,
         "trace_id": _non_empty_str(step.get("traceId")),
     }
+    if actual_model:
+        out["actual_model"] = actual_model
+        out["actual_model_source"] = "notionModelName"
+        # Do not set actual_model_verified here — notionModelName may just
+        # echo the requested model.  Verification is deferred to
+        # _response_model_metadata which compares against the request.
+    elif notion_step_model:
+        out["actual_model_verified"] = False
+        out["actual_model_unverified_reason"] = "Only step.model was observed; it may be the requested route, not the responder."
     if isinstance(inner_value, dict):
         data = inner_value.get("data")
         if isinstance(data, dict):
@@ -945,6 +956,14 @@ def parse_stream(response: requests.Response) -> Generator[dict[str, Any], None,
                 patch_role = local_value_types.get(0, seg_class)
                 # patch_seg text Nonetext index
                 patch_seg = None
+
+                # Extract model metadata from the initial segment step.
+                # The step dict (patch_v) carries `model` which reveals the
+                # actual responder, especially for silent model swaps.
+                if isinstance(patch_v, dict) and patch_v.get("model"):
+                    _seg_meta = _extract_model_metadata_from_step(patch_v, message_id="")
+                    if isinstance(_seg_meta, dict) and _seg_meta:
+                        yield {"type": "model_metadata", "data": _seg_meta}
 
                 logger.debug(
                     "Segment registered (pending)",

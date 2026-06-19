@@ -29,7 +29,7 @@
     hydrateAbortController: null,
     hydrateRunId: 0,
     hydrateStopped: false,
-    sidebarMode: localStorage.getItem('notion_sidebar_history_mode') || 'local',
+    sidebarMode: 'local',
     advancedOpen: false,
     resetSidebarScrollOnce: false
   };

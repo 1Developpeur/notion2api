@@ -49,7 +49,7 @@ window.NotionAI.Chat.Streaming = {
                     body: JSON.stringify({
                         model: model,
                         messages: requestMessages,
-                        conversation_id: chat.conversationId || null,
+                        conversation_id: chat.conversationId || chat.id || null,
                         stream: true
                     }),
                     signal: STATE.controller.signal
@@ -101,7 +101,7 @@ window.NotionAI.Chat.Streaming = {
             }
 
             // Process stream
-            const result = await this.processStream(response, aiWrapper, searchState, thinkingText, fullAiReply);
+            const result = await this.processStream(response, aiWrapper, searchState, thinkingText, fullAiReply, model);
             return result;
 
         } catch (err) {
@@ -127,9 +127,10 @@ window.NotionAI.Chat.Streaming = {
      * @param {Object} searchState - Search state object
      * @param {string} thinkingText - Thinking text accumulator
      * @param {string} fullAiReply - Reply text accumulator
+     * @param {string} model - Requested model ID
      * @returns {Promise<Object>} Final result object
      */
-    async processStream(response, aiWrapper, searchState, thinkingText, fullAiReply) {
+    async processStream(response, aiWrapper, searchState, thinkingText, fullAiReply, model) {
         const reader = response.body.getReader();
         const decoder = new TextDecoder('utf-8');
         const modelState = { metadata: null, displayName: null, requestedModel: model };

@@ -1,10 +1,13 @@
 from __future__ import annotations
 
 import argparse
+import asyncio
 import json
 import os
 import re
 import sqlite3
+import threading
+import time
 import uuid
 from pathlib import Path
 from typing import Any, Literal
@@ -35,6 +38,16 @@ DEFAULT_SESSION_STATE_PATH = Path(
         str(Path.cwd() / ".notion2api_mcp_sessions.json"),
     )
 )
+DEFAULT_CHAT_JOB_STATE_PATH = Path(
+    os.getenv(
+        "MCP_NOTION2API_CHAT_JOB_STATE",
+        str(DEFAULT_SESSION_STATE_PATH.with_name(".notion2api_mcp_chat_jobs.json")),
+    )
+)
+DEFAULT_CHAT_WAIT_SECONDS = 45.0
+MAX_CHAT_WAIT_SECONDS = 50.0
+_CHAT_JOB_STATE_MUTEX = threading.RLock()
+_CHAT_JOB_TASKS: dict[str, asyncio.Task[dict[str, Any]]] = {}
 
 
 class HealthOutput(BaseModel):
@@ -78,6 +91,13 @@ class ChatOutput(BaseModel):
     session_name: str | None = Field(default=None, description="Normalized MCP session name.")
     conversation_id: str | None = Field(default=None, description="Stable Notion2API conversation id used for the request.")
     session_created: bool | None = Field(default=None, description="True when the wrapper created a new MCP conversation binding.")
+    status: str = Field(default="completed", description="MCP wrapper job status: completed, pending, running, error, or stale.")
+    request_id: str | None = Field(default=None, description="Idempotency key used to deduplicate or poll this MCP chat request.")
+    job_id: str | None = Field(default=None, description="Pollable job id. Currently identical to request_id.")
+    retry_safe: bool = Field(default=False, description="True when retrying with the same request_id is safe and will not resubmit.")
+    wait_seconds: float | None = Field(default=None, description="Bounded wait used before returning pending.")
+    poll_hint: str = Field(default="", description="Human-readable polling instruction for pending or stale jobs.")
+    error: str | None = Field(default=None, description="Error summary if the backend call failed or the job became stale.")
     response_text: str = Field(default="", description="Extracted assistant response text.")
     raw: dict[str, Any] = Field(default_factory=dict, description="Raw backend response.")
 
@@ -137,6 +157,25 @@ class LastResponseOutput(BaseModel):
     message: dict[str, Any] | None = Field(default=None, description="Latest assistant message record, if found.")
     db_path: str = Field(default="", description="Local Notion2API conversations database path.")
     error: str | None = Field(default=None, description="Error summary if lookup failed.")
+
+
+class ChatJobOutput(BaseModel):
+    ok: bool = Field(description="Whether the chat job lookup completed.")
+    found: bool = Field(default=False, description="Whether a job with this request_id exists.")
+    status: str = Field(default="", description="Persisted job status: running, completed, error, or stale.")
+    request_id: str = Field(default="", description="Idempotency key / job id.")
+    job_id: str = Field(default="", description="Pollable job id. Currently identical to request_id.")
+    session_name: str = Field(default="", description="Normalized MCP session name.")
+    conversation_id: str = Field(default="", description="Conversation id associated with the job.")
+    model: str = Field(default="", description="Requested model for the job.")
+    endpoint: str = Field(default="", description="Backend endpoint used by the job.")
+    created_at: int = Field(default=0, description="Unix epoch milliseconds when the job was created.")
+    updated_at: int = Field(default=0, description="Unix epoch milliseconds when the job was last updated.")
+    response_text: str = Field(default="", description="Completed assistant response text, if available.")
+    response: dict[str, Any] | None = Field(default=None, description="Persisted ChatOutput-compatible response, if available.")
+    error: str | None = Field(default=None, description="Persisted error summary, if any.")
+    raw_job: dict[str, Any] = Field(default_factory=dict, description="Raw persisted job state.")
+    last_response: dict[str, Any] | None = Field(default=None, description="Optional latest local assistant response lookup.")
 
 
 class Notion2APIClient:
@@ -298,10 +337,385 @@ def _runtime_audit(client: Notion2APIClient, requested_model: str) -> dict[str, 
     }
 
 
+def _now_ms() -> int:
+    return int(time.time() * 1000)
+
+
+def _atomic_write_json(path: Path, data: dict[str, Any]) -> None:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    tmp = path.with_name(f"{path.name}.{uuid.uuid4().hex}.tmp")
+    tmp.write_text(json.dumps(data, indent=2, sort_keys=True, ensure_ascii=False), encoding="utf-8")
+    os.replace(tmp, path)
+
+
+def _safe_float(value: Any, default: float) -> float:
+    try:
+        return float(value)
+    except (TypeError, ValueError):
+        return default
+
+
+def _configured_chat_wait_seconds() -> float:
+    raw = os.getenv("MCP_NOTION2API_CALL_WAIT_SECONDS", "")
+    return _safe_float(raw, DEFAULT_CHAT_WAIT_SECONDS) if raw.strip() else DEFAULT_CHAT_WAIT_SECONDS
+
+
+def _configured_chat_max_wait_seconds() -> float:
+    raw = os.getenv("MCP_NOTION2API_MAX_CALL_WAIT_SECONDS", "")
+    return _safe_float(raw, MAX_CHAT_WAIT_SECONDS) if raw.strip() else MAX_CHAT_WAIT_SECONDS
+
+
+def _bounded_chat_wait_seconds(wait_seconds: float | None) -> float:
+    requested = _configured_chat_wait_seconds() if wait_seconds is None else _safe_float(wait_seconds, DEFAULT_CHAT_WAIT_SECONDS)
+    maximum = max(0.0, min(_configured_chat_max_wait_seconds(), 55.0))
+    return max(0.0, min(requested, maximum))
+
+
+def _normalize_request_id(request_id: str | None = None) -> str:
+    raw = (request_id or "").strip()
+    if not raw:
+        return f"mcp-chat-{uuid.uuid4().hex}"
+    normalized = re.sub(r"[^A-Za-z0-9_.:-]+", "-", raw).strip("-._:")
+    return (normalized or f"mcp-chat-{uuid.uuid4().hex}")[:160]
+
+
 def _session_key(session_name: str | None) -> str:
     raw = (session_name or DEFAULT_SESSION_NAME).strip().lower()
     key = re.sub(r"[^a-z0-9_.-]+", "-", raw).strip("-._")
     return key or DEFAULT_SESSION_NAME
+
+
+def _load_chat_job_state(path: Path = DEFAULT_CHAT_JOB_STATE_PATH) -> dict[str, Any]:
+    try:
+        if not path.exists():
+            return {"jobs": {}}
+        data = json.loads(path.read_text(encoding="utf-8"))
+        if isinstance(data, dict) and isinstance(data.get("jobs"), dict):
+            return data
+    except Exception:
+        pass
+    return {"jobs": {}}
+
+
+def _save_chat_job_state(state: dict[str, Any], path: Path = DEFAULT_CHAT_JOB_STATE_PATH) -> None:
+    if not isinstance(state.get("jobs"), dict):
+        state["jobs"] = {}
+    _atomic_write_json(path, state)
+
+
+def _job_response_text(response: dict[str, Any] | None) -> str:
+    if isinstance(response, dict):
+        text = response.get("response_text")
+        if isinstance(text, str):
+            return text
+    return ""
+
+
+def _persist_chat_job(job: dict[str, Any]) -> None:
+    with _CHAT_JOB_STATE_MUTEX:
+        state = _load_chat_job_state()
+        jobs = state.setdefault("jobs", {})
+        jobs[str(job["request_id"])] = job
+        _save_chat_job_state(state)
+
+
+def _load_chat_job(request_id: str) -> dict[str, Any] | None:
+    with _CHAT_JOB_STATE_MUTEX:
+        state = _load_chat_job_state()
+        job = state.get("jobs", {}).get(request_id)
+        return job if isinstance(job, dict) else None
+
+
+def _mark_chat_job_stale(job: dict[str, Any]) -> dict[str, Any]:
+    updated = dict(job)
+    updated["status"] = "stale"
+    updated["updated_at"] = _now_ms()
+    updated["error"] = "The MCP wrapper restarted or lost the in-memory task before this job completed. Check the local conversation by conversation_id before retrying."
+    _persist_chat_job(updated)
+    return updated
+
+
+def _chat_output_from_backend(
+    *,
+    data: dict[str, Any],
+    client: Notion2APIClient,
+    model: str,
+    session_key: str,
+    conversation_id: str,
+    session_created: bool,
+    request_id: str,
+    wait_seconds: float,
+) -> dict[str, Any]:
+    ok = bool(data.get("ok", False))
+    status = "completed" if ok else "error"
+    return {
+        "ok": ok,
+        "status_code": data.get("status_code"),
+        "model": _extract_actual_model(data) or data.get("model") or model,
+        "actual_model": _extract_actual_model(data),
+        "model_metadata": data.get("model_metadata") if isinstance(data.get("model_metadata"), dict) else None,
+        **_runtime_audit(client, model),
+        "session_name": session_key,
+        "conversation_id": conversation_id,
+        "session_created": session_created,
+        "status": status,
+        "request_id": request_id,
+        "job_id": request_id,
+        "retry_safe": status != "completed",
+        "wait_seconds": wait_seconds,
+        "poll_hint": "" if status == "completed" else f"Retry with request_id={request_id} or call notion2api_get_chat_job.",
+        "error": _error_summary(data),
+        "response_text": _extract_chat_content(data),
+        "raw": data,
+    }
+
+
+def _chat_pending_output(
+    *,
+    job: dict[str, Any],
+    client: Notion2APIClient,
+    model: str,
+    session_key: str,
+    conversation_id: str,
+    session_created: bool,
+    request_id: str,
+    wait_seconds: float,
+) -> dict[str, Any]:
+    return {
+        "ok": False,
+        "status_code": None,
+        "model": model,
+        "actual_model": "",
+        "model_metadata": None,
+        **_runtime_audit(client, model),
+        "session_name": session_key,
+        "conversation_id": conversation_id,
+        "session_created": session_created,
+        "status": str(job.get("status") or "pending"),
+        "request_id": request_id,
+        "job_id": request_id,
+        "retry_safe": True,
+        "wait_seconds": wait_seconds,
+        "poll_hint": f"Call notion2api_get_chat_job(request_id='{request_id}') or retry the same chat tool with the same request_id.",
+        "error": job.get("error") if isinstance(job.get("error"), str) else None,
+        "response_text": _job_response_text(job.get("response") if isinstance(job.get("response"), dict) else None),
+        "raw": {"job": job, "job_state_path": str(DEFAULT_CHAT_JOB_STATE_PATH)},
+    }
+
+
+async def _run_chat_completion_job(
+    *,
+    client: Notion2APIClient,
+    path: str,
+    payload: dict[str, Any],
+    model: str,
+    session_key: str,
+    conversation_id: str,
+    session_created: bool,
+    request_id: str,
+    wait_seconds: float,
+) -> dict[str, Any]:
+    data = await client.post(path, payload)
+    return _chat_output_from_backend(
+        data=data,
+        client=client,
+        model=model,
+        session_key=session_key,
+        conversation_id=conversation_id,
+        session_created=session_created,
+        request_id=request_id,
+        wait_seconds=wait_seconds,
+    )
+
+
+def _finalize_chat_job(request_id: str, task: asyncio.Task[dict[str, Any]]) -> None:
+    try:
+        response = task.result()
+        status = str(response.get("status") or ("completed" if response.get("ok") else "error"))
+        error = response.get("error") if isinstance(response.get("error"), str) else None
+    except Exception as exc:
+        response = None
+        status = "error"
+        error = f"{type(exc).__name__}: {exc}"
+    with _CHAT_JOB_STATE_MUTEX:
+        state = _load_chat_job_state()
+        jobs = state.setdefault("jobs", {})
+        job = jobs.get(request_id) if isinstance(jobs.get(request_id), dict) else {"request_id": request_id, "job_id": request_id}
+        job = dict(job)
+        job["status"] = status
+        job["updated_at"] = _now_ms()
+        if response is not None:
+            job["response"] = response
+            job["response_text"] = _job_response_text(response)
+        if error:
+            job["error"] = error
+        jobs[request_id] = job
+        _save_chat_job_state(state)
+    _CHAT_JOB_TASKS.pop(request_id, None)
+
+
+async def _submit_or_resume_chat_job(
+    *,
+    client: Notion2APIClient,
+    path: str,
+    payload: dict[str, Any],
+    model: str,
+    session_key: str,
+    conversation_id: str,
+    session_created: bool,
+    request_id: str | None,
+    wait_seconds: float | None,
+) -> dict[str, Any]:
+    normalized_id = _normalize_request_id(request_id)
+    bounded_wait = _bounded_chat_wait_seconds(wait_seconds)
+    metadata = payload.setdefault("metadata", {})
+    if not isinstance(metadata, dict):
+        metadata = {}
+        payload["metadata"] = metadata
+    metadata.setdefault("mcp_request_id", normalized_id)
+
+    existing = _load_chat_job(normalized_id)
+    task = _CHAT_JOB_TASKS.get(normalized_id)
+    if existing:
+        status = str(existing.get("status") or "")
+        response = existing.get("response") if isinstance(existing.get("response"), dict) else None
+        if response and status in {"completed", "error"}:
+            return response
+        if status == "running" and (task is None or task.done()):
+            if task and task.done():
+                _finalize_chat_job(normalized_id, task)
+                refreshed = _load_chat_job(normalized_id)
+                response = refreshed.get("response") if isinstance(refreshed, dict) and isinstance(refreshed.get("response"), dict) else None
+                if response:
+                    return response
+                if refreshed:
+                    existing = refreshed
+            else:
+                existing = _mark_chat_job_stale(existing)
+                return _chat_pending_output(
+                    job=existing,
+                    client=client,
+                    model=model,
+                    session_key=session_key,
+                    conversation_id=str(existing.get("conversation_id") or conversation_id),
+                    session_created=False,
+                    request_id=normalized_id,
+                    wait_seconds=bounded_wait,
+                )
+        elif task is None and status in {"pending", "stale"}:
+            return _chat_pending_output(
+                job=existing,
+                client=client,
+                model=model,
+                session_key=session_key,
+                conversation_id=str(existing.get("conversation_id") or conversation_id),
+                session_created=False,
+                request_id=normalized_id,
+                wait_seconds=bounded_wait,
+            )
+
+    if task is None:
+        now = _now_ms()
+        job = {
+            "request_id": normalized_id,
+            "job_id": normalized_id,
+            "status": "running",
+            "endpoint": path,
+            "model": model,
+            "session_name": session_key,
+            "conversation_id": conversation_id,
+            "session_created": session_created,
+            "created_at": now,
+            "updated_at": now,
+            "wait_seconds": bounded_wait,
+        }
+        _persist_chat_job(job)
+        task = asyncio.create_task(
+            _run_chat_completion_job(
+                client=client,
+                path=path,
+                payload=payload,
+                model=model,
+                session_key=session_key,
+                conversation_id=conversation_id,
+                session_created=session_created,
+                request_id=normalized_id,
+                wait_seconds=bounded_wait,
+            )
+        )
+        _CHAT_JOB_TASKS[normalized_id] = task
+        task.add_done_callback(lambda done_task, rid=normalized_id: _finalize_chat_job(rid, done_task))
+
+    if bounded_wait > 0:
+        done, _pending = await asyncio.wait({task}, timeout=bounded_wait)
+        if done:
+            result = task.result()
+            _finalize_chat_job(normalized_id, task)
+            return result
+
+    current = _load_chat_job(normalized_id) or {
+        "request_id": normalized_id,
+        "job_id": normalized_id,
+        "status": "running",
+        "model": model,
+        "session_name": session_key,
+        "conversation_id": conversation_id,
+    }
+    if str(current.get("status") or "") == "running":
+        current["status"] = "pending"
+        current["updated_at"] = _now_ms()
+        _persist_chat_job(current)
+    return _chat_pending_output(
+        job=current,
+        client=client,
+        model=model,
+        session_key=session_key,
+        conversation_id=conversation_id,
+        session_created=session_created,
+        request_id=normalized_id,
+        wait_seconds=bounded_wait,
+    )
+
+
+def _chat_job_output(request_id: str, include_last_response: bool = False) -> ChatJobOutput:
+    normalized_id = _normalize_request_id(request_id)
+    task = _CHAT_JOB_TASKS.get(normalized_id)
+    if task and task.done():
+        _finalize_chat_job(normalized_id, task)
+    job = _load_chat_job(normalized_id)
+    if not job:
+        return ChatJobOutput(ok=True, found=False, request_id=normalized_id, job_id=normalized_id)
+
+    if str(job.get("status") or "") == "running" and normalized_id not in _CHAT_JOB_TASKS:
+        job = _mark_chat_job_stale(job)
+
+    response = job.get("response") if isinstance(job.get("response"), dict) else None
+    last_response = None
+    if include_last_response:
+        last = _read_last_local_response(
+            session_name=str(job.get("session_name") or DEFAULT_SESSION_NAME),
+            conversation_id=str(job.get("conversation_id") or ""),
+        )
+        last_response = last.model_dump() if hasattr(last, "model_dump") else dict(last)
+
+    return ChatJobOutput(
+        ok=True,
+        found=True,
+        status=str(job.get("status") or ""),
+        request_id=normalized_id,
+        job_id=str(job.get("job_id") or normalized_id),
+        session_name=str(job.get("session_name") or ""),
+        conversation_id=str(job.get("conversation_id") or ""),
+        model=str(job.get("model") or ""),
+        endpoint=str(job.get("endpoint") or ""),
+        created_at=int(job.get("created_at") or 0),
+        updated_at=int(job.get("updated_at") or 0),
+        response_text=str(job.get("response_text") or _job_response_text(response)),
+        response=response,
+        error=job.get("error") if isinstance(job.get("error"), str) else None,
+        raw_job=job,
+        last_response=last_response,
+    )
 
 
 def _load_session_state(path: Path = DEFAULT_SESSION_STATE_PATH) -> dict[str, str]:
@@ -610,6 +1024,8 @@ def create_server(
         persist_remote_chat: bool = True,
         session_name: str = DEFAULT_SESSION_NAME,
         start_new_chat: bool = False,
+        request_id: str | None = None,
+        wait_seconds: float | None = None,
     ) -> ChatOutput:
         conversation_id, session_key, session_created = _conversation_id_for_session(
             session_name,
@@ -629,20 +1045,17 @@ def create_server(
                 "mcp_session_name": session_key,
             },
         }
-        data = await client.post("/v1/chat/completions", payload)
-        return {
-            "ok": data.get("ok", False),
-            "status_code": data.get("status_code"),
-            "model": _extract_actual_model(data) or data.get("model") or model,
-            "actual_model": _extract_actual_model(data),
-            "model_metadata": data.get("model_metadata") if isinstance(data.get("model_metadata"), dict) else None,
-            **_runtime_audit(client, model),
-            "session_name": session_key,
-            "conversation_id": conversation_id,
-            "session_created": session_created,
-            "response_text": _extract_chat_content(data),
-            "raw": data,
-        }
+        return await _submit_or_resume_chat_job(
+            client=client,
+            path="/v1/chat/completions",
+            payload=payload,
+            model=model,
+            session_key=session_key,
+            conversation_id=conversation_id,
+            session_created=session_created,
+            request_id=request_id,
+            wait_seconds=wait_seconds,
+        )
 
     @server.tool(description="Call Notion2API /v1/chat/completions with an explicit OpenAI-style messages array. Uses a persistent MCP session unless start_new_chat=true.", structured_output=True)
     async def notion2api_chat_completion(
@@ -651,6 +1064,8 @@ def create_server(
         persist_remote_chat: bool = True,
         session_name: str = DEFAULT_SESSION_NAME,
         start_new_chat: bool = False,
+        request_id: str | None = None,
+        wait_seconds: float | None = None,
     ) -> ChatOutput:
         conversation_id, session_key, session_created = _conversation_id_for_session(
             session_name,
@@ -666,20 +1081,17 @@ def create_server(
                 "mcp_session_name": session_key,
             },
         }
-        data = await client.post("/v1/chat/completions", payload)
-        return {
-            "ok": data.get("ok", False),
-            "status_code": data.get("status_code"),
-            "model": _extract_actual_model(data) or data.get("model") or model,
-            "actual_model": _extract_actual_model(data),
-            "model_metadata": data.get("model_metadata") if isinstance(data.get("model_metadata"), dict) else None,
-            **_runtime_audit(client, model),
-            "session_name": session_key,
-            "conversation_id": conversation_id,
-            "session_created": session_created,
-            "response_text": _extract_chat_content(data),
-            "raw": data,
-        }
+        return await _submit_or_resume_chat_job(
+            client=client,
+            path="/v1/chat/completions",
+            payload=payload,
+            model=model,
+            session_key=session_key,
+            conversation_id=conversation_id,
+            session_created=session_created,
+            request_id=request_id,
+            wait_seconds=wait_seconds,
+        )
 
     @server.tool(description="Call Notion2API /v1/responses and return extracted output text plus the raw response.", structured_output=True)
     async def notion2api_responses(
@@ -736,6 +1148,13 @@ def create_server(
         conversation_id: str | None = None,
     ) -> LastResponseOutput:
         return _read_last_local_response(session_name=session_name, conversation_id=conversation_id)
+
+    @server.tool(description="Inspect a retry-safe Notion2API MCP chat job by request_id. Use this after notion2api_chat returns status=pending or after a connector timeout.", structured_output=True)
+    async def notion2api_get_chat_job(
+        request_id: str,
+        include_last_response: bool = False,
+    ) -> ChatJobOutput:
+        return _chat_job_output(request_id=request_id, include_last_response=include_last_response)
 
     @server.tool(description="Start a fresh persistent Notion2API MCP chat for a named session.", structured_output=True)
     async def notion2api_reset_session(session_name: str = DEFAULT_SESSION_NAME) -> SessionActionOutput:
@@ -886,4 +1305,3 @@ def main(argv: list[str] | None = None) -> None:
 
 if __name__ == "__main__":
     main()
-

@@ -346,7 +346,7 @@ async function handleSend() {
             id: STATE.currentChatId,
             title: text.length > 30 ? text.substring(0, 30) + '...' : text,
             messages: [],
-            conversationId: null
+            conversationId: STATE.currentChatId
         };
         STATE.chats.push(chat);
         document.getElementById('headerTitle').textContent = chat.title;

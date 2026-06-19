@@ -81,12 +81,19 @@ window.NotionAI.API.Models = {
      */
     getResponseModelDisplayName(metadata, fallbackModelId = '') {
         const meta = metadata && typeof metadata === 'object' ? metadata : {};
-        const actual = String(meta.actual_model || meta.notion_model_name || meta.notion_step_model || meta.model || '').trim();
+        const actual = String(meta.actual_model || meta.notion_model_name || meta.notion_step_model || '').trim();
         const requested = String(meta.requested_model || fallbackModelId || '').trim();
+        const verified = meta.actual_model_verified;
 
         if (actual) {
             const actualName = this.getModelDisplayName(actual);
             const requestedName = requested ? this.getModelDisplayName(requested) : '';
+            // When the backend explicitly flags as unverified (echo detection),
+            // show "Requested X · unverified" instead of a confident label.
+            if (verified === false) {
+                const label = requestedName || actualName;
+                return `Requested ${label} · unverified`;
+            }
             if (requestedName && requested !== actual && requestedName !== actualName) {
                 return `${actualName} ← requested ${requestedName}`;
             }

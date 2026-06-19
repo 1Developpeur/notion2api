@@ -205,13 +205,21 @@ def _message_model_metadata(message: dict[str, Any]) -> dict[str, str]:
         notion_model_name = notion_model_name or first_text(part.get("notionModelName"))
         model_provider = model_provider or first_text(part.get("modelProvider"))
 
-    actual_model = first_text(raw.get("actual_model"), data.get("actual_model"), notion_model_name, notion_step_model)
-    return {
+    actual_model = first_text(raw.get("actual_model"), data.get("actual_model"), notion_model_name)
+    metadata = {
         "requested_model": requested_model,
         "notion_requested_model": notion_requested_model,
         "actual_model": actual_model,
+        "notion_model_name": notion_model_name,
+        "notion_step_model": notion_step_model,
         "model_provider": model_provider,
     }
+    if actual_model:
+        metadata["actual_model_verified"] = "true"
+    elif notion_step_model:
+        metadata["actual_model_verified"] = "false"
+        metadata["actual_model_unverified_reason"] = "Only step.model was observed; not used as actual_model."
+    return metadata
 
 def _display_message(message: dict[str, Any]) -> dict[str, Any] | None:
     raw = message.get("raw") if isinstance(message.get("raw"), dict) else {}

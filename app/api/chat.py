@@ -144,26 +144,126 @@ def _resolve_request_model(model: str | None) -> str:
     return normalized_model
 
 
+def _client_type_from_request(request: Request) -> str:
+    return request.headers.get("X-Client-Type", "").strip().lower()
+
+
+def _emit_search_metadata_for_client(client_type: str) -> bool:
+    return client_type == "web"
+
+
+def _message_content_to_text(content: Any) -> str:
+    """Helper to safely coerce content string/list into a single string."""
+    if isinstance(content, str):
+        return content
+    if isinstance(content, list):
+        parts: list[str] = []
+        for item in content:
+            if isinstance(item, str):
+                parts.append(item)
+            elif isinstance(item, dict):
+                item_type = str(item.get("type") or "").lower()
+                if item_type in {"input_text", "output_text", "text"} or "text" in item:
+                    text = str(item.get("text") or "")
+                    if text:
+                        parts.append(text)
+            elif hasattr(item, "dict") and callable(item.dict):
+                dct = item.dict()
+                item_type = str(dct.get("type") or "").lower()
+                if item_type in {"input_text", "output_text", "text"} or "text" in dct:
+                    text = str(dct.get("text") or "")
+                    if text:
+                        parts.append(text)
+        return "\n".join(parts)
+    return str(content)
+
+
+def _last_user_message_content(messages: Iterable[Any]) -> Any:
+    """Return the content field from the last user message, if any."""
+    for message in reversed(list(messages)):
+        role = getattr(message, "role", None)
+        if role is None and isinstance(message, dict):
+            role = message.get("role")
+        if role != "user":
+            continue
+        content = getattr(message, "content", None)
+        if content is None and isinstance(message, dict):
+            content = message.get("content")
+        return content
+    return ""
+
+
+_LOCAL_PROBE_OK = frozenset({
+    "reply with ok.",
+    "reply with ok",
+    "respond with ok.",
+    "respond with ok",
+})
+
+_LOCAL_PROBE_PONG = frozenset({
+    "ping! respond with exactly 'pong' to verify connection.",
+    "reply with exactly: pong",
+    "reply with exactly pong",
+})
+
+
+def _normalize_probe_text(content: Any) -> str:
+    text = _message_content_to_text(content)
+    if not text:
+        return ""
+    return " ".join(text.strip().split()).lower()
+
+
+def _strip_probe_markdown_prefix(text: str) -> str:
+    stripped = text.strip()
+    while stripped.startswith("#"):
+        stripped = stripped.lstrip("#").strip()
+    return stripped
+
+
+def _probe_match_candidates(content: Any) -> list[str]:
+    """Collect normalized strings that may be bare or wrapped probe prompts."""
+    text = _message_content_to_text(content)
+    if not text:
+        return []
+
+    candidates: list[str] = []
+
+    def _add(candidate: str) -> None:
+        normalized = " ".join(candidate.strip().split()).lower()
+        if not normalized:
+            return
+        if normalized not in candidates:
+            candidates.append(normalized)
+        markdown_stripped = _strip_probe_markdown_prefix(normalized)
+        if markdown_stripped and markdown_stripped not in candidates:
+            candidates.append(markdown_stripped)
+
+    _add(text)
+
+    for match in re.finditer(r"(?im)^\s*question:\s*(.+?)\s*$", text):
+        _add(match.group(1))
+
+    for match in re.finditer(r"(?i)\[current user request\]\s*(.+)$", text, flags=re.DOTALL):
+        tail = match.group(1).strip()
+        if not tail:
+            continue
+        _add(tail)
+        for question_match in re.finditer(r"(?im)^\s*question:\s*(.+?)\s*$", tail):
+            _add(question_match.group(1))
+
+    return candidates
+
+
 def _local_probe_response_text(content: Any) -> str:
     """Return a local response for health/preflight prompts that must not persist."""
-    if not isinstance(content, str):
-        return ""
-
-    normalized = " ".join(content.strip().split()).lower()
-    if normalized in {
-        "reply with ok.",
-        "reply with ok",
-        "respond with ok.",
-        "respond with ok",
-    }:
-        return "OK"
-    if normalized in {
-        "ping! respond with exactly 'pong' to verify connection.",
-        "reply with exactly: pong",
-        "reply with exactly pong",
-    }:
-        return "pong"
+    for normalized in _probe_match_candidates(content):
+        if normalized in _LOCAL_PROBE_OK:
+            return "OK"
+        if normalized in _LOCAL_PROBE_PONG:
+            return "pong"
     return ""
+
 
 
 RECALL_INTENT_KEYWORDS = [
@@ -313,16 +413,48 @@ def _merge_model_metadata(current: dict[str, Any] | None, item: dict[str, Any]) 
 def _response_model_metadata(requested_model: str, model_metadata: dict[str, Any] | None) -> dict[str, Any]:
     payload = dict(model_metadata or {})
     requested = normalize_model_id(requested_model) or requested_model
+    notion_requested = ""
     if requested:
         payload.setdefault("requested_model", requested)
         try:
             from app.model_registry import get_notion_model
-            payload.setdefault("notion_requested_model", get_notion_model(requested))
+            notion_requested = get_notion_model(requested)
+            payload.setdefault("notion_requested_model", notion_requested)
         except Exception:
             pass
-    actual = payload.get("actual_model") or payload.get("notion_model_name") or payload.get("notion_step_model")
+    # Resolve the actual model from available metadata fields.
+    actual = payload.get("actual_model") or payload.get("notion_model_name")
+    step_model = payload.get("notion_step_model") or ""
     if actual:
         payload["actual_model"] = actual
+        # notionModelName often just echoes the requested model — that is NOT
+        # proof that the model actually responded (locked/downgraded models
+        # like Fable 5 silently swap to a different model while still
+        # reporting the original codename).  Only mark as verified when the
+        # upstream reports a DIFFERENT model than what was requested.
+        if notion_requested and actual == notion_requested:
+            payload["actual_model_verified"] = False
+            payload.setdefault(
+                "actual_model_unverified_reason",
+                "notionModelName matches the requested model; may be an echo, not proof of actual responder.",
+            )
+        else:
+            payload.setdefault("actual_model_verified", True)
+    elif step_model:
+        # step.model (notion_step_model) is usually the requested route, but
+        # when it DIFFERS from the requested notion model that is genuine
+        # proof of a silent model swap (e.g. Fable 5 → Gemini 3.5 Flash).
+        if notion_requested and step_model != notion_requested:
+            payload["actual_model"] = step_model
+            payload["actual_model_verified"] = True
+            payload["actual_model_source"] = "notion_step_model_mismatch"
+        else:
+            payload["actual_model_verified"] = False
+            payload.setdefault(
+                "actual_model_unverified_reason",
+                "Only notion_step_model was observed and it matches the request; may be an echo.",
+            )
+            payload.pop("actual_model", None)
     return {k: v for k, v in payload.items() if v not in (None, "", [], {})}
 
 
@@ -744,6 +876,8 @@ def _create_standard_stream_generator(
     model_name: str,
     first_item: Any,
     stream_gen: Iterable[Any],
+    *,
+    client_type: str = "",
 ) -> Generator[str, None, None]:
     """
     Standard text SSE text
@@ -899,8 +1033,10 @@ def _create_standard_stream_generator(
                     )
                 streamed_content_accumulator = final_reply
 
-        # text search_metadata text
-        if collected_search_sources or collected_search_queries:
+        # 输出搜索结果（使用前端定义的 search_metadata 类型；仅 web UI 客户端）
+        if _emit_search_metadata_for_client(client_type) and (
+            collected_search_sources or collected_search_queries
+        ):
             search_metadata = {
                 "type": "search_metadata",
                 "searches": {
@@ -1257,6 +1393,7 @@ def _handle_standard_request(
 
     response_id = f"chatcmpl-{uuid.uuid4().hex}"
     max_retries = max(3, len(pool.clients))
+    client_type = _client_type_from_request(request)
 
     for attempt in range(1, max_retries + 1):
         client = None
@@ -1326,6 +1463,7 @@ def _handle_standard_request(
                         req_body.model,
                         first_item,
                         stream_gen,
+                        client_type=client_type,
                     ),
                     media_type="text/event-stream",
                     headers=stream_headers,
@@ -1523,13 +1661,60 @@ async def create_chat_completion(
     """
     from app.config import is_standard_mode
 
+    # Check if this is an OpenCode call
+    user_agent = request.headers.get("user-agent", "").lower()
+    x_client_name = request.headers.get("x-client-name", "").lower()
+    is_opencode = "opencode" in user_agent or x_client_name == "opencode"
+    
+    if is_opencode:
+        custom_instructions = (
+            "If concrete artifacts are provided:\n"
+            "\tAnalyze the supplied artifacts.\n"
+            "\tIdentify the likely root cause.\n"
+            "\tProvide a minimal fix or patch.\n"
+            "\tInclude verification steps.\n"
+            "\n"
+            "If artifacts are incomplete:\n"
+            "\tState the most likely interpretation.\n"
+            "\tExplain what cannot be determined.\n"
+            "\tRequest the smallest missing input needed.\n"
+            "\n"
+            "If the user asks what the assistant can do:\n"
+            "\tDescribe capabilities in terms of the API/client workflow.\n"
+            "\tDo not mention missing native access unless asked.\n"
+            "\n"
+            "If tools are exposed by the client:\n"
+            "\tUse the provided tool protocol.\n"
+            "\tDo not claim independent access outside that protocol."
+        )
+        
+        # Check if there is already a system message
+        system_msg = None
+        for msg in req_body.messages:
+            if msg.role == "system":
+                system_msg = msg
+                break
+                
+        if system_msg:
+            # Prefix the system message content
+            if isinstance(system_msg.content, str):
+                system_msg.content = f"{custom_instructions}\n\n{system_msg.content}"
+            elif isinstance(system_msg.content, list):
+                system_msg.content.insert(0, {"type": "text", "text": custom_instructions + "\n\n"})
+            else:
+                system_msg.content = custom_instructions
+        else:
+            # No system message exists, insert one at the beginning
+            new_system_msg = ChatMessage(role="system", content=custom_instructions)
+            req_body.messages.insert(0, new_system_msg)
+
     req_body.model = _resolve_request_model(req_body.model)
     assert req_body.model is not None
 
     # Check for local smoke/preflight messages to avoid creating new chats in Notion.
     if req_body.messages:
-        last_content = req_body.messages[-1].content or ""
-        probe_response = _local_probe_response_text(last_content)
+        last_user_content = _last_user_message_content(req_body.messages)
+        probe_response = _local_probe_response_text(last_user_content)
         if probe_response:
             response_id = f"chatcmpl-{uuid.uuid4().hex}"
             if req_body.stream:
@@ -1738,11 +1923,16 @@ async def create_chat_completion(
                 pending_search_md = ""
                 client_type = request.headers.get("X-Client-Type", "").lower()
                 recent_thinking_buffer: list[str] = []
+                model_metadata: dict[str, Any] = {}
 
                 try:
                     for raw_item in _iter_stream_items(first_stream_item, active_stream_gen):
                         item = _normalize_stream_item(raw_item)
                         item_type = item.get("type")
+
+                        model_metadata = _merge_model_metadata(model_metadata, item)
+                        if item_type == "model_metadata":
+                            continue
 
                         if item_type == "search":
                             search_data = item.get("data")
@@ -2025,6 +2215,10 @@ async def create_chat_completion(
                                     }
                                 },
                             )
+                    metadata_event = _build_model_metadata_event(req_body.model, model_metadata)
+                    if metadata_event:
+                        yield metadata_event
+
                     yield _build_stream_chunk(
                         response_id, req_body.model, finish_reason="stop"
                     )
@@ -2048,9 +2242,13 @@ async def create_chat_completion(
             thinking_parts: list[str] = []
             authoritative_final_content = ""
             authoritative_final_source_type = ""
+            model_metadata: dict[str, Any] = {}
             for raw_item in _iter_stream_items(first_item, stream_gen):
                 item = _normalize_stream_item(raw_item)
                 item_type = item.get("type")
+                model_metadata = _merge_model_metadata(model_metadata, item)
+                if item_type == "model_metadata":
+                    continue
                 if item_type == "final_content":
                     final_text = str(item.get("text", "") or "").strip()
                     if final_text:
@@ -2096,7 +2294,7 @@ async def create_chat_completion(
             response_text = (
                 full_text if full_text.strip() else "[assistant_no_visible_content]"
             )
-            return ChatCompletionResponse(
+            response_obj = ChatCompletionResponse(
                 id=response_id,
                 model=req_body.model,
                 choices=[
@@ -2105,6 +2303,8 @@ async def create_chat_completion(
                     )
                 ],
             )
+            _attach_response_model_metadata(response_obj, req_body.model, model_metadata)
+            return response_obj
         except NotionUpstreamError as exc:
             if client is not None and exc.retriable:
                 pool.mark_failed(client)
