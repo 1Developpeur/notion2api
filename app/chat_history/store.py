@@ -38,6 +38,25 @@ CREATE TABLE IF NOT EXISTS chat_messages (
 CREATE VIRTUAL TABLE IF NOT EXISTS chat_messages_fts USING fts5(id UNINDEXED, thread_id UNINDEXED, role UNINDEXED, text, tokenize='unicode61');
 """
 
+MODEL_METADATA_COLUMNS: dict[str, str] = {
+    "requested_model": "TEXT",
+    "notion_requested_model": "TEXT",
+    "actual_model": "TEXT",
+    "model_provider": "TEXT",
+}
+
+
+def _ensure_chat_message_columns(conn: sqlite3.Connection) -> list[str]:
+    """Add columns introduced after the initial chat-history schema."""
+    existing = {str(row[1]) for row in conn.execute("PRAGMA table_info(chat_messages)").fetchall()}
+    added: list[str] = []
+    for name, column_type in MODEL_METADATA_COLUMNS.items():
+        if name in existing:
+            continue
+        conn.execute(f'ALTER TABLE chat_messages ADD COLUMN "{name}" {column_type}')
+        added.append(name)
+    return added
+
 
 def get_default_chat_history_db_path() -> str:
     explicit = os.getenv("CHAT_HISTORY_DB_PATH")
@@ -330,6 +349,7 @@ class ChatHistoryStore:
         os.makedirs(os.path.dirname(os.path.abspath(self.db_path)), exist_ok=True)
         with self._conn() as conn:
             conn.executescript(DDL)
+            _ensure_chat_message_columns(conn)
             conn.commit()
 
     @contextlib.contextmanager
@@ -481,7 +501,7 @@ class ChatHistoryStore:
     def list_threads(self, limit: int = 50, offset: int = 0, include_inactive: bool = False) -> list[dict[str, Any]]:
         filters = [
             """(
-              json_extract(t.raw_json, '$.type') IN ('workflow', 'markdown-chat')
+              json_extract(t.raw_json, '$.type') IN ('workflow', 'markdown-chat', 'markdownChat')
               OR json_extract(t.raw_json, '$.title') IS NOT NULL
             )"""
         ]

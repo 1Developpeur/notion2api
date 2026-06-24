@@ -12,6 +12,15 @@ class NotionClientAttachmentTests(unittest.TestCase):
         # replace real scraper with a mock
         self.client._scraper = Mock()
 
+    def test_create_thread_persists_markdown_chat_type(self):
+        response = Mock(status_code=200)
+        with patch("app.notion_client.requests.post", return_value=response) as post:
+            self.assertTrue(self.client._create_thread("thread-1", "markdown-chat"))
+
+        payload = post.call_args.kwargs["json"]
+        operation = payload["transactions"][0]["operations"][0]
+        self.assertEqual(operation["args"]["type"], "markdownChat")
+
     def test_request_upload_descriptor_payload_and_response(self):
         # mock response
         resp = Mock()
@@ -208,7 +217,15 @@ class NotionClientAttachmentTests(unittest.TestCase):
         payload = self.client._scraper.post.call_args.kwargs["json"]
         self.assertEqual(payload["threadId"], "thread-actual")
         self.assertFalse(payload["createThread"])
-        self.assertEqual(payload["createdSource"], "workflows")
+        self.assertEqual(payload["threadType"], "markdown-chat")
+        self.assertEqual(payload["createdSource"], "ai_module")
+        config = next(item for item in payload["transcript"] if item.get("type") == "config")
+        self.assertEqual(config["value"]["type"], "markdown-chat")
+        uploader_instance.upload_attachments.assert_called_once_with(
+            thread_id="thread-1",
+            attachments=attachments,
+            create_thread=False,
+        )
         self.assertNotIn("threadParentPointer", payload)
         self.assertIn("attachments", payload)
         self.assertEqual(
@@ -232,6 +249,39 @@ class NotionClientAttachmentTests(unittest.TestCase):
         self.assertNotIn("https://signed.test/a.csv", str(payload))
         self.assertNotIn("token_v2", str(payload))
         self.assertNotIn("bytes", str(payload))
+
+    def test_attachment_request_precreates_visible_chat_before_upload(self):
+        self.client._scraper.cookies = Mock()
+        self.client._scraper.cookies.clear = Mock()
+        response = Mock(status_code=200, text="")
+        response.close = Mock()
+        self.client._scraper.post.return_value = response
+
+        transcript = [{"type": "config", "value": {"type": "workflow", "model": "gpt-4"}}]
+        attachments = [InputAttachment(name="a.csv", content_type="text/csv", source="inline_data", data="YQpi")]
+        uploaded = [UploadedAttachment(name="a.csv", content_type="text/csv", size_bytes=3, source="inline_data", file_id="file-1", thread_mounted=True, attachment_url="https://files.test/a.csv")]
+
+        uploader_instance = Mock()
+        uploader_instance.upload_attachments.side_effect = lambda **kwargs: (uploaded, kwargs["thread_id"])
+        with patch.object(self.client, "_create_thread", return_value=True) as create_thread, patch(
+            "app.notion_client.NotionAttachmentUploader", return_value=uploader_instance
+        ), patch("app.notion_client.parse_stream", return_value=[{"type": "chunk", "value": "ok"}]), patch(
+            "app.notion_client._resolve_thread_persistence",
+            return_value={"persist": True, "generate_title": True, "save_all_thread_operations": True, "set_unread_state": True, "delete_after_stream": False},
+        ):
+            list(self.client.stream_response(transcript, attachments=attachments))
+
+        created_thread_id, created_thread_type = create_thread.call_args.args
+        self.assertEqual(created_thread_type, "markdown-chat")
+        uploader_instance.upload_attachments.assert_called_once_with(
+            thread_id=created_thread_id,
+            attachments=attachments,
+            create_thread=False,
+        )
+        payload = self.client._scraper.post.call_args.kwargs["json"]
+        self.assertEqual(payload["threadId"], created_thread_id)
+        self.assertEqual(payload["threadType"], "markdown-chat")
+        self.assertEqual(payload["createdSource"], "ai_module")
 
     def test_stream_response_attachment_failure_wraps_upstream_error(self):
         self.client._scraper.cookies = Mock()

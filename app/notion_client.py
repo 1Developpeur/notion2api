@@ -167,6 +167,24 @@ class NotionOpusAPI:
                     return thread_type
         return "workflow"
 
+    def _with_thread_type(
+        self,
+        notion_transcript: list[dict[str, Any]],
+        thread_type: str,
+    ) -> list[dict[str, Any]]:
+        """Return a transcript copy whose config block uses the requested chat surface."""
+        converted: list[dict[str, Any]] = []
+        for block in notion_transcript:
+            if block.get("type") != "config" or not isinstance(block.get("value"), dict):
+                converted.append(block)
+                continue
+            updated = dict(block)
+            updated_value = dict(block["value"])
+            updated_value["type"] = thread_type
+            updated["value"] = updated_value
+            converted.append(updated)
+        return converted
+
     def _resolve_request_profile(self, thread_type: str) -> dict[str, Any]:
         is_markdown_chat = thread_type == "markdown-chat"
         return {
@@ -569,6 +587,7 @@ class NotionOpusAPI:
         return collected
 
     def _create_thread(self, thread_id: str, thread_type: str) -> bool:
+        persisted_thread_type = "markdownChat" if thread_type == "markdown-chat" else thread_type
         payload = {
             "requestId": str(uuid.uuid4()),
             "transactions": [
@@ -592,7 +611,7 @@ class NotionOpusAPI:
                                 "messages": [],
                                 "data": {},
                                 "alive": True,
-                                "type": thread_type,
+                                "type": persisted_thread_type,
                             },
                         }
                     ],
@@ -737,6 +756,11 @@ class NotionOpusAPI:
 
         notion_transcript = self._to_notion_transcript(transcript)
         thread_type = self._resolve_thread_type(notion_transcript)
+        if attachments:
+            # Native uploads belong to an ordinary Notion AI chat. Attachment
+            # transport must not silently reclassify the persisted thread as a workflow.
+            thread_type = "markdown-chat"
+            notion_transcript = self._with_thread_type(notion_transcript, thread_type)
         request_profile = self._resolve_request_profile(thread_type)
         thread_persistence = _resolve_thread_persistence()
 
@@ -762,6 +786,19 @@ class NotionOpusAPI:
 
         # text thread_id text
         self.current_thread_id = thread_id
+
+        if attachments and should_create_thread:
+            if not self._create_thread(thread_id, thread_type):
+                raise NotionUpstreamError(
+                    "Failed to create an ordinary Notion AI chat for the attachment request.",
+                    status_code=502,
+                    retriable=True,
+                    response_excerpt="attachment_chat_precreate_failed",
+                )
+            should_create_thread = False
+            request_profile["create_thread"] = False
+            request_profile["precreate_thread"] = False
+            request_profile["is_partial_transcript"] = True
 
         uploaded_attachments: list[UploadedAttachment] = []
         if attachments:
@@ -828,7 +865,7 @@ class NotionOpusAPI:
             "setUnreadState": thread_persistence["set_unread_state"],
             "isPartialTranscript": request_profile["is_partial_transcript"],
             "asPatchResponse": True,
-            "createdSource": "workflows" if uploaded_attachments else "ai_module",
+            "createdSource": "ai_module",
             "isUserInAnySalesAssistedSpace": False,
             "isSpaceSalesAssisted": False,
             "threadParentPointer": {

@@ -77,3 +77,18 @@ response/
 /inspect_towing_key_filings.txt
 /towing_files_inventory.json
 /towing_unique_manifest.json
+
+
+# Local one-off patch and machine-specific maintenance helpers
+/scripts/add_mcp_session_read_tools.py
+/scripts/apply_*.py
+/scripts/fix_*.py
+/scripts/move_remote_controls_to_footer.py
+/scripts/patch_*.py
+/scripts/remove_local_ping_pong_button_tail.py
+/scripts/restart_*.ps1
+/scripts/run_remote_history_patch.ps1
+/scripts/start_mcp_wrapper_once.ps1
+/scripts/verify_*.py
+/scripts/markdown_chunker_sample.md
+/scripts/markdown_chunker_sample_chunks/
