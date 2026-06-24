@@ -69,3 +69,11 @@ docker-compose.override.yml
 
 # Response debug data (contains sensitive tokens)
 response/
+
+# Local MCP runtime state and analysis scratch
+/.notion2api_mcp_*.json
+/scratch/
+/tmp_*.py
+/inspect_towing_key_filings.txt
+/towing_files_inventory.json
+/towing_unique_manifest.json
