@@ -10,7 +10,7 @@ import threading
 import time
 import uuid
 from pathlib import Path
-from typing import Any, Literal
+from typing import Any, Literal, Annotated
 
 import httpx
 from pydantic import BaseModel, Field
@@ -176,6 +176,77 @@ class ChatJobOutput(BaseModel):
     error: str | None = Field(default=None, description="Persisted error summary, if any.")
     raw_job: dict[str, Any] = Field(default_factory=dict, description="Raw persisted job state.")
     last_response: dict[str, Any] | None = Field(default=None, description="Optional latest local assistant response lookup.")
+
+
+
+def prepare_mcp_file_attachments(
+    files: list[str] | None,
+) -> list[dict[str, Any]]:
+    if not files:
+        return []
+
+    from app.attachments.errors import AttachmentError
+    from app.attachments.security import AttachmentPolicy, validate_attachment_count, validate_content_type, validate_size
+    import mimetypes
+    import base64
+    from pathlib import Path
+
+    policy = AttachmentPolicy.from_env()
+    if not policy.enabled:
+        raise AttachmentError(
+            "Attachments are disabled for this server.",
+            code="attachments_disabled",
+            param="attachments",
+        )
+
+    validate_attachment_count(len(files), policy)
+
+    prepared = []
+    for file_path in files:
+        path = Path(file_path)
+        if not path.exists():
+            raise AttachmentError(
+                f"Attachment path does not exist: {file_path}",
+                code="attachment_not_found",
+                param="attachments",
+            )
+        if not path.is_file():
+            raise AttachmentError(
+                f"Attachment path is not a file: {file_path}",
+                code="invalid_attachment_type",
+                param="attachments",
+            )
+
+        size = path.stat().st_size
+        validate_size(size, policy)
+
+        guessed_type, _ = mimetypes.guess_type(path.name)
+        mime_type = validate_content_type(guessed_type or "application/octet-stream", policy)
+
+        data = path.read_bytes()
+        encoded = base64.b64encode(data).decode("utf-8")
+        prepared.append({
+            "name": path.name,
+            "content_type": mime_type,
+            "data": f"data:{mime_type};base64,{encoded}",
+        })
+
+    return prepared
+
+
+FileAttachments = Annotated[
+    list[str] | None,
+    Field(
+        default=None,
+        description="Files to attach to this request.",
+        json_schema_extra={
+            "items": {
+                "type": "string",
+                "format": "file",
+            }
+        },
+    ),
+]
 
 
 class Notion2APIClient:
@@ -1026,6 +1097,7 @@ def create_server(
         start_new_chat: bool = False,
         request_id: str | None = None,
         wait_seconds: float | None = None,
+        attachments: FileAttachments = None,
     ) -> ChatOutput:
         conversation_id, session_key, session_created = _conversation_id_for_session(
             session_name,
@@ -1035,6 +1107,7 @@ def create_server(
         if system_prompt:
             messages.append({"role": "system", "content": system_prompt})
         messages.append({"role": "user", "content": prompt})
+        prepared = prepare_mcp_file_attachments(attachments)
         payload = {
             "model": model,
             "messages": messages,
@@ -1045,6 +1118,8 @@ def create_server(
                 "mcp_session_name": session_key,
             },
         }
+        if prepared:
+            payload["attachments"] = prepared
         return await _submit_or_resume_chat_job(
             client=client,
             path="/v1/chat/completions",
@@ -1066,11 +1141,13 @@ def create_server(
         start_new_chat: bool = False,
         request_id: str | None = None,
         wait_seconds: float | None = None,
+        attachments: FileAttachments = None,
     ) -> ChatOutput:
         conversation_id, session_key, session_created = _conversation_id_for_session(
             session_name,
             start_new_chat=start_new_chat,
         )
+        prepared = prepare_mcp_file_attachments(attachments)
         payload = {
             "model": model,
             "messages": messages,
@@ -1081,6 +1158,8 @@ def create_server(
                 "mcp_session_name": session_key,
             },
         }
+        if prepared:
+            payload["attachments"] = prepared
         return await _submit_or_resume_chat_job(
             client=client,
             path="/v1/chat/completions",
@@ -1099,7 +1178,9 @@ def create_server(
         model: str = DEFAULT_MODEL,
         instructions: str | None = None,
         persist_remote_chat: bool = True,
+        attachments: FileAttachments = None,
     ) -> ResponsesOutput:
+        prepared = prepare_mcp_file_attachments(attachments)
         payload: dict[str, Any] = {
             "model": model,
             "input": input_text,
@@ -1107,6 +1188,8 @@ def create_server(
         }
         if instructions:
             payload["instructions"] = instructions
+        if prepared:
+            payload["attachments"] = prepared
         data = await client.post("/v1/responses", payload)
         return {
             "ok": data.get("ok", False),
