@@ -33,6 +33,7 @@ MODEL_MAP: dict[str, str] = {
     "minimax-m2.5": "fireworks-minimax-m2.5",
     "kimi-2.6": "fireworks-kimi-k2.6",
     "deepseek-v4pro": "baseten-deepseek-v4-pro",
+    "glm-5.2": "baseten-glm-5.2",
     
     # Additional compatibility aliases requested
     "claude-haiku-4.5": "anthropic-haiku-4.5",
@@ -56,6 +57,7 @@ MODEL_MAP: dict[str, str] = {
     "fireworks-minimax-m2.5": "fireworks-minimax-m2.5",
     "fireworks-kimi-k2.6": "fireworks-kimi-k2.6",
     "baseten-deepseek-v4-pro": "baseten-deepseek-v4-pro",
+    "baseten-glm-5.2": "baseten-glm-5.2",
     "xigua-mochi-medium": "xigua-mochi-medium",
     "xinomavro-cake": "xinomavro-cake",
     "galette-medium-thinking": "galette-medium-thinking",
@@ -94,6 +96,7 @@ NOTION_MODEL_REVERSE_MAP: dict[str, str] = {
     "fireworks-minimax-m2.5": "minimax-m2.5",
     "fireworks-kimi-k2.6": "kimi-2.6",
     "baseten-deepseek-v4-pro": "deepseek-v4pro",
+    "baseten-glm-5.2": "glm-5.2",
 }
 
 DISPLAY_NAMES: dict[str, str] = {
@@ -120,6 +123,7 @@ DISPLAY_NAMES: dict[str, str] = {
     "minimax-m2.5": "MiniMax M2.5",
     "kimi-2.6": "Kimi 2.6",
     "deepseek-v4pro": "DeepSeek V4 Pro",
+    "glm-5.2": "GLM 5.2",
 
     # Backend Model IDs
     "oatmeal-cookie": "GPT-5.2",
@@ -136,12 +140,42 @@ DISPLAY_NAMES: dict[str, str] = {
     "fireworks-minimax-m2.5": "MiniMax M2.5",
     "fireworks-kimi-k2.6": "Kimi K2.6",
     "baseten-deepseek-v4-pro": "DeepSeek V4 Pro",
+    "baseten-glm-5.2": "GLM 5.2",
     "xigua-mochi-medium": "Grok 4.3",
     "xinomavro-cake": "Grok Build 0.1",
     "galette-medium-thinking": "Gemini 3.1 Pro",
     "anthropic-haiku-4.5": "Haiku 4.5",
     "gingerbread": "Gemini 3 Flash",
     "acai-budino": "Fable 5",
+}
+
+
+# Only canonical Notion model codenames are advertised by /v1/models.
+# Friendly names and compatibility aliases remain accepted for requests through MODEL_MAP.
+EXPOSED_MODEL_IDS: tuple[str, ...] = tuple(NOTION_MODEL_REVERSE_MAP.keys())
+
+MODEL_FAMILIES: dict[str, str] = {
+    "almond-croissant-low": "anthropic",
+    "avocado-froyo-medium": "anthropic",
+    "apricot-sorbet-high": "anthropic",
+    "ambrosia-tart-high": "anthropic",
+    "anthropic-haiku-4.5": "anthropic",
+    "acai-budino": "anthropic",
+    "oatmeal-cookie": "openai",
+    "oval-kumquat-medium": "openai",
+    "opal-quince-medium": "openai",
+    "oregon-grape-medium": "openai",
+    "otaheite-apple-medium": "openai",
+    "gingerbread": "google",
+    "galette-medium-thinking": "google",
+    "vertex-gemini-3.5-flash": "google",
+    "vertex-gemini-2.5-flash": "google",
+    "xigua-mochi-medium": "xai",
+    "xinomavro-cake": "xai",
+    "fireworks-minimax-m2.5": "minimax",
+    "fireworks-kimi-k2.6": "kimi",
+    "baseten-deepseek-v4-pro": "deepseek",
+    "baseten-glm-5.2": "glm",
 }
 
 MODEL_ICONS: dict[str, str] = {
@@ -172,6 +206,7 @@ MODEL_ICONS: dict[str, str] = {
     "minimax-m2.5": "◈",
     "kimi-2.6": "🌙",
     "deepseek-v4pro": "🔷",
+    "glm-5.2": "◆",
 
     # Backend Model IDs
     "almond-croissant-low": "✳️",
@@ -194,6 +229,7 @@ MODEL_ICONS: dict[str, str] = {
     "fireworks-minimax-m2.5": "◈",
     "fireworks-kimi-k2.6": "🌙",
     "baseten-deepseek-v4-pro": "🔷",
+    "baseten-glm-5.2": "◆",
 }
 
 # Default to Sonnet 4.6 for a balance of speed and quality.
@@ -245,7 +281,39 @@ def get_standard_model(model_name: str) -> str:
 
 
 def list_available_models() -> list[str]:
-    return list(MODEL_MAP.keys())
+    """Return one canonical selectable ID per underlying Notion model."""
+    return list(EXPOSED_MODEL_IDS)
+
+
+def get_model_metadata(model_name: str) -> dict[str, object]:
+    """Return canonical model metadata without exposing compatibility aliases as models."""
+    notion_model = get_notion_model(model_name)
+    public_name = NOTION_MODEL_REVERSE_MAP.get(notion_model, DEFAULT_MODEL)
+
+    if notion_model.startswith("fireworks-"):
+        upstream_host = "fireworks"
+    elif notion_model.startswith("baseten-"):
+        upstream_host = "baseten"
+    elif notion_model.startswith("vertex-"):
+        upstream_host = "vertex"
+    else:
+        upstream_host = "notion"
+
+    aliases = [
+        alias
+        for alias, target in MODEL_MAP.items()
+        if target == notion_model and alias != notion_model
+    ]
+
+    return {
+        "canonical_id": notion_model,
+        "public_name": public_name,
+        "display_name": DISPLAY_NAMES.get(notion_model, DISPLAY_NAMES.get(public_name, public_name)),
+        "model_family": MODEL_FAMILIES.get(notion_model, "unknown"),
+        "transport": "notion2api",
+        "upstream_host": upstream_host,
+        "aliases": aliases,
+    }
 
 
 def is_supported_model(model_name: str) -> bool:

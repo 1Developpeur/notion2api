@@ -2,7 +2,7 @@ from typing import Dict, Any
 
 from fastapi import APIRouter
 
-from app.model_registry import list_available_models
+from app.model_registry import get_model_metadata, list_available_models
 
 router = APIRouter()
 
@@ -12,15 +12,15 @@ async def list_models() -> Dict[str, Any]:
     """
     List available models in OpenAI-compatible format.
     """
-    return {
-        "object": "list",
-        "data": [
-            {
-                "id": model_id,
-                "object": "model",
-                "created": 0,
-                "owned_by": "notion2api",
-            }
-            for model_id in list_available_models()
-        ],
-    }
+    data = []
+    for model_id in list_available_models():
+        metadata = get_model_metadata(model_id)
+        data.append({
+            "id": model_id,
+            "object": "model",
+            "created": 0,
+            "owned_by": metadata["model_family"],
+            **metadata,
+        })
+
+    return {"object": "list", "data": data}

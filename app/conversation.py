@@ -406,21 +406,27 @@ class ConversationManager:
 
     def _build_context_block(self, notion_client: Any, *, gemini_mode: bool = False) -> Dict[str, Any]:
         surface = "ai_module" if gemini_mode else "workflows"
+        context_value = {
+            "timezone": getattr(notion_client, "timezone", "America/Chicago"),
+            "userName": notion_client.user_name,
+            "userId": notion_client.user_id,
+            "userEmail": notion_client.user_email,
+            "spaceName": "Notion",
+            "spaceId": notion_client.space_id,
+            "spaceViewId": notion_client.space_view_id,
+            "currentDatetime": datetime.datetime.now().astimezone().isoformat(),
+            "surface": surface,
+            "agentName": notion_client.user_name,
+        }
+        context_page_id = str(
+            getattr(notion_client, "context_page_id", "") or ""
+        ).strip()
+        if context_page_id:
+            context_value["context_page_id"] = context_page_id
         return {
             "id": str(uuid.uuid4()),
             "type": "context",
-            "value": {
-                "timezone": "Asia/Shanghai",
-                "userName": notion_client.user_name,
-                "userId": notion_client.user_id,
-                "userEmail": notion_client.user_email,
-                "spaceName": "Notion",
-                "spaceId": notion_client.space_id,
-                "spaceViewId": notion_client.space_view_id,
-                "currentDatetime": datetime.datetime.now().astimezone().isoformat(),
-                "surface": surface,
-                "agentName": notion_client.user_name,
-            },
+            "value": context_value,
         }
 
     def _fetch_recent_done_summaries(self, conn: sqlite3.Connection, conversation_id: str) -> List[str]:
@@ -2044,6 +2050,16 @@ def build_standard_transcript(
     thread_type = get_thread_type(model_name)
 
     # text transcripttextconfig + context
+    context_value = {
+        "timezone": str(account.get("timezone") or "America/Chicago"),
+        "currentDatetime": datetime.now().astimezone().isoformat(),
+        "userId": account.get("user_id", ""),
+        "spaceId": account.get("space_id", ""),
+    }
+    context_page_id = str(account.get("context_page_id") or "").strip()
+    if context_page_id:
+        context_value["context_page_id"] = context_page_id
+
     transcript = [
         {
             "id": str(uuid.uuid4()),
@@ -2058,12 +2074,7 @@ def build_standard_transcript(
         {
             "id": str(uuid.uuid4()),
             "type": "context",
-            "value": {
-                "timezone": "Asia/Shanghai",
-                "currentDatetime": datetime.now().astimezone().isoformat(),
-                "userId": account.get("user_id", ""),
-                "spaceId": account.get("space_id", ""),
-            }
+            "value": context_value,
         }
     ]
 

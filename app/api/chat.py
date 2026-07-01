@@ -1428,6 +1428,8 @@ def _handle_standard_request(
             account = {
                 "user_id": client.user_id,
                 "space_id": client.space_id,
+                "timezone": getattr(client, "timezone", "America/Chicago"),
+                "context_page_id": getattr(client, "context_page_id", ""),
             }
             messages = cleaned_msgs
             transcript = build_standard_transcript(messages, req_body.model, account)

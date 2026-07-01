@@ -1,8 +1,10 @@
 from app.model_registry import (
     get_display_name,
+    get_model_metadata,
     get_notion_model,
     get_standard_model,
     get_thread_type,
+    list_available_models,
     is_supported_model,
 )
 
@@ -23,6 +25,7 @@ def test_captured_notion_backend_mappings_are_registered():
         "minimax-m2.5": "fireworks-minimax-m2.5",
         "kimi-2.6": "fireworks-kimi-k2.6",
         "deepseek-v4pro": "baseten-deepseek-v4-pro",
+        "glm-5.2": "baseten-glm-5.2",
         "grok-4.3": "xigua-mochi-medium",
         "grok-build0.1": "xinomavro-cake",
         "gemini-3.1pro": "galette-medium-thinking",
@@ -43,8 +46,44 @@ def test_captured_display_names_are_registered():
     assert get_display_name("minimax-m2.5") == "MiniMax M2.5"
     assert get_display_name("claude-haiku4.5") == "Claude Haiku 4.5"
     assert get_display_name("claude-fable5") == "Fable 5"
+    assert get_display_name("glm-5.2") == "GLM 5.2"
 
 
 def test_gemini_3_5_flash_no_longer_uses_markdown_chat_route():
     assert get_thread_type("gemini-2.5flash") == "workflow"
     assert get_thread_type("gemini-3.5flash") == "workflow"
+
+
+def test_available_models_expose_only_canonical_notion_ids():
+    models = list_available_models()
+
+    assert len(models) == 21
+    assert len(models) == len(set(models))
+    assert "apricot-sorbet-high" in models
+    assert "claude-opus4.7" not in models
+    assert "baseten-glm-5.2" in models
+    assert "glm-5.2" not in models
+
+
+def test_model_metadata_preserves_transport_and_underlying_family():
+    opus = get_model_metadata("claude-opus4.7")
+    glm = get_model_metadata("baseten-glm-5.2")
+
+    assert opus == {
+        "canonical_id": "apricot-sorbet-high",
+        "public_name": "claude-opus4.7",
+        "display_name": "Opus 4.7",
+        "model_family": "anthropic",
+        "transport": "notion2api",
+        "upstream_host": "notion",
+        "aliases": ["claude-opus4.7"],
+    }
+    assert glm == {
+        "canonical_id": "baseten-glm-5.2",
+        "public_name": "glm-5.2",
+        "display_name": "GLM 5.2",
+        "model_family": "glm",
+        "transport": "notion2api",
+        "upstream_host": "baseten",
+        "aliases": ["glm-5.2"],
+    }

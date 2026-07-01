@@ -23,7 +23,7 @@ from app.stream_parser_safe import parse_stream
 urllib3.disable_warnings(urllib3.exceptions.InsecureRequestWarning)
 
 # text Notion textNotion text
-NOTION_CLIENT_VERSION = os.getenv("NOTION_CLIENT_VERSION", "23.13.20260228.0625")
+NOTION_CLIENT_VERSION = os.getenv("NOTION_CLIENT_VERSION", "23.13.20260623.1532")
 
 
 def _env_flag(name: str, default: bool = False) -> bool:
@@ -116,6 +116,16 @@ class NotionOpusAPI:
         self.space_view_id = account_config.get("space_view_id", "")
         self.user_name = account_config.get("user_name", "user")
         self.user_email = account_config.get("user_email", "")
+        self.timezone = str(
+            account_config.get("timezone")
+            or os.getenv("NOTION_TIMEZONE")
+            or "America/Chicago"
+        ).strip()
+        self.context_page_id = str(
+            account_config.get("context_page_id")
+            or os.getenv("NOTION_CONTEXT_PAGE_ID")
+            or ""
+        ).strip()
         self.cookies = account_config.get("cookies", {})
         if not isinstance(self.cookies, dict):
             self.cookies = {}
@@ -865,7 +875,8 @@ class NotionOpusAPI:
             "setUnreadState": thread_persistence["set_unread_state"],
             "isPartialTranscript": request_profile["is_partial_transcript"],
             "asPatchResponse": True,
-            "createdSource": "ai_module",
+            "patchResponseVersion": 2,
+            "createdSource": "workflows" if thread_type == "workflow" else "ai_module",
             "isUserInAnySalesAssistedSpace": False,
             "isSpaceSalesAssisted": False,
             "threadParentPointer": {
