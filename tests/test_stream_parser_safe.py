@@ -39,6 +39,31 @@ def test_buffered_thinking_fallback_remains_for_legacy_answer_segments(monkeypat
     ]
 
 
+def test_mixed_initial_value_array_keeps_thinking_out_of_visible_content():
+    line = json.dumps({
+        "type": "patch",
+        "v": [{
+            "o": "a",
+            "p": "/s/-",
+            "v": {
+                "type": "agent-inference",
+                "value": [
+                    {"type": "thinking", "content": "Private reasoning."},
+                    {"type": "text", "content": "Visible answer."},
+                ],
+            },
+        }],
+    })
+
+    assert list(parse_stream(DummyResponse([line]))) == [
+        {"type": "thinking", "text": "Private reasoning."},
+        {"type": "content", "text": "Visible answer."},
+    ]
+    assert list(stream_parser_safe.parse_stream(DummyResponse([line]))) == [
+        {"type": "content", "text": "Visible answer."},
+    ]
+
+
 def test_parser_emits_completion_only_for_finished_at_patch():
     response = DummyResponse([
         json.dumps({
