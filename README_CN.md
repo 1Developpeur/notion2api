@@ -125,6 +125,7 @@ uvicorn app.server:app --host 0.0.0.0 --port 8000
 | 模型名称 | 说明 |
 |---|---|
 | `claude-sonnet4.6` | 速度与质量的最佳平衡 — **最推荐** |
+| `claude-sonnet5` | 最新 Sonnet，推理与 agent 能力更强 |
 | `claude-opus4.6` | 推理能力更强，建议适量使用 |
 | `claude-opus4.7` | 最新 Claude，推理能力最强 |
 | `gpt-5.5` | 最新 GPT（Beta） |

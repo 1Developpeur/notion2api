@@ -4,6 +4,7 @@ from app.core.models import normalize_model_id
 MODEL_MAP: dict[str, str] = {
     # Anthropic
     "claude-sonnet4.6": "almond-croissant-low",
+    "claude-sonnet5": "angel-cake-high",
     "claude-opus4.6": "avocado-froyo-medium",
     "claude-opus4.7": "apricot-sorbet-high",
     "claude-opus4.8": "ambrosia-tart-high",
@@ -49,6 +50,7 @@ MODEL_MAP: dict[str, str] = {
     "vertex-gemini-2.5-flash": "vertex-gemini-2.5-flash",
     "vertex-gemini-3.5-flash": "vertex-gemini-3.5-flash",
     "almond-croissant-low": "almond-croissant-low",
+    "angel-cake-high": "angel-cake-high",
     "avocado-froyo-medium": "avocado-froyo-medium",
     "apricot-sorbet-high": "apricot-sorbet-high",
     "ambrosia-tart-high": "ambrosia-tart-high",
@@ -69,6 +71,7 @@ MODEL_MAP: dict[str, str] = {
 NOTION_MODEL_REVERSE_MAP: dict[str, str] = {
     # Anthropic
     "almond-croissant-low": "claude-sonnet4.6",
+    "angel-cake-high": "claude-sonnet5",
     "avocado-froyo-medium": "claude-opus4.6",
     "apricot-sorbet-high": "claude-opus4.7",
     "ambrosia-tart-high": "claude-opus4.8",
@@ -102,6 +105,7 @@ NOTION_MODEL_REVERSE_MAP: dict[str, str] = {
 DISPLAY_NAMES: dict[str, str] = {
     # Aliases
     "claude-sonnet4.6": "Claude Sonnet 4.6",
+    "claude-sonnet5": "Claude Sonnet 5",
     "claude-opus4.6": "Claude Opus 4.6",
     "claude-opus4.7": "Claude Opus 4.7",
     "claude-opus4.8": "Claude Opus 4.8",
@@ -132,6 +136,7 @@ DISPLAY_NAMES: dict[str, str] = {
     "vertex-gemini-2.5-flash": "Gemini 2.5 Flash",
     "vertex-gemini-3.5-flash": "Gemini 3.5 Flash",
     "almond-croissant-low": "Sonnet 4.6",
+    "angel-cake-high": "Sonnet 5",
     "avocado-froyo-medium": "Opus 4.6",
     "apricot-sorbet-high": "Opus 4.7",
     "ambrosia-tart-high": "Opus 4.8",
@@ -156,6 +161,7 @@ EXPOSED_MODEL_IDS: tuple[str, ...] = tuple(NOTION_MODEL_REVERSE_MAP.keys())
 
 MODEL_FAMILIES: dict[str, str] = {
     "almond-croissant-low": "anthropic",
+    "angel-cake-high": "anthropic",
     "avocado-froyo-medium": "anthropic",
     "apricot-sorbet-high": "anthropic",
     "ambrosia-tart-high": "anthropic",
@@ -181,6 +187,7 @@ MODEL_FAMILIES: dict[str, str] = {
 MODEL_ICONS: dict[str, str] = {
     # Anthropic
     "claude-sonnet4.6": "✳️",
+    "claude-sonnet5": "✳️",
     "claude-opus4.6": "✳️",
     "claude-opus4.7": "✳️",
     "claude-opus4.8": "✳️",
@@ -210,6 +217,7 @@ MODEL_ICONS: dict[str, str] = {
 
     # Backend Model IDs
     "almond-croissant-low": "✳️",
+    "angel-cake-high": "✳️",
     "avocado-froyo-medium": "✳️",
     "apricot-sorbet-high": "✳️",
     "ambrosia-tart-high": "✳️",

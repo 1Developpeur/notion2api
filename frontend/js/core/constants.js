@@ -23,6 +23,7 @@ window.NotionAI.Core.Constants = {
             label: 'Anthropic',
             models: [
                 { id: "claude-sonnet4.6", label: "Sonnet 4.6", icon: "✳️", desc: "Fast & efficient" },
+                { id: "claude-sonnet5", label: "Sonnet 5", icon: "✳️", badge: "New" },
                 { id: "claude-opus4.6", label: "Opus 4.6", icon: "✳️" },
                 { id: "claude-opus4.7", label: "Opus 4.7", icon: "✳️" },
                 { id: "claude-opus4.8", label: "Opus 4.8", icon: "✳️", badge: "New" },
@@ -79,6 +80,7 @@ window.NotionAI.Core.Constants = {
     // Flat model list (for backward compat)
     MODELS: [
         { id: "claude-sonnet4.6", label: "Sonnet 4.6" },
+        { id: "claude-sonnet5", label: "Sonnet 5" },
         { id: "claude-opus4.6", label: "Opus 4.6" },
         { id: "claude-opus4.7", label: "Opus 4.7" },
         { id: "claude-opus4.8", label: "Opus 4.8" },
@@ -104,6 +106,7 @@ window.NotionAI.Core.Constants = {
 
     MODEL_DISPLAY_NAMES: {
         "claude-sonnet4.6": "Sonnet 4.6",
+        "claude-sonnet5": "Sonnet 5",
         "claude-opus4.6": "Opus 4.6",
         "claude-opus4.7": "Opus 4.7",
         "claude-opus4.8": "Opus 4.8",
@@ -127,6 +130,7 @@ window.NotionAI.Core.Constants = {
 
     MODEL_ICONS: {
         "claude-sonnet4.6": "✳️",
+        "claude-sonnet5": "✳️",
         "claude-opus4.6": "✳️",
         "claude-opus4.7": "✳️",
         "claude-opus4.8": "✳️",
