@@ -816,6 +816,23 @@ def _bind_pending_segment(
     )
 
 
+def _stream_completion_event(patch: dict[str, Any]) -> dict[str, Any] | None:
+    """Return an explicit completion event for Notion's terminal metadata patch."""
+    patch_path = _normalize_path(patch)
+    if patch_path.rsplit("/", 1)[-1].lower() != "finishedat":
+        return None
+
+    finished_at = patch.get("v")
+    if finished_at is None:
+        return None
+
+    return {
+        "type": "stream_complete",
+        "finished_at": finished_at,
+        "segment_index": _extract_segment_index(patch_path),
+    }
+
+
 def parse_stream(response: requests.Response) -> Generator[dict[str, Any], None, None]:
     """
     text Notion NDJSON text
@@ -901,6 +918,10 @@ def parse_stream(response: requests.Response) -> Generator[dict[str, Any], None,
             patch_v = patch.get("v")
             patch_path = _normalize_path(patch)
             patch_seg = _extract_segment_index(patch_path)
+
+            completion_event = _stream_completion_event(patch)
+            if completion_event is not None:
+                yield completion_event
 
             markdown_chat_patch = _extract_markdown_chat_patch_text(patch)
             if markdown_chat_patch is not None:

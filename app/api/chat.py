@@ -808,67 +808,55 @@ def _create_lite_stream_generator(
             exc_info=True,
             extra={"request_info": {"event": "lite_stream_interrupted"}},
         )
-        error_hint = "\n\n[Upstream connection interrupted. Retry later.]"
-        streamed_content_accumulator += error_hint
+        raise
+    # text
+    final_reply, _ = _select_best_final_reply(
+        streamed_content_accumulator,
+        authoritative_final_content,
+        authoritative_final_source_type,
+    )
+
+    # text
+    missing_suffix = _compute_missing_suffix(
+        streamed_content_accumulator, final_reply
+    )
+    if missing_suffix:
         if not assistant_started:
             assistant_started = True
             yield _build_stream_chunk(
                 response_id,
                 model_name,
                 role="assistant",
-                content=error_hint,
+                content=missing_suffix,
             )
         else:
-            yield _build_stream_chunk(response_id, model_name, content=error_hint)
-    finally:
+            yield _build_stream_chunk(
+                response_id, model_name, content=missing_suffix
+            )
+        streamed_content_accumulator += missing_suffix
+    elif final_reply != streamed_content_accumulator:
         # text
-        final_reply, _ = _select_best_final_reply(
-            streamed_content_accumulator,
-            authoritative_final_content,
-            authoritative_final_source_type,
-        )
-
-        # text
-        missing_suffix = _compute_missing_suffix(
-            streamed_content_accumulator, final_reply
-        )
-        if missing_suffix:
+        if not streamed_content_accumulator and final_reply:
             if not assistant_started:
                 assistant_started = True
                 yield _build_stream_chunk(
                     response_id,
                     model_name,
                     role="assistant",
-                    content=missing_suffix,
+                    content=final_reply,
                 )
             else:
                 yield _build_stream_chunk(
-                    response_id, model_name, content=missing_suffix
+                    response_id, model_name, content=final_reply
                 )
-            streamed_content_accumulator += missing_suffix
-        elif final_reply != streamed_content_accumulator:
-            # text
-            if not streamed_content_accumulator and final_reply:
-                if not assistant_started:
-                    assistant_started = True
-                    yield _build_stream_chunk(
-                        response_id,
-                        model_name,
-                        role="assistant",
-                        content=final_reply,
-                    )
-                else:
-                    yield _build_stream_chunk(
-                        response_id, model_name, content=final_reply
-                    )
-                streamed_content_accumulator = final_reply
+            streamed_content_accumulator = final_reply
 
-        metadata_event = _build_model_metadata_event(model_name, model_metadata)
-        if metadata_event:
-            yield metadata_event
+    metadata_event = _build_model_metadata_event(model_name, model_metadata)
+    if metadata_event:
+        yield metadata_event
 
-        yield _build_stream_chunk(response_id, model_name, finish_reason="stop")
-        yield "data: [DONE]\n\n"
+    yield _build_stream_chunk(response_id, model_name, finish_reason="stop")
+    yield "data: [DONE]\n\n"
 
 
 def _create_standard_stream_generator(
@@ -978,80 +966,68 @@ def _create_standard_stream_generator(
             exc_info=True,
             extra={"request_info": {"event": "standard_stream_interrupted"}},
         )
-        error_hint = "\n\n[Upstream connection interrupted. Retry later.]"
-        streamed_content_accumulator += error_hint
+        raise
+    # text
+    final_reply, _ = _select_best_final_reply(
+        streamed_content_accumulator,
+        authoritative_final_content,
+        authoritative_final_source_type,
+    )
+
+    # text
+    missing_suffix = _compute_missing_suffix(
+        streamed_content_accumulator, final_reply
+    )
+    if missing_suffix:
         if not assistant_started:
             assistant_started = True
             yield _build_stream_chunk(
                 response_id,
                 model_name,
                 role="assistant",
-                content=error_hint,
+                content=missing_suffix,
             )
         else:
-            yield _build_stream_chunk(response_id, model_name, content=error_hint)
-    finally:
+            yield _build_stream_chunk(
+                response_id, model_name, content=missing_suffix
+            )
+        streamed_content_accumulator += missing_suffix
+    elif final_reply != streamed_content_accumulator:
         # text
-        final_reply, _ = _select_best_final_reply(
-            streamed_content_accumulator,
-            authoritative_final_content,
-            authoritative_final_source_type,
-        )
-
-        # text
-        missing_suffix = _compute_missing_suffix(
-            streamed_content_accumulator, final_reply
-        )
-        if missing_suffix:
+        if not streamed_content_accumulator and final_reply:
             if not assistant_started:
                 assistant_started = True
                 yield _build_stream_chunk(
                     response_id,
                     model_name,
                     role="assistant",
-                    content=missing_suffix,
+                    content=final_reply,
                 )
             else:
                 yield _build_stream_chunk(
-                    response_id, model_name, content=missing_suffix
+                    response_id, model_name, content=final_reply
                 )
-            streamed_content_accumulator += missing_suffix
-        elif final_reply != streamed_content_accumulator:
-            # text
-            if not streamed_content_accumulator and final_reply:
-                if not assistant_started:
-                    assistant_started = True
-                    yield _build_stream_chunk(
-                        response_id,
-                        model_name,
-                        role="assistant",
-                        content=final_reply,
-                    )
-                else:
-                    yield _build_stream_chunk(
-                        response_id, model_name, content=final_reply
-                    )
-                streamed_content_accumulator = final_reply
+            streamed_content_accumulator = final_reply
 
-        # 输出搜索结果（使用前端定义的 search_metadata 类型；仅 web UI 客户端）
-        if _emit_search_metadata_for_client(client_type) and (
-            collected_search_sources or collected_search_queries
-        ):
-            search_metadata = {
-                "type": "search_metadata",
-                "searches": {
-                    "queries": collected_search_queries,
-                    "sources": collected_search_sources,
-                },
-            }
-            yield f"data: {json.dumps(search_metadata, ensure_ascii=False)}\n\n"
+    # 输出搜索结果（使用前端定义的 search_metadata 类型；仅 web UI 客户端）
+    if _emit_search_metadata_for_client(client_type) and (
+        collected_search_sources or collected_search_queries
+    ):
+        search_metadata = {
+            "type": "search_metadata",
+            "searches": {
+                "queries": collected_search_queries,
+                "sources": collected_search_sources,
+            },
+        }
+        yield f"data: {json.dumps(search_metadata, ensure_ascii=False)}\n\n"
 
-        metadata_event = _build_model_metadata_event(model_name, model_metadata)
-        if metadata_event:
-            yield metadata_event
+    metadata_event = _build_model_metadata_event(model_name, model_metadata)
+    if metadata_event:
+        yield metadata_event
 
-        yield _build_stream_chunk(response_id, model_name, finish_reason="stop")
-        yield "data: [DONE]\n\n"
+    yield _build_stream_chunk(response_id, model_name, finish_reason="stop")
+    yield "data: [DONE]\n\n"
 
 
 def _persist_round(
