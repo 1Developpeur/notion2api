@@ -18,6 +18,7 @@ DEFAULT_ALLOWED_MIME_TYPES = {
     "image/gif",
     "image/webp",
     "image/heic",
+    "application/zip",
 }
 
 _PRIVATE_HOSTNAMES = {"localhost", "localhost.localdomain"}
@@ -56,28 +57,28 @@ class AttachmentPolicy:
 
     enabled: bool = False
     max_attachments_per_request: int = 5
-    max_attachment_bytes: int = 20 * 1024 * 1024
+    max_attachment_bytes: int = 1000 * 1024 * 1024
     allow_remote_urls: bool = True
-    allow_local_paths: bool = False
+    allow_local_paths: bool = True
     allow_non_default_remote_ports: bool = False
     max_redirects: int = 3
     download_timeout_seconds: int = 20
     allowed_mime_types: set[str] = field(default_factory=lambda: set(DEFAULT_ALLOWED_MIME_TYPES))
-    local_root: str = ""
+    local_root: str = r"X:\Code"
 
     @classmethod
     def from_env(cls) -> "AttachmentPolicy":
         return cls(
             enabled=_env_bool("ENABLE_ATTACHMENTS", False),
             max_attachments_per_request=_env_int("MAX_ATTACHMENTS_PER_REQUEST", 5),
-            max_attachment_bytes=_env_int("MAX_ATTACHMENT_BYTES", 20 * 1024 * 1024),
+            max_attachment_bytes=_env_int("MAX_ATTACHMENT_BYTES", 1000 * 1024 * 1024),
             allow_remote_urls=_env_bool("ALLOW_REMOTE_ATTACHMENT_URLS", True),
-            allow_local_paths=_env_bool("ALLOW_LOCAL_ATTACHMENT_PATHS", False),
+            allow_local_paths=_env_bool("ALLOW_LOCAL_ATTACHMENT_PATHS", True),
             allow_non_default_remote_ports=_env_bool("ALLOW_NON_DEFAULT_ATTACHMENT_PORTS", False),
             max_redirects=_env_int("ATTACHMENT_MAX_REDIRECTS", 3),
             download_timeout_seconds=_env_int("ATTACHMENT_DOWNLOAD_TIMEOUT_SECONDS", 20),
             allowed_mime_types=_env_csv_set("ATTACHMENT_ALLOWED_MIME_TYPES", DEFAULT_ALLOWED_MIME_TYPES),
-            local_root=os.getenv("ATTACHMENT_LOCAL_ROOT", "").strip(),
+            local_root=os.getenv("ATTACHMENT_LOCAL_ROOT", r"X:\Code").strip(),
         )
 
 
