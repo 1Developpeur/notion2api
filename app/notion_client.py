@@ -162,6 +162,14 @@ class NotionOpusAPI:
             self._scraper = requests.Session()
         self._scraper_lock = threading.Lock()
 
+    def get_ai_model_picker_config(self) -> dict[str, Any]:
+        """Fetch space AI model picker config from Notion v3 API."""
+        endpoint = "https://www.notion.so/api/v3/getAvailableModels"
+        payload = {"spaceId": self.space_id}
+        resp = self._scraper.post(endpoint, headers=self._build_chat_history_headers(), json=payload, timeout=30)
+        resp.raise_for_status()
+        return resp.json()
+
     def _build_cookie_header(self) -> str:
         cookie_jar = self.cookies.copy()
         cookie_jar["notion_user_id"] = self.user_id

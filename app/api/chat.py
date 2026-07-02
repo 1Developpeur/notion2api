@@ -131,12 +131,33 @@ def _upstream_error_response(exc: NotionUpstreamError) -> JSONResponse:
     )
 
 
-def _resolve_request_model(model: str | None) -> str:
+def _resolve_request_model(request: Request, model: str | None) -> str:
     normalized_model = normalize_model_id(model)
     if not normalized_model:
         openai_error("The 'model' field is required.", "model_required")
+
+    restricted = set()
+    try:
+        pool = request.app.state.account_pool
+        client = pool.get_client(wait_if_cooling=False)
+        from app.model_registry import get_restricted_models_for_space, get_notion_model
+        restricted = get_restricted_models_for_space(client)
+        notion_model = get_notion_model(normalized_model)
+        if notion_model in restricted or normalized_model in restricted:
+            openai_error(
+                f"Model '{normalized_model}' is unavailable for the current account due to restriction (e.g. trial_not_allowed).",
+                "model_restricted",
+                status_code=400
+            )
+    except Exception as e:
+        if hasattr(e, "status_code"):
+            raise e
+
     if not is_supported_model(normalized_model):
-        available_models = list_available_models()
+        try:
+            available_models = [m for m in list_available_models() if get_notion_model(m) not in restricted and m not in restricted]
+        except Exception:
+            available_models = list_available_models()
         openai_error(
             f"Unsupported model '{normalized_model}'. Available models: {', '.join(available_models)}",
             "model_not_found",
@@ -1128,7 +1149,7 @@ def _handle_lite_request(
     """text Lite text"""
     pool = request.app.state.account_pool
 
-    req_body.model = _resolve_request_model(req_body.model)
+    req_body.model = _resolve_request_model(request, req_body.model)
     assert req_body.model is not None
 
     # text
@@ -1364,7 +1385,7 @@ def _handle_standard_request(
 
     pool = request.app.state.account_pool
 
-    req_body.model = _resolve_request_model(req_body.model)
+    req_body.model = _resolve_request_model(request, req_body.model)
     assert req_body.model is not None
 
     response_id = f"chatcmpl-{uuid.uuid4().hex}"
@@ -1643,7 +1664,7 @@ async def create_chat_completion(
     user_agent = request.headers.get("user-agent", "").lower()
     x_client_name = request.headers.get("x-client-name", "").lower()
     is_opencode = "opencode" in user_agent or x_client_name == "opencode"
-    
+
     if is_opencode:
         custom_instructions = (
             "If concrete artifacts are provided:\n"
@@ -1665,14 +1686,14 @@ async def create_chat_completion(
             "\tUse the provided tool protocol.\n"
             "\tDo not claim independent access outside that protocol."
         )
-        
+
         # Check if there is already a system message
         system_msg = None
         for msg in req_body.messages:
             if msg.role == "system":
                 system_msg = msg
                 break
-                
+
         if system_msg:
             # Prefix the system message content
             if isinstance(system_msg.content, str):
@@ -1686,7 +1707,7 @@ async def create_chat_completion(
             new_system_msg = ChatMessage(role="system", content=custom_instructions)
             req_body.messages.insert(0, new_system_msg)
 
-    req_body.model = _resolve_request_model(req_body.model)
+    req_body.model = _resolve_request_model(request, req_body.model)
     assert req_body.model is not None
 
     # Check for local smoke/preflight messages to avoid creating new chats in Notion.
@@ -1701,7 +1722,7 @@ async def create_chat_completion(
                     yield _build_stream_chunk(response_id, req_body.model, content=probe_response)
                     yield _build_stream_chunk(response_id, req_body.model, finish_reason="stop")
                     yield "data: [DONE]\n\n"
-                
+
                 stream_headers = {
                     "Cache-Control": "no-cache",
                     "Connection": "keep-alive",

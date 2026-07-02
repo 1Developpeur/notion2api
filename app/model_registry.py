@@ -1,4 +1,7 @@
 from app.core.models import normalize_model_id
+import time
+from app.logger import logger
+
 
 
 MODEL_MAP: dict[str, str] = {
@@ -10,14 +13,14 @@ MODEL_MAP: dict[str, str] = {
     "claude-opus4.8": "ambrosia-tart-high",
     "claude-haiku4.5": "anthropic-haiku-4.5",
     "claude-fable5": "acai-budino",
-    
+
     # OpenAI
     "gpt-5.2": "oatmeal-cookie",
     "gpt-5.4": "oval-kumquat-medium",
     "gpt-5.5": "opal-quince-medium",
     "gpt-5.4mini": "oregon-grape-medium",
     "gpt-5.4nano": "otaheite-apple-medium",
-    
+
     # Google
     "gemini-3-flash": "gingerbread",
     "gemini-3flash": "gingerbread",
@@ -25,17 +28,17 @@ MODEL_MAP: dict[str, str] = {
     "gemini-3.1pro": "galette-medium-thinking",
     "gemini-3.5flash": "vertex-gemini-3.5-flash",
     "gemini-2.5flash": "vertex-gemini-2.5-flash",
-    
+
     # xAI
     "grok-4.3": "xigua-mochi-medium",
     "grok-build0.1": "xinomavro-cake",
-    
+
     # Other
     "minimax-m2.5": "fireworks-minimax-m2.5",
     "kimi-2.6": "fireworks-kimi-k2.6",
     "deepseek-v4pro": "baseten-deepseek-v4-pro",
     "glm-5.2": "baseten-glm-5.2",
-    
+
     # Additional compatibility aliases requested
     "claude-haiku-4.5": "anthropic-haiku-4.5",
     "gpt-5.4-mini": "oregon-grape-medium",
@@ -77,24 +80,24 @@ NOTION_MODEL_REVERSE_MAP: dict[str, str] = {
     "ambrosia-tart-high": "claude-opus4.8",
     "anthropic-haiku-4.5": "claude-haiku4.5",
     "acai-budino": "claude-fable5",
-    
+
     # OpenAI
     "oatmeal-cookie": "gpt-5.2",
     "oval-kumquat-medium": "gpt-5.4",
     "opal-quince-medium": "gpt-5.5",
     "oregon-grape-medium": "gpt-5.4mini",
     "otaheite-apple-medium": "gpt-5.4nano",
-    
+
     # Google
     "gingerbread": "gemini-3flash",
     "galette-medium-thinking": "gemini-3.1pro",
     "vertex-gemini-3.5-flash": "gemini-3.5flash",
     "vertex-gemini-2.5-flash": "gemini-2.5flash",
-    
+
     # xAI
     "xigua-mochi-medium": "grok-4.3",
     "xinomavro-cake": "grok-build0.1",
-    
+
     # Other
     "fireworks-minimax-m2.5": "minimax-m2.5",
     "fireworks-kimi-k2.6": "kimi-2.6",
@@ -337,3 +340,60 @@ def get_display_name(model_name: str) -> str:
 def get_model_icon(model_name: str) -> str:
     standard_name = get_standard_model(model_name)
     return MODEL_ICONS.get(standard_name, "")
+
+
+_RESTRICTED_MODELS_CACHE: dict[str, tuple[float, set[str]]] = {}
+
+def get_restricted_models_for_space(client) -> set[str]:
+    now = time.time()
+    space_id = client.space_id
+    if space_id in _RESTRICTED_MODELS_CACHE:
+        t, val = _RESTRICTED_MODELS_CACHE[space_id]
+        if now - t < 300:  # 5 minutes cache
+            return val
+
+    try:
+        config = client.get_ai_model_picker_config()
+        restricted = set()
+
+        # 1. Check restrictedAccessModelsInPickerConfig
+        for item in config.get("restrictedAccessModelsInPickerConfig", []):
+            codename = item.get("codename")
+            if codename:
+                restricted.add(codename)
+
+        # 2. Check models with isDisabled and disabledReason
+        for item in config.get("models", []):
+            if item.get("isDisabled") and item.get("disabledReason"):
+                model_name = item.get("model")
+                if model_name:
+                    restricted.add(model_name)
+            # Also check restrictedAccessModelCodename
+            if item.get("isDisabled") and item.get("restrictedAccessModelCodename"):
+                codename = item.get("restrictedAccessModelCodename")
+                if codename:
+                    restricted.add(codename)
+
+        _RESTRICTED_MODELS_CACHE[space_id] = (now, restricted)
+        return restricted
+    except Exception as e:
+        logger.warning(f"Failed to fetch restricted models for space {space_id}: {e}")
+        if space_id in _RESTRICTED_MODELS_CACHE:
+            return _RESTRICTED_MODELS_CACHE[space_id][1]
+        return set()
+
+def list_available_models_for_request(request) -> list[str]:
+    try:
+        pool = request.app.state.account_pool
+        client = pool.get_client(wait_if_cooling=False)
+        restricted = get_restricted_models_for_space(client)
+    except Exception:
+        restricted = set()
+
+    filtered = []
+    for model_id in EXPOSED_MODEL_IDS:
+        notion_model = get_notion_model(model_id)
+        if notion_model in restricted or model_id in restricted:
+            continue
+        filtered.append(model_id)
+    return filtered
