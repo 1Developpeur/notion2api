@@ -78,6 +78,17 @@ def _extract_attachment_file_id(attachment_url: str) -> str:
     return path.rstrip("/").split("/")[-1] if path else ""
 
 
+def _is_zip_upload(name: str, content_type: str) -> bool:
+    normalized_type = str(content_type or "").split(";", 1)[0].strip().lower()
+    return normalized_type in {"application/zip", "application/x-zip-compressed"} or str(name or "").lower().endswith(".zip")
+
+
+def _notion_upload_content_type(name: str, content_type: str) -> str:
+    if _is_zip_upload(name, content_type):
+        return "application/x-zip-compressed"
+    return content_type
+
+
 def _default_persist_threads() -> bool:
     """Preserve Notion-visible threads only for stateful local-memory mode by default."""
     app_mode = os.getenv("APP_MODE", "heavy").strip().lower()
@@ -312,9 +323,10 @@ class NotionOpusAPI:
         Raises NotionUpstreamError on HTTP or response failures.
         """
         endpoint = "https://www.notion.so/api/v3/getUploadFileUrlForAssistantChatTranscriptUpload"
+        notion_content_type = _notion_upload_content_type(name, content_type)
         payload = {
             "name": name,
-            "contentType": content_type,
+            "contentType": notion_content_type,
             "assistantChatTranscriptSessionPointer": {
                 "spaceId": self.space_id,
                 "table": "thread",
@@ -323,6 +335,8 @@ class NotionOpusAPI:
             "contentLength": size,
             "createThread": create_thread,
         }
+        if _is_zip_upload(name, notion_content_type):
+            payload["allowUnsupportedTypes"] = True
         if _attachment_descriptor_debug_enabled():
             logger.warning(
                 "Attachment descriptor request",
@@ -332,7 +346,7 @@ class NotionOpusAPI:
                         "endpoint": "getUploadFileUrlForAssistantChatTranscriptUpload",
                         "payload_keys": sorted(payload.keys()),
                         "fileName": name,
-                        "contentType": content_type,
+                        "contentType": notion_content_type,
                         "size": size,
                         "threadId_present": bool(thread_id),
                         "createThread": create_thread,
@@ -794,11 +808,6 @@ class NotionOpusAPI:
 
         notion_transcript = self._to_notion_transcript(transcript)
         thread_type = self._resolve_thread_type(notion_transcript)
-        if attachments:
-            # Native uploads belong to an ordinary Notion AI chat. Attachment
-            # transport must not silently reclassify the persisted thread as a workflow.
-            thread_type = "markdown-chat"
-            notion_transcript = self._with_thread_type(notion_transcript, thread_type)
         request_profile = self._resolve_request_profile(thread_type)
         thread_persistence = _resolve_thread_persistence()
 
@@ -825,19 +834,6 @@ class NotionOpusAPI:
 
         # text thread_id text
         self.current_thread_id = thread_id
-
-        if attachments and should_create_thread:
-            if not self._create_thread(thread_id, thread_type):
-                raise NotionUpstreamError(
-                    "Failed to create an ordinary Notion AI chat for the attachment request.",
-                    status_code=502,
-                    retriable=True,
-                    response_excerpt="attachment_chat_precreate_failed",
-                )
-            should_create_thread = False
-            request_profile["create_thread"] = False
-            request_profile["precreate_thread"] = False
-            request_profile["is_partial_transcript"] = True
 
         uploaded_attachments: list[UploadedAttachment] = []
         if attachments:

@@ -19,6 +19,7 @@ DEFAULT_ALLOWED_MIME_TYPES = {
     "image/webp",
     "image/heic",
     "application/zip",
+    "application/x-zip-compressed",
 }
 
 _PRIVATE_HOSTNAMES = {"localhost", "localhost.localdomain"}

@@ -52,6 +52,15 @@ class NotionClientAttachmentTests(unittest.TestCase):
         self.assertNotIn("size", body)
         self.assertNotIn("threadId", body)
 
+    def test_zip_upload_descriptor_payload(self):
+        resp = Mock(status_code=200)
+        resp.json.return_value = {"signedUploadPostUrl": "https://upload.test/zip", "url": "attachment:file-zip:block-zip"}
+        self.client._scraper.post.return_value = resp
+        self.client.request_upload_descriptor(name="source.zip", content_type="application/zip", size=123, thread_id="thread-zip", create_thread=False)
+        body = self.client._scraper.post.call_args.kwargs["json"]
+        self.assertEqual(body["contentType"], "application/x-zip-compressed")
+        self.assertTrue(body["allowUnsupportedTypes"])
+
     def test_request_upload_descriptor_nested_file_id_and_aliases(self):
         resp = Mock()
         resp.status_code = 200
