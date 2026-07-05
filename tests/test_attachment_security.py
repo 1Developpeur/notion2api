@@ -2,11 +2,18 @@ import base64
 import tempfile
 import unittest
 from pathlib import Path
-from unittest.mock import patch
+from unittest.mock import MagicMock, patch
 
 from app.attachments.errors import AttachmentError
 from app.attachments.loader import decode_inline_data, load_attachment_data
 from app.attachments.models import InputAttachment
+from app.api.chat import _attachments_enabled_for_request
+from app.core.internal_callers import (
+    REPO_AI_CALLER_HEADER,
+    REPO_AI_CALLER_VALUE,
+    _is_loopback_host,
+    is_repo_ai_internal_request,
+)
 from app.attachments.security import (
     AttachmentPolicy,
     validate_content_type,
@@ -15,7 +22,87 @@ from app.attachments.security import (
 )
 
 
+def _mock_request(
+    client_host: str = "127.0.0.1",
+    url_hostname: str = "127.0.0.1",
+    headers: dict | None = None,
+) -> MagicMock:
+    req = MagicMock()
+    req.client = MagicMock()
+    req.client.host = client_host
+    req.url = MagicMock()
+    req.url.hostname = url_hostname
+    req.headers = headers or {}
+    return req
+
+
 class AttachmentSecurityTests(unittest.TestCase):
+    # ── _is_loopback_host ──────────────────────────────────────────
+
+    def test_loopback_host_detection(self) -> None:
+        self.assertTrue(_is_loopback_host("127.0.0.1"))
+        self.assertTrue(_is_loopback_host("127.0.0.2"))
+        self.assertTrue(_is_loopback_host("::1"))
+        self.assertTrue(_is_loopback_host("localhost"))
+        self.assertTrue(_is_loopback_host("[::1]"))
+        self.assertFalse(_is_loopback_host("192.0.2.10"))
+        self.assertFalse(_is_loopback_host(""))
+        self.assertFalse(_is_loopback_host("0.0.0.0"))
+        self.assertFalse(_is_loopback_host("203.0.113.5"))
+
+    # ── is_repo_ai_internal_request ─────────────────────────────────
+
+    def test_internal_request_recognized(self) -> None:
+        req = _mock_request(headers={REPO_AI_CALLER_HEADER: REPO_AI_CALLER_VALUE})
+        self.assertTrue(is_repo_ai_internal_request(req))
+
+    def test_internal_request_missing_header(self) -> None:
+        req = _mock_request()
+        self.assertFalse(is_repo_ai_internal_request(req))
+
+    def test_internal_request_wrong_header_value(self) -> None:
+        req = _mock_request(headers={REPO_AI_CALLER_HEADER: "0"})
+        self.assertFalse(is_repo_ai_internal_request(req))
+
+    def test_internal_request_non_loopback_client(self) -> None:
+        req = _mock_request(
+            client_host="192.0.2.10",
+            headers={REPO_AI_CALLER_HEADER: REPO_AI_CALLER_VALUE},
+        )
+        self.assertFalse(is_repo_ai_internal_request(req))
+
+    def test_internal_request_non_loopback_url(self) -> None:
+        req = _mock_request(
+            url_hostname="192.0.2.10",
+            headers={REPO_AI_CALLER_HEADER: REPO_AI_CALLER_VALUE},
+        )
+        self.assertFalse(is_repo_ai_internal_request(req))
+
+    def test_internal_request_both_non_loopback(self) -> None:
+        req = _mock_request(
+            client_host="192.0.2.10",
+            url_hostname="203.0.113.5",
+            headers={REPO_AI_CALLER_HEADER: REPO_AI_CALLER_VALUE},
+        )
+        self.assertFalse(is_repo_ai_internal_request(req))
+
+    # ── _attachments_enabled_for_request ────────────────────────────
+
+    def test_attachments_enabled_when_policy_enabled(self) -> None:
+        req = _mock_request()
+        policy = AttachmentPolicy(enabled=True)
+        self.assertTrue(_attachments_enabled_for_request(req, policy))
+
+    def test_attachments_disabled_when_policy_off_and_external(self) -> None:
+        req = _mock_request(client_host="192.0.2.10")
+        policy = AttachmentPolicy(enabled=False)
+        self.assertFalse(_attachments_enabled_for_request(req, policy))
+
+    def test_attachments_enabled_for_internal_caller_despite_policy(self) -> None:
+        req = _mock_request(headers={REPO_AI_CALLER_HEADER: REPO_AI_CALLER_VALUE})
+        policy = AttachmentPolicy(enabled=False)
+        self.assertTrue(_attachments_enabled_for_request(req, policy))
+
     def test_rejects_unsupported_content_type(self) -> None:
         with self.assertRaises(AttachmentError) as ctx:
             validate_content_type("application/x-msdownload", AttachmentPolicy(enabled=True))

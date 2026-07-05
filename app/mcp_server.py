@@ -221,6 +221,10 @@ def prepare_mcp_file_attachments(
         validate_size(size, policy)
 
         guessed_type, _ = mimetypes.guess_type(path.name)
+        if path.suffix.lower() == ".zip":
+            guessed_type = "application/zip"
+        elif path.suffix.lower() == ".csv":
+            guessed_type = "text/csv"
         mime_type = validate_content_type(guessed_type or "application/octet-stream", policy)
 
         data = path.read_bytes()

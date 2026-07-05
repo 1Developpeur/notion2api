@@ -9,6 +9,7 @@ from fastapi.responses import JSONResponse
 from app.attachments.security import AttachmentPolicy
 from app.config import API_KEY, HOST
 from app.core.errors import openai_error_payload
+from app.core.internal_callers import is_repo_ai_internal_request
 
 
 def _is_public_host() -> bool:
@@ -39,6 +40,8 @@ def _blocked_attachment_configuration(policy: AttachmentPolicy) -> str:
 async def attachment_deployment_guard(request: Request, call_next: Callable[[Request], Any]) -> Any:
     """Block unsafe attachment deployments before request bodies are processed."""
     if _looks_like_attachment_request(request):
+        if is_repo_ai_internal_request(request):
+            return await call_next(request)
         policy = AttachmentPolicy.from_env()
         reason = _blocked_attachment_configuration(policy)
         if reason:

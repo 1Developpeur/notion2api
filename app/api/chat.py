@@ -11,6 +11,7 @@ from fastapi import APIRouter, BackgroundTasks, HTTPException, Request, Response
 from fastapi.responses import JSONResponse, StreamingResponse
 
 from app.core.errors import openai_error
+from app.core.internal_callers import is_repo_ai_internal_request
 from app.core.models import normalize_model_id
 from app.conversation import compress_round_if_needed, compress_sliding_window_round, build_lite_transcript
 from app.config import is_lite_mode
@@ -1131,6 +1132,10 @@ def _request_state_attachments(request: Request) -> list[Any]:
     return attachments if isinstance(attachments, list) else []
 
 
+def _attachments_enabled_for_request(request: Request, policy: AttachmentPolicy) -> bool:
+    return policy.enabled or is_repo_ai_internal_request(request)
+
+
 def _attachment_error_response(exc: AttachmentError) -> JSONResponse:
     return _build_error_response(
         getattr(exc, "status_code", 400) or 400,
@@ -1159,7 +1164,7 @@ def _handle_lite_request(
         attachments = state_attachments
     # Gate feature flag
     policy = AttachmentPolicy.from_env()
-    if attachments and not policy.enabled:
+    if attachments and not _attachments_enabled_for_request(request, policy):
         openai_error("Attachments are disabled for this server.", "attachments_disabled")
 
     # text
@@ -1417,7 +1422,7 @@ def _handle_standard_request(
             if state_attachments:
                 attachments = state_attachments
             policy = AttachmentPolicy.from_env()
-            if attachments and not policy.enabled:
+            if attachments and not _attachments_enabled_for_request(request, policy):
                 openai_error("Attachments are disabled for this server.", "attachments_disabled")
 
             # text Standard transcripttext
@@ -1875,7 +1880,7 @@ async def create_chat_completion(
             state_attachments = _request_state_attachments(request)
             if state_attachments:
                 attachments = state_attachments
-            if attachments and not AttachmentPolicy.from_env().enabled:
+            if attachments and not _attachments_enabled_for_request(request, AttachmentPolicy.from_env()):
                 openai_error("Attachments are disabled for this server.", "attachments_disabled")
 
             persist_remote_chat = None
