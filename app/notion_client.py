@@ -889,6 +889,8 @@ class NotionOpusAPI:
             "cookie": cookie_header,
         }
 
+        created_source = "ai_module" if uploaded_attachments else ("workflows" if thread_type == "workflow" else "ai_module")
+
         payload = {
             "traceId": trace_id,
             "spaceId": self.space_id,
@@ -901,7 +903,7 @@ class NotionOpusAPI:
             "isPartialTranscript": request_profile["is_partial_transcript"],
             "asPatchResponse": True,
             "patchResponseVersion": 2,
-            "createdSource": "workflows" if thread_type == "workflow" else "ai_module",
+            "createdSource": created_source,
             "isUserInAnySalesAssistedSpace": False,
             "isSpaceSalesAssisted": False,
             "threadParentPointer": {

@@ -172,34 +172,35 @@ class NotionClientAttachmentTests(unittest.TestCase):
         self.assertNotIn("bytes", text)
 
     def test_stream_response_without_attachments_preserves_payload_shape(self):
-        self.client._scraper.cookies = Mock()
-        self.client._scraper.cookies.clear = Mock()
         resp = Mock()
         resp.status_code = 200
         resp.text = ""
         resp.close = Mock()
-        self.client._scraper.post.return_value = resp
+        scraper = Mock()
+        scraper.cookies.clear = Mock()
+        scraper.post.return_value = resp
 
-        transcript = [{"type": "config", "value": {"model": "gpt-4"}}, {"type": "user", "value": "hi"}]
+        transcript = [{"type": "config", "value": {"type": "workflow", "model": "gpt-4"}}, {"type": "user", "value": "hi"}]
 
-        with patch("app.notion_client.parse_stream", return_value=[{"type": "chunk", "value": "ok"}]), patch("app.notion_client._resolve_thread_persistence", return_value={"persist": True, "generate_title": False, "save_all_thread_operations": False, "set_unread_state": False, "delete_after_stream": False}):
+        stream_chunks = [{"type": "chunk", "value": "ok"}, {"type": "stream_complete"}]
+        with patch("app.notion_client.requests.Session", return_value=scraper), patch("app.notion_client.parse_stream", return_value=stream_chunks), patch("app.notion_client._resolve_thread_persistence", return_value={"persist": True, "generate_title": False, "save_all_thread_operations": False, "set_unread_state": False, "delete_after_stream": False}):
             chunks = list(self.client.stream_response(transcript, thread_id="thread-1"))
 
         self.assertEqual(chunks, [{"type": "chunk", "value": "ok"}])
-        payload = self.client._scraper.post.call_args.kwargs["json"]
+        payload = scraper.post.call_args.kwargs["json"]
         self.assertNotIn("attachments", payload)
         self.assertEqual(payload["threadId"], "thread-1")
 
     def test_stream_response_with_attachments_calls_uploader_and_builds_attachment_steps(self):
-        self.client._scraper.cookies = Mock()
-        self.client._scraper.cookies.clear = Mock()
         resp = Mock()
         resp.status_code = 200
         resp.text = ""
         resp.close = Mock()
-        self.client._scraper.post.return_value = resp
+        scraper = Mock()
+        scraper.cookies.clear = Mock()
+        scraper.post.return_value = resp
 
-        transcript = [{"type": "config", "value": {"model": "gpt-4"}}, {"type": "user", "value": "hi"}]
+        transcript = [{"type": "config", "value": {"type": "workflow", "model": "gpt-4"}}, {"type": "user", "value": "hi"}]
         attachments = [InputAttachment(name="a.csv", content_type="text/csv", source="inline_data", data="YQpi")]
         uploaded = [
             UploadedAttachment(
@@ -218,22 +219,23 @@ class NotionClientAttachmentTests(unittest.TestCase):
 
         uploader_instance = Mock()
         uploader_instance.upload_attachments.return_value = (uploaded, "thread-actual")
-        with patch("app.notion_client.NotionAttachmentUploader", return_value=uploader_instance), patch("app.notion_client.parse_stream", return_value=[{"type": "chunk", "value": "ok"}]), patch("app.notion_client._resolve_thread_persistence", return_value={"persist": True, "generate_title": False, "save_all_thread_operations": False, "set_unread_state": False, "delete_after_stream": False}):
+        stream_chunks = [{"type": "chunk", "value": "ok"}, {"type": "stream_complete"}]
+        with patch("app.notion_client.NotionAttachmentUploader", return_value=uploader_instance), patch("app.notion_client.requests.Session", return_value=scraper), patch("app.notion_client.parse_stream", return_value=stream_chunks), patch("app.notion_client._resolve_thread_persistence", return_value={"persist": True, "generate_title": False, "save_all_thread_operations": False, "set_unread_state": False, "delete_after_stream": False}):
             chunks = list(self.client.stream_response(transcript, thread_id="thread-1", attachments=attachments))
 
         self.assertEqual(chunks, [{"type": "chunk", "value": "ok"}])
         uploader_instance.upload_attachments.assert_called_once()
-        payload = self.client._scraper.post.call_args.kwargs["json"]
+        payload = scraper.post.call_args.kwargs["json"]
         self.assertEqual(payload["threadId"], "thread-actual")
         self.assertFalse(payload["createThread"])
-        self.assertEqual(payload["threadType"], "markdown-chat")
+        self.assertEqual(payload["threadType"], "workflow")
         self.assertEqual(payload["createdSource"], "ai_module")
         config = next(item for item in payload["transcript"] if item.get("type") == "config")
-        self.assertEqual(config["value"]["type"], "markdown-chat")
+        self.assertEqual(config["value"]["type"], "workflow")
         uploader_instance.upload_attachments.assert_called_once_with(
             thread_id="thread-1",
             attachments=attachments,
-            create_thread=False,
+            create_thread=True,
         )
         self.assertNotIn("threadParentPointer", payload)
         self.assertIn("attachments", payload)
@@ -259,12 +261,12 @@ class NotionClientAttachmentTests(unittest.TestCase):
         self.assertNotIn("token_v2", str(payload))
         self.assertNotIn("bytes", str(payload))
 
-    def test_attachment_request_precreates_visible_chat_before_upload(self):
-        self.client._scraper.cookies = Mock()
-        self.client._scraper.cookies.clear = Mock()
+    def test_attachment_workflow_uses_ai_module_source_without_precreate(self):
         response = Mock(status_code=200, text="")
         response.close = Mock()
-        self.client._scraper.post.return_value = response
+        scraper = Mock()
+        scraper.cookies.clear = Mock()
+        scraper.post.return_value = response
 
         transcript = [{"type": "config", "value": {"type": "workflow", "model": "gpt-4"}}]
         attachments = [InputAttachment(name="a.csv", content_type="text/csv", source="inline_data", data="YQpi")]
@@ -274,22 +276,25 @@ class NotionClientAttachmentTests(unittest.TestCase):
         uploader_instance.upload_attachments.side_effect = lambda **kwargs: (uploaded, kwargs["thread_id"])
         with patch.object(self.client, "_create_thread", return_value=True) as create_thread, patch(
             "app.notion_client.NotionAttachmentUploader", return_value=uploader_instance
-        ), patch("app.notion_client.parse_stream", return_value=[{"type": "chunk", "value": "ok"}]), patch(
+        ), patch("app.notion_client.requests.Session", return_value=scraper), patch(
+            "app.notion_client.parse_stream",
+            return_value=[{"type": "chunk", "value": "ok"}, {"type": "stream_complete"}],
+        ), patch(
             "app.notion_client._resolve_thread_persistence",
             return_value={"persist": True, "generate_title": True, "save_all_thread_operations": True, "set_unread_state": True, "delete_after_stream": False},
         ):
             list(self.client.stream_response(transcript, attachments=attachments))
 
-        created_thread_id, created_thread_type = create_thread.call_args.args
-        self.assertEqual(created_thread_type, "markdown-chat")
+        create_thread.assert_not_called()
+        created_thread_id = uploader_instance.upload_attachments.call_args.kwargs["thread_id"]
         uploader_instance.upload_attachments.assert_called_once_with(
             thread_id=created_thread_id,
             attachments=attachments,
-            create_thread=False,
+            create_thread=True,
         )
-        payload = self.client._scraper.post.call_args.kwargs["json"]
+        payload = scraper.post.call_args.kwargs["json"]
         self.assertEqual(payload["threadId"], created_thread_id)
-        self.assertEqual(payload["threadType"], "markdown-chat")
+        self.assertEqual(payload["threadType"], "workflow")
         self.assertEqual(payload["createdSource"], "ai_module")
 
     def test_stream_response_attachment_failure_wraps_upstream_error(self):
