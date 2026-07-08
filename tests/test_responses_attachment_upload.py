@@ -115,7 +115,7 @@ class ResponsesAttachmentTests(unittest.TestCase):
         self.assertNotIn("YQ", resp.text)
 
     def test_unsupported_mime_returns_400(self):
-        input_value = [{"type": "message", "role": "user", "content": [{"type": "input_file", "filename": "a.csv", "file_data": "YQ", "content_type": "application/zip"}]}]
+        input_value = [{"type": "message", "role": "user", "content": [{"type": "input_file", "filename": "a.csv", "file_data": "YQ", "content_type": "application/x-msdownload"}]}]
         messages, attachments = normalize_responses_input(input_value)
         self.assertEqual(len(attachments), 1)
         # validate using AttachmentPolicy

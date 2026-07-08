@@ -13,6 +13,26 @@ import requests
 from app.stream_parser import parse_stream as _parse_stream
 
 
+def _is_citation_only(text: str) -> bool:
+    cleaned = text.strip()
+    if not cleaned:
+        return False
+    import re
+    # Remove citation markers like [1], [2], [1,2], [abc]
+    no_citations = re.sub(r'\[\s*\d+(?:\s*,\s*\d+)*\s*\]', '', cleaned).strip()
+    no_citations = re.sub(r'\[\s*[a-zA-Z0-9_-]+\s*\]', '', no_citations).strip()
+    if not no_citations:
+        return True
+    
+    # Check if remaining text is just urls, sources, references, webpage labels
+    norm = no_citations.lower()
+    norm = re.sub(r'https?://\S+', '', norm).strip()
+    norm = re.sub(r'www\.\S+', '', norm).strip()
+    norm = re.sub(r'\b(sources?|references?|links?|citations?|url|urls|webpage|webpages)\b', '', norm).strip()
+    norm = re.sub(r'[^\w\s]', '', norm).strip()
+    return len(norm) == 0
+
+
 def parse_stream(response: requests.Response) -> Generator[dict[str, Any], None, None]:
     """Yield content/search/final events while suppressing streamed thinking.
 
@@ -46,9 +66,27 @@ def parse_stream(response: requests.Response) -> Generator[dict[str, Any], None,
 
         yield item
 
-    if buffered_thinking and not visible_content_seen:
+    if buffered_thinking:
         thinking_text = "".join(buffered_thinking).strip()
         if thinking_text:
             yielded_text = "".join(yielded_content_parts).strip()
-            if not yielded_text:
-                yield {"type": "content", "text": thinking_text}
+            # Promote if no visible content was yielded, OR if the yielded content is citation-only
+            if not yielded_text or _is_citation_only(yielded_text):
+                # Normalize whitespace and lowercase to compare content
+                norm_thinking = " ".join(thinking_text.split()).lower()
+                norm_yielded = " ".join(yielded_text.split()).lower()
+                
+                is_duplicate = False
+                if norm_thinking in norm_yielded:
+                    is_duplicate = True
+                else:
+                    from difflib import SequenceMatcher
+                    ratio = SequenceMatcher(None, norm_thinking, norm_yielded).ratio()
+                    if ratio > 0.75:
+                        is_duplicate = True
+                
+                if not is_duplicate:
+                    if not yielded_text:
+                        yield {"type": "content", "text": thinking_text}
+                    else:
+                        yield {"type": "content", "text": "\n\n" + thinking_text}

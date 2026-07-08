@@ -117,3 +117,34 @@ def test_successful_proxy_stream_emits_done(factory):
 
     assert chunks[-1] == "data: [DONE]\n\n"
     assert '"finish_reason": "stop"' in chunks[-2]
+
+
+def test_stream_parser_safe_yields_unique_thinking(monkeypatch):
+    """Verify stream_parser_safe appends thinking content if it is not duplicate of content."""
+    mock_items = [
+        {"type": "thinking", "text": "This is Kimi's actual detailed answer."},
+        {"type": "content", "text": "[1] Sources."}
+    ]
+    monkeypatch.setattr(stream_parser_safe, "_parse_stream", lambda res: iter(mock_items))
+    res = list(stream_parser_safe.parse_stream(DummyResponse()))
+    
+    event_types = [item["type"] for item in res]
+    assert "content" in event_types
+    
+    texts = [item.get("text", "") for item in res if item["type"] == "content"]
+    assert "[1] Sources." in texts
+    assert "\n\nThis is Kimi's actual detailed answer." in texts
+
+
+def test_stream_parser_safe_suppresses_duplicate_thinking(monkeypatch):
+    """Verify stream_parser_safe suppresses thinking if it is identical to yielded content."""
+    mock_items = [
+        {"type": "thinking", "text": "This is identical answer."},
+        {"type": "content", "text": "This is identical answer."}
+    ]
+    monkeypatch.setattr(stream_parser_safe, "_parse_stream", lambda res: iter(mock_items))
+    res = list(stream_parser_safe.parse_stream(DummyResponse()))
+    
+    texts = [item.get("text", "") for item in res if item["type"] == "content"]
+    assert len(texts) == 1
+    assert texts[0] == "This is identical answer."

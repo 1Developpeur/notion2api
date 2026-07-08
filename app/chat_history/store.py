@@ -502,8 +502,11 @@ class ChatHistoryStore:
     def list_threads(self, limit: int = 50, offset: int = 0, include_inactive: bool = False) -> list[dict[str, Any]]:
         filters = [
             """(
-              json_extract(t.raw_json, '$.type') IN ('workflow', 'markdown-chat', 'markdownChat')
+              NULLIF(t.title, '') IS NOT NULL
+              OR json_extract(t.raw_json, '$.type') IN ('workflow', 'markdown-chat', 'markdownChat')
               OR json_extract(t.raw_json, '$.title') IS NOT NULL
+              OR json_extract(t.raw_json, '$.data.title') IS NOT NULL
+              OR json_extract(t.raw_json, '$.data.name') IS NOT NULL
             )"""
         ]
         if not include_inactive:
