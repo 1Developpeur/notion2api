@@ -174,6 +174,7 @@ def _simple_model_display_name(actual_model: Any) -> str:
     standard = NOTION_MODEL_REVERSE_MAP.get(model, model)
     simple_names = {
         "claude-sonnet4.6": "Sonnet 4.6",
+        "claude-sonnet5": "Sonnet 5",
         "claude-opus4.6": "Opus 4.6",
         "claude-opus4.7": "Opus 4.7",
         "claude-opus4.8": "Opus 4.8",

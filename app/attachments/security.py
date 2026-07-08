@@ -13,6 +13,8 @@ from app.attachments.errors import AttachmentError
 DEFAULT_ALLOWED_MIME_TYPES = {
     "application/pdf",
     "text/csv",
+    "application/zip",
+    "application/x-zip-compressed",
     "image/png",
     "image/jpeg",
     "image/gif",

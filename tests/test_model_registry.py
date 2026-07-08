@@ -81,7 +81,7 @@ def test_model_metadata_preserves_transport_and_underlying_family():
         "model_family": "anthropic",
         "transport": "notion2api",
         "upstream_host": "notion",
-        "aliases": ["claude-sonnet5"],
+        "aliases": ["claude-sonnet5", "claude-sonnet-5", "sonnet-5", "sonnet5"],
     }
     assert opus == {
         "canonical_id": "apricot-sorbet-high",

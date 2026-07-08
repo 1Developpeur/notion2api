@@ -363,9 +363,9 @@ class ConversationManager:
                 "enableAgentDiffs": True,
                 "enableAgentCreateDbTemplate": True,
                 "enableCsvAttachmentSupport": True,
-                "enableDatabaseAgents": False,
-                "enableAgentThreadTools": False,
-                "enableRunAgentTool": False,
+                "enableDatabaseAgents": self._env_flag("NOTION_ENABLE_DATABASE_AGENTS", default=True),
+                "enableAgentThreadTools": self._env_flag("NOTION_ENABLE_DATABASE_AGENTS", default=True),
+                "enableRunAgentTool": self._env_flag("NOTION_ENABLE_DATABASE_AGENTS", default=True),
                 "enableAgentDashboards": False,
                 "enableAgentCardCustomization": True,
                 "enableSystemPromptAsPage": False,
@@ -389,22 +389,28 @@ class ConversationManager:
                 "useRulePrioritization": False,
                 "enableExperimentalIntegrations": False,
                 "enableAgentViewNotificationsTool": False,
-                "enableScriptAgent": False,
-                "enableScriptAgentAdvanced": False,
-                "enableScriptAgentSlack": False,
-                "enableScriptAgentMcpServers": False,
-                "enableScriptAgentMail": False,
-                "enableScriptAgentCalendar": False,
-                "enableScriptAgentCustomAgentTools": False,
-                "enableScriptAgentSearchConnectorsInCustomAgent": False,
-                "enableScriptAgentGoogleDriveInCustomAgent": False,
+                "enableScriptAgent": self._env_flag("NOTION_ENABLE_SCRIPT_AGENT", default=True),
+                "enableScriptAgentAdvanced": self._env_flag("NOTION_ENABLE_SCRIPT_AGENT", default=True),
+                "enableScriptAgentSlack": self._env_flag("NOTION_ENABLE_SCRIPT_AGENT", default=True),
+                "enableScriptAgentMcpServers": self._env_flag("NOTION_ENABLE_SCRIPT_AGENT", default=True),
+                "enableScriptAgentMail": self._env_flag("NOTION_ENABLE_SCRIPT_AGENT", default=True),
+                "enableScriptAgentCalendar": self._env_flag("NOTION_ENABLE_SCRIPT_AGENT", default=True),
+                "enableScriptAgentCustomAgentTools": self._env_flag("NOTION_ENABLE_SCRIPT_AGENT", default=True),
+                "enableScriptAgentSearchConnectorsInCustomAgent": self._env_flag("NOTION_ENABLE_SCRIPT_AGENT", default=True),
+                "enableScriptAgentGoogleDriveInCustomAgent": self._env_flag("NOTION_ENABLE_SCRIPT_AGENT", default=True),
                 "enableQueryCalendar": False,
                 "enableQueryMail": False,
                 "enableMailExplicitToolCalls": True,
             },
         }
 
-    def _build_context_block(self, notion_client: Any, *, gemini_mode: bool = False) -> Dict[str, Any]:
+    def _build_context_block(
+        self,
+        notion_client: Any,
+        *,
+        gemini_mode: bool = False,
+        context_page_id: str = "",
+    ) -> Dict[str, Any]:
         surface = "ai_module" if gemini_mode else "workflows"
         context_value = {
             "timezone": getattr(notion_client, "timezone", "America/Chicago"),
@@ -418,11 +424,12 @@ class ConversationManager:
             "surface": surface,
             "agentName": notion_client.user_name,
         }
-        context_page_id = str(
-            getattr(notion_client, "context_page_id", "") or ""
+        resolved_page_id = str(
+            context_page_id or getattr(notion_client, "context_page_id", "") or ""
         ).strip()
-        if context_page_id:
-            context_value["context_page_id"] = context_page_id
+        if resolved_page_id:
+            context_value["contextPageId"] = resolved_page_id
+            context_value["context_page_id"] = resolved_page_id
         return {
             "id": str(uuid.uuid4()),
             "type": "context",
@@ -1226,6 +1233,7 @@ class ConversationManager:
         new_prompt: str,
         model_name: str,
         recall_query: Optional[str] = None,
+        context_page_id: str = "",
     ) -> Dict[str, Any]:
         with self._get_conn() as conn:
             row = conn.execute(
@@ -1242,7 +1250,7 @@ class ConversationManager:
                 gemini_mode = is_gemini_model(model_name)
                 transcript: List[Dict[str, Any]] = [
                     self._build_config_block(model_name, gemini_mode=gemini_mode),
-                    self._build_context_block(notion_client, gemini_mode=gemini_mode),
+                    self._build_context_block(notion_client, gemini_mode=gemini_mode, context_page_id=context_page_id),
                     self._build_dialog_block(
                         "user",
                         new_prompt,
@@ -1298,7 +1306,7 @@ class ConversationManager:
         gemini_mode = is_gemini_model(model_name)
 
         transcript.append(self._build_config_block(model_name, gemini_mode=gemini_mode))
-        transcript.append(self._build_context_block(notion_client, gemini_mode=gemini_mode))
+        transcript.append(self._build_context_block(notion_client, gemini_mode=gemini_mode, context_page_id=context_page_id))
 
         # Summary injection must stay between context block and recent-window messages.
         if summaries:
@@ -2058,6 +2066,7 @@ def build_standard_transcript(
     }
     context_page_id = str(account.get("context_page_id") or "").strip()
     if context_page_id:
+        context_value["contextPageId"] = context_page_id
         context_value["context_page_id"] = context_page_id
 
     transcript = [

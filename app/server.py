@@ -18,6 +18,7 @@ from app.api.chat_resume_thread_binding import apply_chat_resume_thread_bindings
 from app.api.features import router as features_router
 from app.api.models import router as models_router
 from app.api.responses import router as responses_router
+from app.api.notion import router as notion_router
 from app.attachments.runtime_config import apply_attachment_runtime_config
 from app.config import ACCOUNTS, ALLOWED_ORIGINS, API_KEY, is_lite_mode, is_standard_mode
 from app.conversation import ConversationManager
@@ -195,6 +196,7 @@ app.include_router(chat_history_router, prefix="/v1")
 app.include_router(chat_history_resume_router, prefix="/v1")
 app.include_router(features_router, prefix="/v1")
 app.include_router(responses_router, prefix="/v1")
+app.include_router(notion_router, prefix="/v1")
 
 # text
 @app.get("/favicon.ico", include_in_schema=False)

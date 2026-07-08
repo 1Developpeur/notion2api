@@ -37,8 +37,10 @@ def test_workflow_request_uses_patch_protocol_v2():
     with (
         patch.object(client, "_resolve_request_profile", return_value=profile),
         patch.object(client, "_build_cookie_header", return_value=""),
+        patch("app.notion_client.cloudscraper.create_scraper", return_value=client._scraper),
         patch("app.notion_client.parse_stream", return_value=iter([
-            {"type": "content", "text": "ok"}
+            {"type": "content", "text": "ok"},
+            {"type": "stream_complete"},
         ])),
     ):
         assert list(

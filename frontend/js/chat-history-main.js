@@ -259,6 +259,7 @@
     const actual = String(model || '[unknown]').trim() || '[unknown]';
     const map = {
       'almond-croissant-low': 'Sonnet 4.6',
+      'angel-cake-high': 'Sonnet 5',
       'avocado-froyo-medium': 'Opus 4.6',
       'apricot-sorbet-high': 'Opus 4.7',
       'ambrosia-tart-high': 'Opus 4.8',

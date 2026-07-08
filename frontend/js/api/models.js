@@ -51,6 +51,7 @@ window.NotionAI.API.Models = {
         const names = window.NotionAI.Core.State.get('modelDisplayNames') || {};
         const aliases = {
             'almond-croissant-low': 'Sonnet 4.6',
+            'angel-cake-high': 'Sonnet 5',
             'avocado-froyo-medium': 'Opus 4.6',
             'apricot-sorbet-high': 'Opus 4.7',
             'ambrosia-tart-high': 'Opus 4.8',

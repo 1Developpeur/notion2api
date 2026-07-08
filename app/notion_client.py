@@ -1,5 +1,6 @@
 import os
 import json
+import datetime
 import threading
 import time
 import uuid
@@ -164,6 +165,11 @@ class NotionOpusAPI:
             or os.getenv("NOTION_CONTEXT_PAGE_ID")
             or ""
         ).strip()
+        self.repo_ai_parent_page_id = str(
+            account_config.get("repo_ai_parent_page_id")
+            or os.getenv("REPO_AI_NOTION_PARENT_PAGE_ID")
+            or ""
+        ).strip()
         self.cookies = account_config.get("cookies", {})
         if not isinstance(self.cookies, dict):
             self.cookies = {}
@@ -238,6 +244,32 @@ class NotionOpusAPI:
             updated_value = dict(block["value"])
             updated_value["type"] = thread_type
             updated["value"] = updated_value
+            converted.append(updated)
+        return converted
+
+    def _with_computer_use_capabilities(
+        self,
+        notion_transcript: list[dict[str, Any]],
+    ) -> list[dict[str, Any]]:
+        converted: list[dict[str, Any]] = []
+        for block in notion_transcript:
+            updated = dict(block)
+            value = block.get("value")
+            if block.get("type") == "config" and isinstance(value, dict):
+                updated_value = dict(value)
+                updated_value.update({
+                    "type": "workflow",
+                    "enableComputer": True,
+                    "enableScriptAgent": True,
+                    "enableCsvAttachmentSupport": True,
+                    "enableCreateAndRunThread": True,
+                    "enableScriptAgentCustomToolCalling": True,
+                })
+                updated["value"] = updated_value
+            elif block.get("type") == "context" and isinstance(value, dict):
+                updated_value = dict(value)
+                updated_value["surface"] = "ai_module"
+                updated["value"] = updated_value
             converted.append(updated)
         return converted
 
@@ -522,8 +554,19 @@ class NotionOpusAPI:
         # malformed
         raise NotionUpstreamError("Malformed getTasks response", retriable=False, response_excerpt=str(body)[:300])
 
-    def get_signed_read_url(self, attachment_url: str, thread_id: str = "", download_name: str = "") -> str:
+    def get_signed_read_url(
+        self,
+        attachment_url: str,
+        thread_id: str = "",
+        download_name: str = "",
+        *,
+        permission_table: str = "thread",
+        permission_id: str = "",
+    ) -> str:
         endpoint = "https://www.notion.so/api/v3/getSignedFileUrls"
+        resolved_permission_id = str(permission_id or thread_id or "").strip()
+        if not resolved_permission_id:
+            raise ValueError("A permission record id is required for signed file access.")
         payload = {
             "urls": [
                 {
@@ -531,8 +574,8 @@ class NotionOpusAPI:
                     "download": False,
                     "downloadName": download_name,
                     "permissionRecord": {
-                        "table": "thread",
-                        "id": thread_id,
+                        "table": permission_table,
+                        "id": resolved_permission_id,
                         "spaceId": self.space_id,
                     },
                 }
@@ -566,18 +609,71 @@ class NotionOpusAPI:
                 return body[attachment_url]
         raise NotionUpstreamError("Signed URL not found in response", retriable=False, response_excerpt=str(body)[:300])
 
-    def _build_attachment_transcript_steps(self, uploaded_attachments: list[UploadedAttachment]) -> list[dict[str, Any]]:
+    def warm_script_agent_cache(self) -> None:
+        """Prime Notion's script-agent module cache before workflow ZIP reviews."""
+        endpoint = "https://www.notion.so/api/v3/warmScriptAgentDynamicModuleCache"
+        payload = {"spaceId": self.space_id}
+        try:
+            resp = self._scraper.post(
+                endpoint,
+                headers=self._build_chat_history_headers(),
+                json=payload,
+                timeout=20,
+            )
+            if resp.status_code != 200:
+                logger.warning(
+                    "Script agent warm-cache request failed",
+                    extra={
+                        "request_info": {
+                            "event": "script_agent_warm_cache_failed",
+                            "status_code": resp.status_code,
+                        }
+                    },
+                )
+        except Exception:
+            logger.warning(
+                "Script agent warm-cache request errored",
+                exc_info=True,
+                extra={"request_info": {"event": "script_agent_warm_cache_error"}},
+            )
+
+    def _build_attachment_transcript_steps(
+        self,
+        uploaded_attachments: list[UploadedAttachment],
+        *,
+        computer_file: bool = False,
+    ) -> list[dict[str, Any]]:
         steps: list[dict[str, Any]] = []
         for uploaded in uploaded_attachments:
+            metadata = uploaded.metadata or {}
+            if computer_file:
+                metadata = {
+                    **metadata,
+                    "fileSize": uploaded.size_bytes,
+                    "attachmentSource": "user_upload",
+                }
             steps.append({
                 "id": str(uuid.uuid4()),
-                "type": "attachment",
+                "type": "computer-file" if computer_file else "attachment",
                 "fileName": uploaded.name,
                 "contentType": uploaded.content_type,
                 "fileUrl": uploaded.attachment_url,
-                "metadata": uploaded.metadata or {},
+                "metadata": metadata,
             })
         return steps
+
+    def _build_computer_use_zip_instruction_step(self) -> dict[str, Any]:
+        return {
+            "id": str(uuid.uuid4()),
+            "type": "user",
+            "value": [[
+                "Use computer-use and script tools to download and extract the attached ZIP. "
+                "Inspect the extracted repository files and complete the requested review. "
+                "Do not wait for a manual response in the Notion app."
+            ]],
+            "userId": self.user_id,
+            "createdAt": datetime.datetime.now().astimezone().isoformat(),
+        }
 
     def fetch_chat_history(self, limit: int = 100, max_pages: int = 5) -> dict[str, Any]:
         """Best-effort pull of Notion AI chat transcripts for the current user."""
@@ -809,6 +905,7 @@ class NotionOpusAPI:
         thread_id: Optional[str] = None,
         attachments: list | None = None,
         persist_remote_chat: Optional[bool] = None,
+        computer_use_review: Optional[bool] = None,
     ) -> Generator[dict[str, Any], None, None]:
         """
         text Notion API text
@@ -818,12 +915,21 @@ class NotionOpusAPI:
             transcript: text
             thread_id: text thread_idtext
             persist_remote_chat: text Notion text
+            computer_use_review: keep workflow thread + script agent for ZIP extraction
         """
         if not isinstance(transcript, list) or not transcript:
             raise ValueError("Invalid transcript payload: transcript must be a non-empty list.")
 
         notion_transcript = self._to_notion_transcript(transcript)
         thread_type = self._resolve_thread_type(notion_transcript)
+        if computer_use_review:
+            notion_transcript = self._with_computer_use_capabilities(notion_transcript)
+            thread_type = "workflow"
+        if attachments and not computer_use_review:
+            # Native uploads belong to an ordinary Notion AI chat. Attachment
+            # transport must not silently reclassify the persisted thread as a workflow.
+            thread_type = "markdown-chat"
+            notion_transcript = self._with_thread_type(notion_transcript, thread_type)
         request_profile = self._resolve_request_profile(thread_type)
         thread_persistence = _resolve_thread_persistence()
 
@@ -871,11 +977,26 @@ class NotionOpusAPI:
                     response_excerpt=str(getattr(exc, "reason", "attachment_upload_failed"))[:300],
                 ) from exc
 
-            attachment_steps = self._build_attachment_transcript_steps(uploaded_attachments)
+            attachment_steps = self._build_attachment_transcript_steps(
+                uploaded_attachments,
+                computer_file=bool(computer_use_review),
+            )
             if attachment_steps:
                 notion_transcript = notion_transcript + attachment_steps
-                should_create_thread = False
-                request_profile["create_thread"] = False
+                if computer_use_review and thread_persistence["persist"]:
+                    notion_transcript.append(self._build_computer_use_zip_instruction_step())
+                    # Browser workflow ZIP uploads create the assistant-chat upload
+                    # pointer first, then still ask runInferenceTranscript to create
+                    # the workflow thread server-side for the same thread id.
+                    should_create_thread = True
+                    request_profile["create_thread"] = True
+                    request_profile["is_partial_transcript"] = False
+                else:
+                    should_create_thread = False
+                    request_profile["create_thread"] = False
+
+        if computer_use_review and (uploaded_attachments or thread_type == "workflow"):
+            self.warm_script_agent_cache()
 
         if request_profile["precreate_thread"] and should_create_thread:
             if not self._create_thread(thread_id, thread_type):
@@ -905,7 +1026,11 @@ class NotionOpusAPI:
             "cookie": cookie_header,
         }
 
-        created_source = "ai_module" if uploaded_attachments else ("workflows" if thread_type == "workflow" else "ai_module")
+        created_source = (
+            "ai_module"
+            if uploaded_attachments
+            else ("workflows" if thread_type == "workflow" else "ai_module")
+        )
 
         payload = {
             "traceId": trace_id,
@@ -1090,3 +1215,749 @@ class NotionOpusAPI:
                     scraper.close()
                 except Exception:
                     pass
+
+    @staticmethod
+    def _normalize_notion_id(value: str, *, field_name: str) -> str:
+        """Normalize a Notion block/page identifier to a canonical UUID string."""
+        clean = str(value or "").strip().replace("-", "")
+        if len(clean) != 32:
+            raise ValueError(f"{field_name} must be a 32-character Notion UUID.")
+        try:
+            return str(uuid.UUID(hex=clean))
+        except ValueError as exc:
+            raise ValueError(f"{field_name} must be a valid Notion UUID.") from exc
+
+    @staticmethod
+    def _resolve_page_upload_file(
+        *,
+        file_path: str,
+        filename: str | None,
+        content_type: str | None,
+    ) -> tuple[Any, str, str, int]:
+        """Validate and resolve a local file using the existing attachment policy."""
+        import mimetypes
+        from pathlib import Path
+
+        from app.attachments.errors import AttachmentError
+        from app.attachments.security import (
+            AttachmentPolicy,
+            normalize_content_type,
+            validate_local_path_allowed,
+            validate_size,
+        )
+
+        policy = AttachmentPolicy.from_env()
+        validate_local_path_allowed(policy)
+        if not policy.local_root:
+            raise AttachmentError(
+                "ATTACHMENT_LOCAL_ROOT must be configured for page uploads.",
+                code="attachment_local_root_required",
+                param="file_path",
+            )
+
+        try:
+            path = Path(str(file_path or "")).expanduser().resolve(strict=True)
+        except (FileNotFoundError, OSError) as exc:
+            raise AttachmentError(
+                "Upload file does not exist or cannot be accessed.",
+                code="upload_file_not_found",
+                param="file_path",
+            ) from exc
+        if not path.is_file():
+            raise AttachmentError(
+                "Upload path must reference a file.",
+                code="upload_path_not_file",
+                param="file_path",
+            )
+
+        try:
+            root = Path(policy.local_root).expanduser().resolve(strict=True)
+        except (FileNotFoundError, OSError) as exc:
+            raise AttachmentError(
+                "ATTACHMENT_LOCAL_ROOT does not exist or cannot be accessed.",
+                code="attachment_local_root_invalid",
+                param="file_path",
+            ) from exc
+        try:
+            path.relative_to(root)
+        except ValueError as exc:
+            raise AttachmentError(
+                "Upload path is outside ATTACHMENT_LOCAL_ROOT.",
+                code="attachment_path_outside_root",
+                param="file_path",
+            ) from exc
+
+        file_size = path.stat().st_size
+        validate_size(file_size, policy)
+
+        requested_name = str(filename or path.name).strip()
+        safe_name = Path(requested_name).name
+        if not safe_name or safe_name in {".", ".."} or safe_name != requested_name:
+            raise AttachmentError(
+                "filename must be a basename without directory components.",
+                code="invalid_upload_filename",
+                param="filename",
+            )
+
+        guessed_type, _ = mimetypes.guess_type(safe_name)
+        normalized_type = normalize_content_type(
+            content_type or guessed_type or "application/octet-stream"
+        )
+        if not normalized_type:
+            raise AttachmentError(
+                "content_type could not be determined.",
+                code="upload_content_type_required",
+                param="content_type",
+            )
+        return path, safe_name, normalized_type, file_size
+
+    def check_page_access(self, page_id: str) -> dict[str, Any]:
+        """Check whether this Notion account can read a page through the v3 API."""
+        normalized_page_id = self._normalize_notion_id(page_id, field_name="page_id")
+        endpoint = "https://www.notion.so/api/v3/loadPageChunk"
+        payload = {
+            "pageId": normalized_page_id,
+            "limit": 20,
+            "cursor": {"stack": []},
+            "chunkNumber": 0,
+            "verticalColumns": False,
+        }
+        try:
+            response = self._scraper.post(
+                endpoint,
+                headers=self._build_chat_history_headers(),
+                json=payload,
+                timeout=30,
+            )
+        except requests.RequestException as exc:
+            raise NotionUpstreamError(
+                "Notion page-access check failed.",
+                retriable=True,
+                response_excerpt=str(exc)[:300],
+            ) from exc
+
+        try:
+            body = response.json()
+        except ValueError:
+            body = {}
+        record_map = body.get("recordMap") if isinstance(body, dict) else None
+        block_map = record_map.get("block", {}) if isinstance(record_map, dict) else {}
+        candidate_ids = {
+            normalized_page_id,
+            normalized_page_id.replace("-", ""),
+        }
+        available_ids = {
+            str(block_id).replace("-", "")
+            for block_id in block_map.keys()
+        } if isinstance(block_map, dict) else set()
+        accessible = response.status_code == 200 and bool(
+            {candidate.replace("-", "") for candidate in candidate_ids} & available_ids
+        )
+        error_value = ""
+        if isinstance(body, dict):
+            error_value = str(
+                body.get("message")
+                or body.get("error")
+                or body.get("errorId")
+                or ""
+            )
+        if not error_value and response.status_code != 200:
+            error_value = _redact_response_excerpt(response.text)
+        return {
+            "ok": True,
+            "page_id": normalized_page_id,
+            "accessible": accessible,
+            "status_code": response.status_code,
+            "space_id": self.space_id,
+            "error": error_value[:500],
+        }
+
+    def _post_save_transactions(
+        self,
+        operations: list[dict[str, Any]],
+        *,
+        error_message: str,
+    ) -> None:
+        if not operations:
+            return
+        payload = {
+            "requestId": str(uuid.uuid4()),
+            "transactions": [
+                {
+                    "id": str(uuid.uuid4()),
+                    "spaceId": self.space_id,
+                    "operations": operations,
+                }
+            ],
+        }
+        try:
+            resp = self._scraper.post(
+                self.delete_url,
+                headers=self._build_chat_history_headers(),
+                json=payload,
+                timeout=30,
+            )
+        except requests.RequestException as exc:
+            raise NotionUpstreamError(
+                error_message,
+                retriable=True,
+                response_excerpt=str(exc)[:300],
+            ) from exc
+        if resp.status_code != 200:
+            raise NotionUpstreamError(
+                error_message,
+                status_code=resp.status_code,
+                retriable=resp.status_code >= 500 or resp.status_code == 429,
+                response_excerpt=_redact_response_excerpt(resp.text or ""),
+            )
+
+    @staticmethod
+    def _page_url(page_id: str) -> str:
+        clean = str(page_id or "").replace("-", "")
+        return f"https://www.notion.so/{clean}"
+
+    def _load_page_chunk(self, page_id: str) -> dict[str, Any]:
+        normalized_page_id = self._normalize_notion_id(page_id, field_name="page_id")
+        endpoint = "https://www.notion.so/api/v3/loadPageChunk"
+        payload = {
+            "pageId": normalized_page_id,
+            "limit": 100,
+            "cursor": {"stack": []},
+            "chunkNumber": 0,
+            "verticalColumns": False,
+        }
+        try:
+            response = self._scraper.post(
+                endpoint,
+                headers=self._build_chat_history_headers(),
+                json=payload,
+                timeout=30,
+            )
+        except requests.RequestException as exc:
+            raise NotionUpstreamError(
+                "Notion page load failed.",
+                retriable=True,
+                response_excerpt=str(exc)[:300],
+            ) from exc
+        try:
+            body = response.json()
+        except ValueError as exc:
+            raise NotionUpstreamError(
+                "Notion page load returned invalid JSON.",
+                status_code=response.status_code,
+                retriable=True,
+                response_excerpt=(response.text or "")[:300],
+            ) from exc
+        if response.status_code != 200:
+            raise NotionUpstreamError(
+                "Notion page load returned an error.",
+                status_code=response.status_code,
+                retriable=response.status_code >= 500 or response.status_code == 429,
+                response_excerpt=_redact_response_excerpt(response.text or ""),
+            )
+        if not isinstance(body, dict):
+            return {}
+        return body
+
+    def _page_content_ids(self, page_id: str) -> list[str]:
+        body = self._load_page_chunk(page_id)
+        record_map = body.get("recordMap") if isinstance(body, dict) else {}
+        block_map = record_map.get("block", {}) if isinstance(record_map, dict) else {}
+        normalized = self._normalize_notion_id(page_id, field_name="page_id")
+        candidates = [normalized, normalized.replace("-", "")]
+        page_value: dict[str, Any] | None = None
+        for candidate in candidates:
+            entry = block_map.get(candidate)
+            if isinstance(entry, dict):
+                value = entry.get("value")
+                if isinstance(value, dict):
+                    page_value = value
+                    break
+        if not page_value:
+            return []
+        content = page_value.get("content")
+        if not isinstance(content, list):
+            return []
+        return [str(item) for item in content if item]
+
+    def create_child_page(
+        self,
+        *,
+        parent_page_id: str,
+        title: str,
+    ) -> dict[str, Any]:
+        """Create a child page owned by this Notion account."""
+        normalized_parent_id = self._normalize_notion_id(
+            parent_page_id,
+            field_name="parent_page_id",
+        )
+        access = self.check_page_access(normalized_parent_id)
+        if not access.get("accessible"):
+            raise ValueError(
+                "Parent page is not readable by the configured Notion account. "
+                f"Set repo_ai_parent_page_id to a page in this workspace. ({access.get('error') or 'no access'})"
+            )
+
+        page_id = str(uuid.uuid4())
+        now_ms = int(time.time() * 1000)
+        clean_title = str(title or "Untitled").strip() or "Untitled"
+        page_block = {
+            "id": page_id,
+            "version": 1,
+            "type": "page",
+            "properties": {"title": [[clean_title]]},
+            "format": {"page_full_width": False, "page_small_text": False},
+            "parent_id": normalized_parent_id,
+            "parent_table": "block",
+            "space_id": self.space_id,
+            "created_time": now_ms,
+            "last_edited_time": now_ms,
+            "created_by_id": self.user_id,
+            "created_by_table": "notion_user",
+            "last_edited_by_id": self.user_id,
+            "last_edited_by_table": "notion_user",
+            "alive": True,
+        }
+        operations = [
+            {
+                "pointer": {
+                    "table": "block",
+                    "id": page_id,
+                    "spaceId": self.space_id,
+                },
+                "command": "set",
+                "path": [],
+                "args": page_block,
+            },
+            {
+                "pointer": {
+                    "table": "block",
+                    "id": normalized_parent_id,
+                    "spaceId": self.space_id,
+                },
+                "command": "listAfter",
+                "path": ["content"],
+                "args": {"id": page_id},
+            },
+        ]
+        self._post_save_transactions(
+            operations,
+            error_message="Failed to create Notion child page.",
+        )
+        return {
+            "ok": True,
+            "page_id": page_id,
+            "page_url": self._page_url(page_id),
+            "parent_page_id": normalized_parent_id,
+            "title": clean_title,
+        }
+
+    def delete_block_children(
+        self,
+        page_id: str,
+        *,
+        preserve_types: set[str] | None = None,
+    ) -> int:
+        """Soft-delete child blocks on a page, optionally preserving block types."""
+        normalized_page_id = self._normalize_notion_id(page_id, field_name="page_id")
+        preserved = preserve_types or set()
+        body = self._load_page_chunk(normalized_page_id)
+        record_map = body.get("recordMap") if isinstance(body, dict) else {}
+        block_map = record_map.get("block", {}) if isinstance(record_map, dict) else {}
+        deleted = 0
+        for child_id in self._page_content_ids(normalized_page_id):
+            entry = block_map.get(child_id) or block_map.get(child_id.replace("-", ""))
+            value = entry.get("value") if isinstance(entry, dict) else None
+            if not isinstance(value, dict):
+                continue
+            block_type = str(value.get("type") or "")
+            if block_type in preserved:
+                continue
+            self._post_save_transactions(
+                [
+                    {
+                        "pointer": {
+                            "table": "block",
+                            "id": self._normalize_notion_id(child_id, field_name="block_id"),
+                            "spaceId": self.space_id,
+                        },
+                        "command": "update",
+                        "path": [],
+                        "args": {"alive": False},
+                    }
+                ],
+                error_message="Failed to delete Notion block children.",
+            )
+            deleted += 1
+        return deleted
+
+    @staticmethod
+    def _rich_text_plain(rich_text: list[dict[str, Any]] | None) -> str:
+        if not isinstance(rich_text, list):
+            return ""
+        parts: list[str] = []
+        for item in rich_text:
+            if not isinstance(item, dict):
+                continue
+            if item.get("type") == "text":
+                text_obj = item.get("text")
+                if isinstance(text_obj, dict):
+                    parts.append(str(text_obj.get("content") or ""))
+        return "".join(parts)
+
+    def _integration_block_to_v3(self, block: dict[str, Any], block_id: str, page_id: str, now_ms: int) -> dict[str, Any]:
+        block_type = str(block.get("type") or "paragraph")
+        mapping = {
+            "paragraph": "text",
+            "heading_1": "header",
+            "heading_2": "sub_header",
+            "heading_3": "sub_sub_header",
+            "bulleted_list_item": "bulleted_list",
+            "callout": "callout",
+            "toggle": "toggle",
+        }
+        notion_type = mapping.get(block_type, "text")
+        payload = block.get(block_type)
+        if not isinstance(payload, dict):
+            payload = {}
+        title = self._rich_text_plain(payload.get("rich_text"))
+        properties: dict[str, Any] = {"title": [[title]]}
+        if notion_type == "callout":
+            icon = payload.get("icon")
+            if isinstance(icon, dict) and icon.get("emoji"):
+                properties["icon"] = icon["emoji"]
+        return {
+            "id": block_id,
+            "version": 1,
+            "type": notion_type,
+            "properties": properties,
+            "format": {},
+            "parent_id": page_id,
+            "parent_table": "block",
+            "space_id": self.space_id,
+            "created_time": now_ms,
+            "last_edited_time": now_ms,
+            "created_by_id": self.user_id,
+            "created_by_table": "notion_user",
+            "last_edited_by_id": self.user_id,
+            "last_edited_by_table": "notion_user",
+            "alive": True,
+        }
+
+    def append_integration_blocks(self, page_id: str, children: list[dict[str, Any]]) -> int:
+        """Append blocks expressed in Notion public API shape to a page."""
+        normalized_page_id = self._normalize_notion_id(page_id, field_name="page_id")
+        if not children:
+            return 0
+        now_ms = int(time.time() * 1000)
+        appended = 0
+        for block in children:
+            if not isinstance(block, dict):
+                continue
+            block_id = str(uuid.uuid4())
+            v3_block = self._integration_block_to_v3(
+                block,
+                block_id,
+                normalized_page_id,
+                now_ms,
+            )
+            self._post_save_transactions(
+                [
+                    {
+                        "pointer": {
+                            "table": "block",
+                            "id": block_id,
+                            "spaceId": self.space_id,
+                        },
+                        "command": "set",
+                        "path": [],
+                        "args": v3_block,
+                    },
+                    {
+                        "pointer": {
+                            "table": "block",
+                            "id": normalized_page_id,
+                            "spaceId": self.space_id,
+                        },
+                        "command": "listAfter",
+                        "path": ["content"],
+                        "args": {"id": block_id},
+                    },
+                ],
+                error_message="Failed to append blocks to Notion page.",
+            )
+            appended += 1
+        return appended
+
+    def resolve_repo_ai_parent_page_id(self, requested_parent_page_id: str = "") -> str:
+        """Resolve the parent page for Repo AI dashboards using account/env config."""
+        candidates = [
+            str(requested_parent_page_id or "").strip(),
+            str(getattr(self, "repo_ai_parent_page_id", "") or "").strip(),
+            str(self.context_page_id or "").strip(),
+            str(os.getenv("REPO_AI_NOTION_PARENT_PAGE_ID") or "").strip(),
+            str(os.getenv("NOTION_CONTEXT_PAGE_ID") or "").strip(),
+        ]
+        seen: set[str] = set()
+        for candidate in candidates:
+            if not candidate or candidate in seen:
+                continue
+            seen.add(candidate)
+            try:
+                normalized = self._normalize_notion_id(candidate, field_name="parent_page_id")
+            except ValueError:
+                continue
+            access = self.check_page_access(normalized)
+            if access.get("accessible"):
+                return normalized
+        return ""
+
+    def request_general_upload_descriptor(
+        self,
+        *,
+        name: str,
+        content_type: str,
+        size: int,
+        page_id: str,
+    ) -> dict[str, Any]:
+        """Request an upload descriptor bound to the existing parent page."""
+        normalized_page_id = self._normalize_notion_id(page_id, field_name="page_id")
+        notion_content_type = _notion_upload_content_type(name, content_type)
+        endpoint = "https://www.notion.so/api/v3/getUploadFileUrl"
+        payload = {
+            "bucket": "secure",
+            "name": name,
+            "contentType": notion_content_type,
+            "record": {
+                "table": "block",
+                "id": normalized_page_id,
+                "spaceId": self.space_id,
+            },
+            "contentLength": size,
+        }
+        if _is_zip_upload(name, notion_content_type):
+            payload["allowUnsupportedTypes"] = True
+        try:
+            resp = self._scraper.post(
+                endpoint,
+                headers=self._build_chat_history_headers(),
+                json=payload,
+                timeout=30,
+            )
+        except Exception as exc:
+            raise NotionUpstreamError(
+                "Failed to request general upload descriptor.",
+                status_code=None,
+                retriable=True,
+                response_excerpt=str(exc),
+            ) from exc
+
+        if resp.status_code != 200:
+            excerpt = _redact_response_excerpt(resp.text or "")
+            raise NotionUpstreamError(
+                "General upload descriptor request failed.",
+                status_code=resp.status_code,
+                retriable=resp.status_code >= 500 or resp.status_code == 429,
+                response_excerpt=excerpt,
+            )
+        try:
+            descriptor = self._normalize_upload_descriptor(resp.json())
+        except NotionUpstreamError:
+            raise
+        except Exception as exc:
+            raise NotionUpstreamError(
+                "General upload descriptor response was invalid JSON.",
+                status_code=resp.status_code,
+                retriable=True,
+                response_excerpt=_redact_response_excerpt(resp.text or ""),
+            ) from exc
+
+        if not descriptor.get("attachment_url") and descriptor.get("file_id"):
+            descriptor["attachment_url"] = (
+                f"attachment:{descriptor['file_id']}:{normalized_page_id}"
+            )
+        if not descriptor.get("upload_url") or not descriptor.get("attachment_url"):
+            raise NotionUpstreamError(
+                "General upload descriptor was missing required upload fields.",
+                status_code=resp.status_code,
+                retriable=False,
+            )
+        return descriptor
+
+    def perform_multipart_file_upload(
+        self,
+        *,
+        descriptor: dict[str, Any],
+        name: str,
+        file_path: Any,
+        content_type: str,
+    ) -> None:
+        """Stream a local file to a signed multipart upload URL."""
+        upload_url = str(descriptor.get("upload_url") or "").strip()
+        fields = descriptor.get("fields") or {}
+        if not upload_url:
+            raise NotionUpstreamError("Descriptor missing upload URL.", retriable=False)
+        if not isinstance(fields, dict):
+            raise NotionUpstreamError("Descriptor upload fields were malformed.", retriable=False)
+
+        try:
+            with file_path.open("rb") as stream:
+                response = requests.post(
+                    upload_url,
+                    data=fields,
+                    files={"file": (name, stream, content_type)},
+                    timeout=(15, 300),
+                )
+        except Exception as exc:
+            raise NotionUpstreamError(
+                "Multipart file upload failed.",
+                retriable=True,
+                response_excerpt=str(exc),
+            ) from exc
+        if response.status_code < 200 or response.status_code >= 300:
+            raise NotionUpstreamError(
+                "Multipart file upload returned an error.",
+                status_code=response.status_code,
+                retriable=response.status_code >= 500 or response.status_code == 429,
+                response_excerpt=_redact_response_excerpt(response.text or ""),
+            )
+
+    def append_file_block_to_page(
+        self,
+        *,
+        page_id: str,
+        block_id: str,
+        file_url: str,
+        filename: str,
+        file_size: int,
+    ) -> str:
+        """Append an uploaded file block to a Notion page using saveTransactions."""
+        normalized_page_id = self._normalize_notion_id(page_id, field_name="page_id")
+        normalized_block_id = self._normalize_notion_id(block_id, field_name="block_id")
+        now_ms = int(time.time() * 1000)
+        block = {
+            "id": normalized_block_id,
+            "version": 1,
+            "type": "file",
+            "properties": {
+                "title": [[filename]],
+                "source": [[file_url]],
+                "size": [[str(file_size)]],
+            },
+            "format": {},
+            "parent_id": normalized_page_id,
+            "parent_table": "block",
+            "space_id": self.space_id,
+            "created_time": now_ms,
+            "last_edited_time": now_ms,
+            "created_by_id": self.user_id,
+            "created_by_table": "notion_user",
+            "last_edited_by_id": self.user_id,
+            "last_edited_by_table": "notion_user",
+            "alive": True,
+        }
+        payload = {
+            "requestId": str(uuid.uuid4()),
+            "transactions": [
+                {
+                    "id": str(uuid.uuid4()),
+                    "spaceId": self.space_id,
+                    "operations": [
+                        {
+                            "pointer": {
+                                "table": "block",
+                                "id": normalized_block_id,
+                                "spaceId": self.space_id,
+                            },
+                            "command": "set",
+                            "path": [],
+                            "args": block,
+                        },
+                        {
+                            "pointer": {
+                                "table": "block",
+                                "id": normalized_page_id,
+                                "spaceId": self.space_id,
+                            },
+                            "command": "listAfter",
+                            "path": ["content"],
+                            "args": {"id": normalized_block_id},
+                        },
+                    ],
+                }
+            ],
+        }
+        try:
+            resp = self._scraper.post(
+                "https://www.notion.so/api/v3/saveTransactions",
+                headers=self._build_chat_history_headers(),
+                json=payload,
+                timeout=30,
+            )
+        except Exception as exc:
+            raise NotionUpstreamError(
+                "Failed to append file block to page.",
+                retriable=True,
+                response_excerpt=str(exc),
+            ) from exc
+        if resp.status_code != 200:
+            raise NotionUpstreamError(
+                "Appending the file block failed.",
+                status_code=resp.status_code,
+                retriable=resp.status_code >= 500 or resp.status_code == 429,
+                response_excerpt=_redact_response_excerpt(resp.text or ""),
+            )
+        return normalized_block_id
+
+    def upload_file_to_page(
+        self,
+        *,
+        page_id: str,
+        file_path: str,
+        filename: str | None = None,
+        content_type: str | None = None,
+    ) -> dict[str, Any]:
+        """Upload a local file and append it as a File block on a Notion page."""
+        normalized_page_id = self._normalize_notion_id(page_id, field_name="page_id")
+        path, name, normalized_type, file_size = self._resolve_page_upload_file(
+            file_path=file_path,
+            filename=filename,
+            content_type=content_type,
+        )
+        block_id = str(uuid.uuid4())
+        descriptor = self.request_general_upload_descriptor(
+            name=name,
+            content_type=normalized_type,
+            size=file_size,
+            page_id=normalized_page_id,
+        )
+        self.perform_multipart_file_upload(
+            descriptor=descriptor,
+            name=name,
+            file_path=path,
+            content_type=normalized_type,
+        )
+        file_url = str(descriptor["attachment_url"])
+        persisted_block_id = self.append_file_block_to_page(
+            page_id=normalized_page_id,
+            block_id=block_id,
+            file_url=file_url,
+            filename=name,
+            file_size=file_size,
+        )
+        signed_get_url = self.get_signed_read_url(
+            file_url,
+            download_name=name,
+            permission_table="block",
+            permission_id=normalized_page_id,
+        )
+        return {
+            "ok": True,
+            "page_id": normalized_page_id,
+            "block_id": persisted_block_id,
+            "file_url": file_url,
+            "signed_get_url": signed_get_url,
+            "filename": name,
+            "content_type": normalized_type,
+            "size": file_size,
+        }

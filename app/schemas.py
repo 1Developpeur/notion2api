@@ -14,6 +14,7 @@ class ChatMessage(BaseModel):
     # parts such as input_text, image_url, input_image, file, input_file.
     content: Any
     thinking: Optional[str] = None
+    reasoning_content: Optional[str] = None
 
 
 class ChatCompletionRequest(BaseModel):

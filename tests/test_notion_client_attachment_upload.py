@@ -12,6 +12,18 @@ class NotionClientAttachmentTests(unittest.TestCase):
         # replace real scraper with a mock
         self.client._scraper = Mock()
 
+        # mock requests.Session.post to avoid real network calls from fresh sessions
+        self.session_post_patcher = patch("requests.Session.post")
+        self.mock_session_post = self.session_post_patcher.start()
+
+        # mock response for requests.Session.post
+        mock_resp = Mock(status_code=200)
+        mock_resp.close = Mock()
+        self.mock_session_post.return_value = mock_resp
+
+    def tearDown(self):
+        self.session_post_patcher.stop()
+
     def test_create_thread_persists_markdown_chat_type(self):
         response = Mock(status_code=200)
         with patch("app.notion_client.requests.post", return_value=response) as post:
@@ -259,14 +271,14 @@ class NotionClientAttachmentTests(unittest.TestCase):
         payload = scraper.post.call_args.kwargs["json"]
         self.assertEqual(payload["threadId"], "thread-actual")
         self.assertFalse(payload["createThread"])
-        self.assertEqual(payload["threadType"], "workflow")
+        self.assertEqual(payload["threadType"], "markdown-chat")
         self.assertEqual(payload["createdSource"], "ai_module")
         config = next(item for item in payload["transcript"] if item.get("type") == "config")
-        self.assertEqual(config["value"]["type"], "workflow")
+        self.assertEqual(config["value"]["type"], "markdown-chat")
         uploader_instance.upload_attachments.assert_called_once_with(
             thread_id="thread-1",
             attachments=attachments,
-            create_thread=True,
+            create_thread=False,
         )
         self.assertNotIn("threadParentPointer", payload)
         self.assertIn("attachments", payload)
@@ -323,11 +335,11 @@ class NotionClientAttachmentTests(unittest.TestCase):
         uploader_instance.upload_attachments.assert_called_once_with(
             thread_id=created_thread_id,
             attachments=attachments,
-            create_thread=True,
+            create_thread=False,
         )
         payload = scraper.post.call_args.kwargs["json"]
         self.assertEqual(payload["threadId"], created_thread_id)
-        self.assertEqual(payload["threadType"], "workflow")
+        self.assertEqual(payload["threadType"], "markdown-chat")
         self.assertEqual(payload["createdSource"], "ai_module")
 
     def test_stream_response_attachment_failure_wraps_upstream_error(self):

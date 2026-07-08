@@ -8,6 +8,9 @@ MODEL_MAP: dict[str, str] = {
     # Anthropic
     "claude-sonnet4.6": "almond-croissant-low",
     "claude-sonnet5": "angel-cake-high",
+    "claude-sonnet-5": "angel-cake-high",
+    "sonnet-5": "angel-cake-high",
+    "sonnet5": "angel-cake-high",
     "claude-opus4.6": "avocado-froyo-medium",
     "claude-opus4.7": "apricot-sorbet-high",
     "claude-opus4.8": "ambrosia-tart-high",
@@ -325,6 +328,28 @@ def get_model_metadata(model_name: str) -> dict[str, object]:
         "upstream_host": upstream_host,
         "aliases": aliases,
     }
+
+
+def get_restricted_models_for_space(client: object) -> set[str]:
+    """Return model IDs known to be unavailable for the active Notion space.
+
+    Older callers import this helper before accepting a request.  Keep the
+    function total and side-effect-free: if the client/account object does not
+    expose restriction metadata, return an empty set and let upstream metadata
+    report any eventual model substitution.
+    """
+    restricted: set[str] = set()
+    for attr in ("restricted_models", "restricted_model_ids", "unavailable_models"):
+        value = getattr(client, attr, None)
+        if isinstance(value, (list, tuple, set)):
+            restricted.update(str(item) for item in value if item)
+    space_metadata = getattr(client, "space_metadata", None)
+    if isinstance(space_metadata, dict):
+        for key in ("restricted_models", "restricted_model_ids", "unavailable_models"):
+            value = space_metadata.get(key)
+            if isinstance(value, (list, tuple, set)):
+                restricted.update(str(item) for item in value if item)
+    return restricted
 
 
 def is_supported_model(model_name: str) -> bool:

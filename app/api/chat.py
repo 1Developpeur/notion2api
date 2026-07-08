@@ -174,6 +174,48 @@ def _emit_search_metadata_for_client(client_type: str) -> bool:
     return client_type == "web"
 
 
+def _request_context_page_id(req_body: ChatCompletionRequest, client: Any) -> str:
+    """Resolve a per-request page context without mutating the pooled client."""
+    metadata = req_body.metadata if isinstance(req_body.metadata, dict) else {}
+    requested = str(metadata.get("context_page_id") or "").strip()
+    if requested:
+        return requested
+    return str(getattr(client, "context_page_id", "") or "").strip()
+
+
+def _request_computer_use_review(req_body: ChatCompletionRequest) -> bool:
+    metadata = req_body.metadata if isinstance(req_body.metadata, dict) else {}
+    if "computer_use_review" in metadata:
+        return bool(metadata.get("computer_use_review"))
+    return str(metadata.get("review_mode") or "").strip().lower() == "computer_use"
+
+
+def _strict_model_requested(req_body: ChatCompletionRequest) -> bool:
+    metadata = req_body.metadata if isinstance(req_body.metadata, dict) else {}
+    return bool(metadata.get("strict_model"))
+
+
+def _is_model_mismatch(response_obj: ChatCompletionResponse) -> bool:
+    requested = str(getattr(response_obj, "notion_requested_model", "") or getattr(response_obj, "requested_model", "") or "").strip()
+    actual = str(getattr(response_obj, "actual_model", "") or "").strip()
+    return bool(requested and actual and requested != actual)
+
+
+def _model_mismatch_response(response_obj: ChatCompletionResponse) -> JSONResponse:
+    return _build_error_response(
+        409,
+        code="MODEL_MISMATCH",
+        message="Requested model was not the model that answered.",
+        error_type="model_mismatch",
+        suggestion="Use an available model or disable strict model enforcement for this request.",
+        detail=json.dumps({
+            "requested_model": getattr(response_obj, "requested_model", None),
+            "notion_requested_model": getattr(response_obj, "notion_requested_model", None),
+            "actual_model": getattr(response_obj, "actual_model", None),
+        }, ensure_ascii=False),
+    )
+
+
 def _message_content_to_text(content: Any) -> str:
     """Helper to safely coerce content string/list into a single string."""
     if isinstance(content, str):
@@ -497,6 +539,21 @@ def _attach_response_model_metadata(response_obj: ChatCompletionResponse, reques
         response_obj.model = actual_model.strip()
 
 
+def _attach_notion_thread_metadata(
+    *,
+    response: Response | None,
+    client: Any,
+    model_metadata: dict[str, Any] | None,
+) -> dict[str, Any]:
+    metadata = dict(model_metadata or {})
+    notion_thread_id = str(getattr(client, "current_thread_id", "") or "").strip()
+    if notion_thread_id:
+        metadata["notion_thread_id"] = notion_thread_id
+        if response is not None:
+            response.headers["X-Notion-Thread-Id"] = notion_thread_id
+    return metadata
+
+
 def _build_model_metadata_event(requested_model: str, model_metadata: dict[str, Any] | None) -> str:
     payload = _response_model_metadata(requested_model, model_metadata)
     if not payload:
@@ -702,11 +759,12 @@ def _prepare_messages(
     dialogue_messages = []
 
     for msg in req_body.messages:
+        content_text = _message_content_to_text(msg.content)
         if msg.role == "system":
-            if msg.content.strip():
-                system_messages.append(msg.content.strip())
+            if content_text.strip():
+                system_messages.append(content_text.strip())
             continue
-        dialogue_messages.append((msg.role, msg.content, msg.thinking or ""))
+        dialogue_messages.append((msg.role, content_text, msg.thinking or ""))
 
     if not dialogue_messages:
         raise HTTPException(
@@ -740,10 +798,11 @@ def _prepare_messages_lite(req_body: ChatCompletionRequest) -> str:
     user_prompt = ""
 
     for msg in req_body.messages:
-        if msg.role == "system" and msg.content.strip():
-            system_messages.append(msg.content.strip())
+        content_text = _message_content_to_text(msg.content)
+        if msg.role == "system" and content_text.strip():
+            system_messages.append(content_text.strip())
         elif msg.role == "user":
-            user_prompt = msg.content
+            user_prompt = content_text
 
     if not user_prompt.strip():
         raise HTTPException(
@@ -930,8 +989,23 @@ def _create_standard_stream_generator(
                 thinking_text = item.get("text", "")
                 if thinking_text:
                     streamed_thinking_accumulator += thinking_text
-                    # text thinking_chunk text
+                    # Custom local UI thinking_chunk event
                     yield f"data: {json.dumps({'type': 'thinking_chunk', 'text': thinking_text}, ensure_ascii=False)}\n\n"
+                    # Standard OpenAI reasoning_content chunk
+                    if not assistant_started:
+                        assistant_started = True
+                        yield _build_stream_chunk(
+                            response_id,
+                            model_name,
+                            role="assistant",
+                            thinking=thinking_text,
+                        )
+                    else:
+                        yield _build_stream_chunk(
+                            response_id,
+                            model_name,
+                            thinking=thinking_text,
+                        )
                 continue
 
             # Standard text searchtext
@@ -1201,12 +1275,14 @@ def _handle_lite_request(
             persist_remote_chat = None
             if req_body.metadata and isinstance(req_body.metadata, dict):
                 persist_remote_chat = req_body.metadata.get("persist_remote_chat")
+            computer_use_review = _request_computer_use_review(req_body)
 
             stream_gen = client.stream_response(
                 transcript,
                 thread_id=None,
                 attachments=attachments if attachments else None,
                 persist_remote_chat=persist_remote_chat,
+                computer_use_review=computer_use_review,
             )
             first_item = next(stream_gen, None)
 
@@ -1290,7 +1366,14 @@ def _handle_lite_request(
                     )
                 ],
             )
+            model_metadata = _attach_notion_thread_metadata(
+                response=response,
+                client=client,
+                model_metadata=model_metadata,
+            )
             _attach_response_model_metadata(response_obj, req_body.model, model_metadata)
+            if _strict_model_requested(req_body) and _is_model_mismatch(response_obj):
+                return _model_mismatch_response(response_obj)
             return response_obj
 
         except NotionUpstreamError as exc:
@@ -1431,7 +1514,7 @@ def _handle_standard_request(
                 "user_id": client.user_id,
                 "space_id": client.space_id,
                 "timezone": getattr(client, "timezone", "America/Chicago"),
-                "context_page_id": getattr(client, "context_page_id", ""),
+                "context_page_id": _request_context_page_id(req_body, client),
             }
             messages = cleaned_msgs
             transcript = build_standard_transcript(messages, req_body.model, account)
@@ -1440,12 +1523,14 @@ def _handle_standard_request(
             persist_remote_chat = None
             if req_body.metadata and isinstance(req_body.metadata, dict):
                 persist_remote_chat = req_body.metadata.get("persist_remote_chat")
+            computer_use_review = _request_computer_use_review(req_body)
 
             stream_gen = client.stream_response(
                 transcript,
                 thread_id=None,
                 attachments=attachments if attachments else None,
                 persist_remote_chat=persist_remote_chat,
+                computer_use_review=computer_use_review,
             )
             first_item = next(stream_gen, None)
 
@@ -1539,13 +1624,20 @@ def _handle_standard_request(
 
             # text thinkingtext
             if thinking_parts:
-                response_message.thinking = "".join(thinking_parts)
+                thinking_val = "".join(thinking_parts)
+                response_message.thinking = thinking_val
+                response_message.reasoning_content = thinking_val
 
             # text
             response_obj = ChatCompletionResponse(
                 id=response_id,
                 model=req_body.model,
                 choices=[ChatMessageResponseChoice(message=response_message)],
+            )
+            model_metadata = _attach_notion_thread_metadata(
+                response=response,
+                client=client,
+                model_metadata=model_metadata,
             )
             _attach_response_model_metadata(response_obj, req_body.model, model_metadata)
 
@@ -1566,6 +1658,8 @@ def _handle_standard_request(
                         "sources": all_sources,
                     }
 
+            if _strict_model_requested(req_body) and _is_model_mismatch(response_obj):
+                return _model_mismatch_response(response_obj)
             return response_obj
 
         except NotionUpstreamError as exc:
@@ -1839,6 +1933,7 @@ async def create_chat_completion(
                 new_prompt=user_prompt,
                 model_name=req_body.model,
                 recall_query=recall_query,
+                context_page_id=_request_context_page_id(req_body, client),
             )
             transcript = transcript_payload["transcript"]
             memory_degraded = bool(transcript_payload.get("memory_degraded"))
@@ -1886,12 +1981,14 @@ async def create_chat_completion(
             persist_remote_chat = None
             if req_body.metadata and isinstance(req_body.metadata, dict):
                 persist_remote_chat = req_body.metadata.get("persist_remote_chat")
+            computer_use_review = _request_computer_use_review(req_body)
 
             stream_gen = client.stream_response(
                 transcript,
                 thread_id=thread_id,
                 attachments=attachments if attachments else None,
                 persist_remote_chat=persist_remote_chat,
+                computer_use_review=computer_use_review,
             )
             first_item = next(stream_gen, None)
 
@@ -2295,15 +2392,25 @@ async def create_chat_completion(
             if memory_degraded:
                 response.headers["X-Memory-Status"] = "degraded"
 
+            notion_thread_id = str(getattr(active_client, "current_thread_id", "") or "").strip()
+            if notion_thread_id:
+                model_metadata = dict(model_metadata or {})
+                model_metadata["notion_thread_id"] = notion_thread_id
+                response.headers["X-Notion-Thread-Id"] = notion_thread_id
+
             response_text = (
                 full_text if full_text.strip() else "[assistant_no_visible_content]"
             )
+            response_message = ChatMessage(role="assistant", content=response_text)
+            if merged_thinking:
+                response_message.thinking = merged_thinking
+                response_message.reasoning_content = merged_thinking
             response_obj = ChatCompletionResponse(
                 id=response_id,
                 model=req_body.model,
                 choices=[
                     ChatMessageResponseChoice(
-                        message=ChatMessage(role="assistant", content=response_text)
+                        message=response_message
                     )
                 ],
             )

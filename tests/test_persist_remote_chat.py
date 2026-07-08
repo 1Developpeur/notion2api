@@ -40,8 +40,9 @@ class PersistRemoteChatTests(unittest.TestCase):
         client_mock = NotionOpusAPI({"user_id": "u1", "space_id": "s1", "token_v2": "t1"})
         
         # Patch dependencies that require network/cookies to avoid network calls
-        with patch.object(client_mock, "_to_notion_transcript", return_value=[]), \
-             patch.object(client_mock, "_resolve_thread_type", return_value="markdown-chat"), \
+        with patch.object(client_mock, "_to_notion_transcript", return_value=[{"type": "config", "value": {"type": "workflow"}}]), \
+             patch.object(client_mock, "_resolve_thread_type", return_value="workflow"), \
+             patch.object(client_mock, "_with_thread_type", side_effect=lambda transcript, thread_type: transcript) as mock_with_type, \
              patch.object(client_mock, "_resolve_request_profile", return_value={"precreate_thread": True, "create_thread": True, "is_partial_transcript": False, "include_debug_overrides": False}), \
              patch.object(client_mock, "_build_cookie_header", return_value=""), \
              patch.object(client_mock, "_scraper", MagicMock()) as mock_scraper:
@@ -50,30 +51,92 @@ class PersistRemoteChatTests(unittest.TestCase):
             mock_response.status_code = 200
             def mock_parse_stream(res):
                 yield {"type": "content", "text": "hello"}
+                yield {"type": "stream_complete"}
 
-            with patch("app.notion_client.parse_stream", side_effect=mock_parse_stream):
+            with patch("app.notion_client.parse_stream", side_effect=mock_parse_stream), patch(
+                "app.notion_client.cloudscraper.create_scraper",
+                return_value=mock_scraper,
+            ):
                 mock_scraper.post.return_value = mock_response
                 
-                # Retrieve the stream generator with persist_remote_chat=True
                 gen = client_mock.stream_response(
                     transcript=[{"role": "user", "content": "hi"}],
                     thread_id="test-thread-id",
-                    persist_remote_chat=True
+                    persist_remote_chat=True,
                 )
-                
-                # Execute the generator to run downstream stream handling logic
                 list(gen)
-                
-                # Check that delete_thread was NOT called since persist_remote_chat is True (overriding default delete_after_stream)
+                mock_with_type.assert_not_called()
+
                 with patch.object(client_mock, "delete_thread") as mock_delete:
-                    # Execute again
                     gen = client_mock.stream_response(
                         transcript=[{"role": "user", "content": "hi"}],
                         thread_id="test-thread-id",
-                        persist_remote_chat=True
+                        persist_remote_chat=True,
                     )
                     list(gen)
                     mock_delete.assert_not_called()
+
+    def test_stream_response_computer_use_keeps_workflow_with_attachments(self):
+        """Repo AI computer-use reviews keep workflow threads even with ZIP attachments."""
+        client_mock = NotionOpusAPI({"user_id": "u1", "space_id": "s1", "token_v2": "t1"})
+        transcript = [{"type": "config", "value": {"type": "workflow", "model": "gpt-5.5"}}]
+
+        with patch.object(client_mock, "_to_notion_transcript", return_value=transcript), \
+             patch.object(client_mock, "_resolve_thread_type", return_value="workflow"), \
+             patch.object(client_mock, "_with_thread_type", side_effect=lambda t, tt: t) as mock_with_type, \
+             patch.object(client_mock, "_resolve_request_profile", return_value={"precreate_thread": False, "create_thread": True, "is_partial_transcript": False, "include_debug_overrides": False}), \
+             patch.object(client_mock, "_build_cookie_header", return_value=""), \
+             patch.object(client_mock, "delete_thread") as mock_delete, \
+             patch.object(client_mock, "_scraper", MagicMock()) as mock_scraper, \
+             patch("app.notion_client.NotionAttachmentUploader") as uploader_cls:
+            from app.attachments.models import UploadedAttachment
+            uploaded = UploadedAttachment(
+                name="source.zip",
+                content_type="application/x-zip-compressed",
+                size_bytes=123,
+                source="local_path",
+                file_id="file-1",
+                attachment_url="attachment:file-1:block-1",
+            )
+            uploader = uploader_cls.return_value
+            uploader.upload_attachments.return_value = ([uploaded], "thread-zip")
+            mock_response = MagicMock()
+            mock_response.status_code = 200
+            with patch("app.notion_client.parse_stream", return_value=iter([
+                {"type": "content", "text": "ok"},
+                {"type": "stream_complete"},
+            ])), patch(
+                "app.notion_client.cloudscraper.create_scraper",
+                return_value=mock_scraper,
+            ):
+                mock_scraper.post.return_value = mock_response
+                list(client_mock.stream_response(
+                    transcript,
+                    thread_id="thread-zip",
+                    attachments=[object()],
+                    persist_remote_chat=True,
+                    computer_use_review=True,
+                ))
+
+        mock_with_type.assert_not_called()
+        payload = mock_scraper.post.call_args.kwargs["json"]
+        self.assertEqual(payload["threadType"], "workflow")
+        self.assertTrue(payload["createThread"])
+        self.assertFalse(payload["isPartialTranscript"])
+        self.assertEqual(payload["createdSource"], "ai_module")
+        config = next(step for step in payload["transcript"] if step.get("type") == "config")
+        self.assertTrue(config["value"]["enableComputer"])
+        self.assertTrue(config["value"]["enableScriptAgent"])
+        file_step = next(step for step in payload["transcript"] if step.get("type") == "computer-file")
+        self.assertEqual(file_step["fileName"], "source.zip")
+        self.assertEqual(file_step["metadata"]["fileSize"], 123)
+        self.assertEqual(file_step["metadata"]["attachmentSource"], "user_upload")
+        followup = payload["transcript"][-1]
+        self.assertEqual(followup["type"], "user")
+        self.assertIn("Do not wait for a manual response", followup["value"][0][0])
+        uploader.upload_attachments.assert_called_once()
+        self.assertTrue(uploader.upload_attachments.call_args.kwargs["create_thread"])
+        mock_delete.assert_not_called()
 
     def test_stream_response_persistence_override_false(self):
         """Verify stream_response overrides settings to delete when persist_remote_chat=False."""
@@ -91,8 +154,12 @@ class PersistRemoteChatTests(unittest.TestCase):
             mock_response.status_code = 200
             def mock_parse_stream(res):
                 yield {"type": "content", "text": "hello"}
+                yield {"type": "stream_complete"}
 
-            with patch("app.notion_client.parse_stream", side_effect=mock_parse_stream):
+            with patch("app.notion_client.parse_stream", side_effect=mock_parse_stream), patch(
+                "app.notion_client.cloudscraper.create_scraper",
+                return_value=mock_scraper,
+            ):
                 mock_scraper.post.return_value = mock_response
                 
                 gen = client_mock.stream_response(

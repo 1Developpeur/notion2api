@@ -832,6 +832,23 @@ def _stream_completion_event(patch: dict[str, Any]) -> dict[str, Any] | None:
         "segment_index": _extract_segment_index(patch_path),
     }
 
+def _find_finished_at(value: Any) -> Any:
+    """Return a non-empty Notion completion timestamp from nested stream data."""
+    if isinstance(value, dict):
+        for key, nested in value.items():
+            if str(key).replace("_", "").lower() == "finishedat" and nested not in (None, "", False):
+                return nested
+        for nested in value.values():
+            found = _find_finished_at(nested)
+            if found not in (None, "", False):
+                return found
+    elif isinstance(value, list):
+        for nested in value:
+            found = _find_finished_at(nested)
+            if found not in (None, "", False):
+                return found
+    return None
+
 
 def parse_stream(response: requests.Response) -> Generator[dict[str, Any], None, None]:
     """
@@ -866,6 +883,7 @@ def parse_stream(response: requests.Response) -> Generator[dict[str, Any], None,
 
     # pendingtexto:"a" /s/- text Notion text index text
     _pending_segments: list[dict] = []  # [{seg_class, value_types_local, next_val_id_local}]
+    completion_emitted = False
 
     for line in response.iter_lines(decode_unicode=True):
         if not line:
@@ -885,6 +903,11 @@ def parse_stream(response: requests.Response) -> Generator[dict[str, Any], None,
             data = json.loads(line)
         except json.JSONDecodeError:
             continue
+
+        finished_at = _find_finished_at(data)
+        if finished_at not in (None, "", False) and not completion_emitted:
+            completion_emitted = True
+            yield {"type": "stream_complete", "finished_at": finished_at}
 
         data_type = str(data.get("type", "") or "").lower()
 
