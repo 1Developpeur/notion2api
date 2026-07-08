@@ -58,6 +58,24 @@ def _extract_attachment_file_id(attachment_url: str) -> str:
     return path.rstrip("/").split("/")[-1] if path else ""
 
 
+def _is_zip_upload(name: str, content_type: str) -> bool:
+    normalized_type = str(content_type or "").split(";", 1)[0].strip().lower()
+    return normalized_type in {"application/zip", "application/x-zip-compressed"} or str(name or "").lower().endswith(".zip")
+
+
+def _notion_attachment_upload_name(name: str, content_type: str) -> str:
+    """Match Notion web: ZIP descriptors use ``{uuid}zip``, not ``source.zip``."""
+    if _is_zip_upload(name, content_type):
+        return f"{uuid.uuid4()}zip"
+    return name
+
+
+def _notion_upload_content_type(name: str, content_type: str) -> str:
+    if _is_zip_upload(name, content_type):
+        return "application/x-zip-compressed"
+    return content_type
+
+
 def _default_persist_threads() -> bool:
     """Preserve Notion-visible threads only for stateful local-memory mode by default."""
     app_mode = os.getenv("APP_MODE", "heavy").strip().lower()
@@ -284,9 +302,11 @@ class NotionOpusAPI:
         Raises NotionUpstreamError on HTTP or response failures.
         """
         endpoint = "https://www.notion.so/api/v3/getUploadFileUrlForAssistantChatTranscriptUpload"
+        notion_content_type = _notion_upload_content_type(name, content_type)
+        upload_name = _notion_attachment_upload_name(name, content_type)
         payload = {
-            "name": name,
-            "contentType": content_type,
+            "name": upload_name,
+            "contentType": notion_content_type,
             "assistantChatTranscriptSessionPointer": {
                 "spaceId": self.space_id,
                 "table": "thread",
@@ -295,6 +315,8 @@ class NotionOpusAPI:
             "contentLength": size,
             "createThread": create_thread,
         }
+        if _is_zip_upload(name, notion_content_type):
+            payload["allowUnsupportedTypes"] = True
         if _attachment_descriptor_debug_enabled():
             logger.warning(
                 "Attachment descriptor request",
@@ -303,9 +325,10 @@ class NotionOpusAPI:
                         "event": "attachment_descriptor_request",
                         "endpoint": "getUploadFileUrlForAssistantChatTranscriptUpload",
                         "payload_keys": sorted(payload.keys()),
-                        "fileName": name,
-                        "contentType": content_type,
-                        "size": size,
+                        "originalFileName": name,
+                        "uploadName": upload_name,
+                        "contentType": notion_content_type,
+                        "contentLength": size,
                         "threadId_present": bool(thread_id),
                         "createThread": create_thread,
                         "spaceId_present": bool(self.space_id),
@@ -328,6 +351,13 @@ class NotionOpusAPI:
                             "event": "attachment_descriptor_response_failure",
                             "status_code": resp.status_code,
                             "retriable": resp.status_code >= 500,
+                            "originalFileName": name,
+                            "uploadName": upload_name,
+                            "contentType": notion_content_type,
+                            "contentLength": size,
+                            "createThread": create_thread,
+                            "threadId_present": bool(thread_id),
+                            "spaceId_present": bool(self.space_id),
                             "response_excerpt": excerpt,
                         }
                     },

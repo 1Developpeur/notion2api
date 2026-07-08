@@ -3,6 +3,7 @@ from __future__ import annotations
 import argparse
 import asyncio
 import json
+import logging
 import os
 import re
 import sqlite3
@@ -48,6 +49,9 @@ DEFAULT_CHAT_WAIT_SECONDS = 45.0
 MAX_CHAT_WAIT_SECONDS = 50.0
 _CHAT_JOB_STATE_MUTEX = threading.RLock()
 _CHAT_JOB_TASKS: dict[str, asyncio.Task[dict[str, Any]]] = {}
+logger = logging.getLogger(__name__)
+CHAT_JOB_STATE_WRITE_RETRIES = 5
+CHAT_JOB_STATE_WRITE_BACKOFF_SECONDS = 0.05
 
 
 class HealthOutput(BaseModel):
@@ -228,6 +232,8 @@ def prepare_mcp_file_attachments(
         prepared.append({
             "name": path.name,
             "content_type": mime_type,
+            "size_bytes": size,
+            "source": "mcp_file",
             "data": f"data:{mime_type};base64,{encoded}",
         })
 
@@ -415,8 +421,47 @@ def _now_ms() -> int:
 def _atomic_write_json(path: Path, data: dict[str, Any]) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
     tmp = path.with_name(f"{path.name}.{uuid.uuid4().hex}.tmp")
-    tmp.write_text(json.dumps(data, indent=2, sort_keys=True, ensure_ascii=False), encoding="utf-8")
-    os.replace(tmp, path)
+    last_error: OSError | None = None
+    try:
+        with tmp.open("w", encoding="utf-8") as handle:
+            json.dump(data, handle, indent=2, sort_keys=True, ensure_ascii=False)
+            handle.flush()
+            try:
+                os.fsync(handle.fileno())
+            except OSError:
+                # Some network/sandbox filesystems do not support fsync. The
+                # replace retry below is still the important Windows hardening.
+                pass
+
+        for attempt in range(CHAT_JOB_STATE_WRITE_RETRIES):
+            try:
+                os.replace(tmp, path)
+                return
+            except OSError as exc:
+                last_error = exc
+                if attempt >= CHAT_JOB_STATE_WRITE_RETRIES - 1:
+                    break
+                time.sleep(CHAT_JOB_STATE_WRITE_BACKOFF_SECONDS * (2 ** attempt))
+
+        assert last_error is not None
+        logger.warning(
+            "Failed to atomically replace chat job state after retries",
+            extra={
+                "request_info": {
+                    "event": "chat_job_state_replace_failed",
+                    "path": str(path),
+                    "tmp_path": str(tmp),
+                    "error": f"{type(last_error).__name__}: {last_error}",
+                }
+            },
+        )
+        raise last_error
+    finally:
+        if tmp.exists():
+            try:
+                tmp.unlink()
+            except OSError:
+                pass
 
 
 def _safe_float(value: Any, default: float) -> float:
@@ -456,16 +501,78 @@ def _session_key(session_name: str | None) -> str:
     return key or DEFAULT_SESSION_NAME
 
 
-def _load_chat_job_state(path: Path = DEFAULT_CHAT_JOB_STATE_PATH) -> dict[str, Any]:
+def _valid_chat_job_state(data: Any) -> dict[str, Any] | None:
+    if isinstance(data, dict) and isinstance(data.get("jobs"), dict):
+        return data
+    return None
+
+
+def _load_chat_job_state_file(path: Path) -> dict[str, Any] | None:
     try:
-        if not path.exists():
-            return {"jobs": {}}
-        data = json.loads(path.read_text(encoding="utf-8"))
-        if isinstance(data, dict) and isinstance(data.get("jobs"), dict):
-            return data
+        if not path.exists() or not path.is_file():
+            return None
+        return _valid_chat_job_state(json.loads(path.read_text(encoding="utf-8")))
     except Exception:
-        pass
-    return {"jobs": {}}
+        return None
+
+
+def _job_timestamp(job: Any) -> int:
+    if not isinstance(job, dict):
+        return 0
+    for key in ("updated_at", "created_at"):
+        value = job.get(key)
+        if isinstance(value, int):
+            return value
+    return 0
+
+
+def _merge_chat_job_states(base: dict[str, Any], candidate: dict[str, Any]) -> bool:
+    changed = False
+    base_jobs = base.setdefault("jobs", {})
+    candidate_jobs = candidate.get("jobs", {})
+    if not isinstance(base_jobs, dict) or not isinstance(candidate_jobs, dict):
+        return False
+    for request_id, candidate_job in candidate_jobs.items():
+        if not isinstance(candidate_job, dict):
+            continue
+        request_key = str(request_id)
+        existing = base_jobs.get(request_key)
+        if not isinstance(existing, dict) or _job_timestamp(candidate_job) > _job_timestamp(existing):
+            base_jobs[request_key] = candidate_job
+            changed = True
+    return changed
+
+
+def _recover_chat_job_state(path: Path) -> dict[str, Any]:
+    state = _load_chat_job_state_file(path) or {"jobs": {}}
+    tmp_paths = sorted(
+        path.parent.glob(f"{path.name}.*.tmp"),
+        key=lambda item: item.stat().st_mtime if item.exists() else 0,
+    )
+    recovered = False
+    for tmp_path in tmp_paths:
+        tmp_state = _load_chat_job_state_file(tmp_path)
+        if tmp_state is None:
+            continue
+        recovered = _merge_chat_job_states(state, tmp_state) or recovered
+    if recovered:
+        try:
+            _atomic_write_json(path, state)
+        except OSError:
+            logger.warning(
+                "Recovered chat job state from temp files but could not promote canonical ledger",
+                extra={
+                    "request_info": {
+                        "event": "chat_job_state_recovery_unpromoted",
+                        "path": str(path),
+                    }
+                },
+            )
+    return state
+
+
+def _load_chat_job_state(path: Path = DEFAULT_CHAT_JOB_STATE_PATH) -> dict[str, Any]:
+    return _recover_chat_job_state(path)
 
 
 def _save_chat_job_state(state: dict[str, Any], path: Path = DEFAULT_CHAT_JOB_STATE_PATH) -> None:
@@ -574,6 +681,38 @@ def _chat_pending_output(
     }
 
 
+def _manifest_int(value: Any) -> int | None:
+    if isinstance(value, bool):
+        return None
+    if isinstance(value, int) and value >= 0:
+        return value
+    return None
+
+
+def _attachment_manifest_from_payload(payload: dict[str, Any]) -> list[dict[str, Any]]:
+    raw_attachments = payload.get("attachments") if isinstance(payload, dict) else None
+    if not isinstance(raw_attachments, list):
+        return []
+    manifest: list[dict[str, Any]] = []
+    for item in raw_attachments:
+        if not isinstance(item, dict):
+            continue
+        data_value = item.get("data") or item.get("file_data") or ""
+        source = str(item.get("source") or "").strip()
+        if not source and isinstance(data_value, str) and data_value.startswith("data:"):
+            source = "inline_data"
+        entry: dict[str, Any] = {
+            "name": str(item.get("name") or item.get("filename") or item.get("file_name") or ""),
+            "content_type": str(item.get("content_type") or item.get("mime_type") or ""),
+            "source": source,
+        }
+        size = _manifest_int(item.get("size_bytes"))
+        if size is not None:
+            entry["size_bytes"] = size
+        manifest.append({key: value for key, value in entry.items() if value != ""})
+    return manifest
+
+
 async def _run_chat_completion_job(
     *,
     client: Notion2APIClient,
@@ -644,6 +783,7 @@ async def _submit_or_resume_chat_job(
         metadata = {}
         payload["metadata"] = metadata
     metadata.setdefault("mcp_request_id", normalized_id)
+    attachment_manifest = _attachment_manifest_from_payload(payload)
 
     existing = _load_chat_job(normalized_id)
     task = _CHAT_JOB_TASKS.get(normalized_id)
@@ -700,6 +840,8 @@ async def _submit_or_resume_chat_job(
             "updated_at": now,
             "wait_seconds": bounded_wait,
         }
+        if attachment_manifest:
+            job["attachment_manifest"] = attachment_manifest
         _persist_chat_job(job)
         task = asyncio.create_task(
             _run_chat_completion_job(

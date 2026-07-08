@@ -46,6 +46,7 @@ class NotionClientAttachmentTests(unittest.TestCase):
         self.assertIn("getUploadFileUrlForAssistantChatTranscriptUpload", args[0])
         body = kwargs.get("json")
         self.assertEqual(body["name"], "a.txt")
+        self.assertEqual(body["contentType"], "text/csv")
         self.assertEqual(body["contentLength"], 10)
         self.assertEqual(body["assistantChatTranscriptSessionPointer"], {"spaceId": "space", "table": "thread", "id": "t"})
         self.assertNotIn("fileName", body)
@@ -68,6 +69,36 @@ class NotionClientAttachmentTests(unittest.TestCase):
         self.assertEqual(desc["file_id"], "file-2")
         self.assertEqual(desc["attachment_url"], "attachment:file-2:block-2")
         self.assertEqual(desc["fields"], {"p": "q"})
+        body = self.client._scraper.post.call_args.kwargs["json"]
+        self.assertEqual(body["name"], "b.pdf")
+        self.assertEqual(body["contentType"], "application/pdf")
+        self.assertEqual(body["contentLength"], 22)
+        self.assertNotIn("allowUnsupportedTypes", body)
+
+    def test_request_upload_descriptor_zip_uses_zip_specific_payload(self):
+        resp = Mock()
+        resp.status_code = 200
+        resp.json.return_value = {
+            "signedUploadPostUrl": "https://upload.test/zip",
+            "fields": {},
+            "url": "attachment:file-zip:block-zip",
+        }
+        self.client._scraper.post.return_value = resp
+
+        self.client.request_upload_descriptor(
+            name="source.zip",
+            content_type="application/zip",
+            size=44,
+            thread_id="t",
+            create_thread=False,
+        )
+
+        body = self.client._scraper.post.call_args.kwargs["json"]
+        self.assertNotEqual(body["name"], "source.zip")
+        self.assertTrue(body["name"].endswith("zip"))
+        self.assertEqual(body["contentType"], "application/x-zip-compressed")
+        self.assertEqual(body["contentLength"], 44)
+        self.assertTrue(body["allowUnsupportedTypes"])
 
     def test_request_upload_descriptor_missing_required_fields_fails(self):
         resp = Mock()
