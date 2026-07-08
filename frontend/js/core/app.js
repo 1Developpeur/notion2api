@@ -159,11 +159,35 @@ function removeThinkingIndicator() {
 }
 
 // ─── Init ─────────────────────────────────────────────────────
-function init() {
+async function init() {
     window.NotionAI.Chat.Storage.loadChats();
     window.NotionAI.Chat.Storage.saveChats();
     window.NotionAI.UI.Theme.init();
     window.NotionAI.API.Models.loadModels();
+
+    try {
+        const response = await window.NotionAI.API.Client.get('/v1/models');
+        if (response.ok) {
+            const data = await response.json();
+            const allowedIds = new Set(data.data.map(m => m.id));
+
+            // Filter MODELS
+            window.NotionAI.Core.Constants.MODELS = window.NotionAI.Core.Constants.MODELS.filter(
+                model => allowedIds.has(model.id)
+            );
+
+            // Filter MODEL_GROUPS
+            window.NotionAI.Core.Constants.MODEL_GROUPS = window.NotionAI.Core.Constants.MODEL_GROUPS.map(group => {
+                return {
+                    ...group,
+                    models: group.models.filter(model => allowedIds.has(model.id))
+                };
+            }).filter(group => group.models.length > 0);
+        }
+    } catch (e) {
+        console.error("Failed to load or filter models:", e);
+    }
+
     window.NotionAI.Chat.Manager.renderChatList();
     updateWelcomeGreeting();
     bindEventListeners();

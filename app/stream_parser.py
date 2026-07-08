@@ -816,6 +816,23 @@ def _bind_pending_segment(
     )
 
 
+def _stream_completion_event(patch: dict[str, Any]) -> dict[str, Any] | None:
+    """Return an explicit completion event for Notion's terminal metadata patch."""
+    patch_path = _normalize_path(patch)
+    if patch_path.rsplit("/", 1)[-1].lower() != "finishedat":
+        return None
+
+    finished_at = patch.get("v")
+    if finished_at is None:
+        return None
+
+    return {
+        "type": "stream_complete",
+        "finished_at": finished_at,
+        "segment_index": _extract_segment_index(patch_path),
+    }
+
+
 def parse_stream(response: requests.Response) -> Generator[dict[str, Any], None, None]:
     """
     text Notion NDJSON text
@@ -897,10 +914,15 @@ def parse_stream(response: requests.Response) -> Generator[dict[str, Any], None,
             if not isinstance(patch, dict):
                 continue
 
+            initial_value_events: list[tuple[str, str]] = []
             patch_op = str(patch.get("o", "") or "")
             patch_v = patch.get("v")
             patch_path = _normalize_path(patch)
             patch_seg = _extract_segment_index(patch_path)
+
+            completion_event = _stream_completion_event(patch)
+            if completion_event is not None:
+                yield completion_event
 
             markdown_chat_patch = _extract_markdown_chat_patch_text(patch)
             if markdown_chat_patch is not None:
@@ -940,6 +962,9 @@ def parse_stream(response: requests.Response) -> Generator[dict[str, Any], None,
                                 item_class = _classify_segment_type(item_type)
                                 local_value_types[idx] = item_class
                                 local_next_val_id = idx + 1
+                                item_content = item.get("content")
+                                if isinstance(item_content, str) and item_content:
+                                    initial_value_events.append((item_class, item_content))
 
                 if 0 not in local_value_types:
                     local_value_types[0] = seg_class
@@ -1070,6 +1095,23 @@ def parse_stream(response: requests.Response) -> Generator[dict[str, Any], None,
                 if ">" in patch_v or "\n" in patch_v or "\r" in patch_v or not patch_v.strip():
                     in_lang_tag[0] = False
                     in_primary_attr[0] = False
+
+            # Initial top-level segments can contain mixed value items, such as
+            # a private thinking item followed by the visible text answer. Emit
+            # each item under its own classified role instead of concatenating
+            # the entire array under the first item's role.
+            if initial_value_events:
+                for initial_role, initial_text in initial_value_events:
+                    cleaned = _strip_lang_tags(initial_text, in_lang_tag)
+                    cleaned = _strip_primary_attr_fragments(cleaned, in_primary_attr)
+                    cleaned = _clean_notion_markup(cleaned)
+                    if not cleaned or initial_role == SEG_META:
+                        continue
+                    if initial_role in (SEG_THINKING, SEG_TOOL):
+                        yield {"type": "thinking", "text": cleaned}
+                    else:
+                        yield {"type": "content", "text": cleaned}
+                continue
 
             content = _extract_text_from_patch(patch)
             if not content:

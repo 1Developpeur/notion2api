@@ -17,6 +17,7 @@ def test_captured_notion_backend_mappings_are_registered():
         "gemini-2.5flash": "vertex-gemini-2.5-flash",
         "gemini-3.5flash": "vertex-gemini-3.5-flash",
         "claude-sonnet4.6": "almond-croissant-low",
+        "claude-sonnet5": "angel-cake-high",
         "claude-opus4.6": "avocado-froyo-medium",
         "claude-opus4.7": "apricot-sorbet-high",
         "claude-opus4.8": "ambrosia-tart-high",
@@ -44,6 +45,7 @@ def test_captured_display_names_are_registered():
     assert get_display_name("grok-4.3") == "Grok 4.3"
     assert get_display_name("grok-build0.1") == "Grok Build 0.1"
     assert get_display_name("minimax-m2.5") == "MiniMax M2.5"
+    assert get_display_name("claude-sonnet5") == "Claude Sonnet 5"
     assert get_display_name("claude-haiku4.5") == "Claude Haiku 4.5"
     assert get_display_name("claude-fable5") == "Fable 5"
     assert get_display_name("glm-5.2") == "GLM 5.2"
@@ -57,8 +59,10 @@ def test_gemini_3_5_flash_no_longer_uses_markdown_chat_route():
 def test_available_models_expose_only_canonical_notion_ids():
     models = list_available_models()
 
-    assert len(models) == 21
+    assert len(models) == 22
     assert len(models) == len(set(models))
+    assert "angel-cake-high" in models
+    assert "claude-sonnet5" not in models
     assert "apricot-sorbet-high" in models
     assert "claude-opus4.7" not in models
     assert "baseten-glm-5.2" in models
@@ -66,9 +70,19 @@ def test_available_models_expose_only_canonical_notion_ids():
 
 
 def test_model_metadata_preserves_transport_and_underlying_family():
+    sonnet = get_model_metadata("claude-sonnet5")
     opus = get_model_metadata("claude-opus4.7")
     glm = get_model_metadata("baseten-glm-5.2")
 
+    assert sonnet == {
+        "canonical_id": "angel-cake-high",
+        "public_name": "claude-sonnet5",
+        "display_name": "Sonnet 5",
+        "model_family": "anthropic",
+        "transport": "notion2api",
+        "upstream_host": "notion",
+        "aliases": ["claude-sonnet5"],
+    }
     assert opus == {
         "canonical_id": "apricot-sorbet-high",
         "public_name": "claude-opus4.7",

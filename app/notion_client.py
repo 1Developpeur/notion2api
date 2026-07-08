@@ -26,6 +26,26 @@ urllib3.disable_warnings(urllib3.exceptions.InsecureRequestWarning)
 NOTION_CLIENT_VERSION = os.getenv("NOTION_CLIENT_VERSION", "23.13.20260623.1532")
 
 
+def _env_timeout_seconds(name: str, default: float) -> float | None:
+    """Read a timeout in seconds; zero or negative disables that timeout."""
+    raw_value = os.getenv(name)
+    if raw_value is None:
+        return default
+    try:
+        parsed = float(raw_value)
+    except (TypeError, ValueError):
+        return default
+    return None if parsed <= 0 else parsed
+
+
+NOTION_UPSTREAM_CONNECT_TIMEOUT = _env_timeout_seconds(
+    "NOTION_UPSTREAM_CONNECT_TIMEOUT_SECONDS", 15.0
+)
+NOTION_UPSTREAM_READ_TIMEOUT = _env_timeout_seconds(
+    "NOTION_UPSTREAM_READ_TIMEOUT_SECONDS", 1200.0
+)
+
+
 def _env_flag(name: str, default: bool = False) -> bool:
     value = os.getenv(name)
     if value is None:
@@ -159,6 +179,14 @@ class NotionOpusAPI:
         else:
             self._scraper = requests.Session()
         self._scraper_lock = threading.Lock()
+
+    def get_ai_model_picker_config(self) -> dict[str, Any]:
+        """Fetch space AI model picker config from Notion v3 API."""
+        endpoint = "https://www.notion.so/api/v3/getAvailableModels"
+        payload = {"spaceId": self.space_id}
+        resp = self._scraper.post(endpoint, headers=self._build_chat_history_headers(), json=payload, timeout=30)
+        resp.raise_for_status()
+        return resp.json()
 
     def _build_cookie_header(self) -> str:
         cookie_jar = self.cookies.copy()
@@ -796,11 +824,6 @@ class NotionOpusAPI:
 
         notion_transcript = self._to_notion_transcript(transcript)
         thread_type = self._resolve_thread_type(notion_transcript)
-        if attachments:
-            # Native uploads belong to an ordinary Notion AI chat. Attachment
-            # transport must not silently reclassify the persisted thread as a workflow.
-            thread_type = "markdown-chat"
-            notion_transcript = self._with_thread_type(notion_transcript, thread_type)
         request_profile = self._resolve_request_profile(thread_type)
         thread_persistence = _resolve_thread_persistence()
 
@@ -823,22 +846,10 @@ class NotionOpusAPI:
         thread_id = thread_id or str(uuid.uuid4())
         trace_id = str(uuid.uuid4())
         response = None
+        scraper = None
 
         # text thread_id text
         self.current_thread_id = thread_id
-
-        if attachments and should_create_thread:
-            if not self._create_thread(thread_id, thread_type):
-                raise NotionUpstreamError(
-                    "Failed to create an ordinary Notion AI chat for the attachment request.",
-                    status_code=502,
-                    retriable=True,
-                    response_excerpt="attachment_chat_precreate_failed",
-                )
-            should_create_thread = False
-            request_profile["create_thread"] = False
-            request_profile["precreate_thread"] = False
-            request_profile["is_partial_transcript"] = True
 
         uploaded_attachments: list[UploadedAttachment] = []
         if attachments:
@@ -894,6 +905,8 @@ class NotionOpusAPI:
             "cookie": cookie_header,
         }
 
+        created_source = "ai_module" if uploaded_attachments else ("workflows" if thread_type == "workflow" else "ai_module")
+
         payload = {
             "traceId": trace_id,
             "spaceId": self.space_id,
@@ -906,7 +919,7 @@ class NotionOpusAPI:
             "isPartialTranscript": request_profile["is_partial_transcript"],
             "asPatchResponse": True,
             "patchResponseVersion": 2,
-            "createdSource": "workflows" if thread_type == "workflow" else "ai_module",
+            "createdSource": created_source,
             "isUserInAnySalesAssistedSpace": False,
             "isSpaceSalesAssisted": False,
             "threadParentPointer": {
@@ -956,15 +969,19 @@ class NotionOpusAPI:
         )
 
         try:
-            with self._scraper_lock:
-                scraper = self._scraper
-                scraper.cookies.clear()
+            # Create a fresh, isolated scraper for this request to ensure thread safety.
+            # Reusing requests.Session concurrently across threads is not thread-safe.
+            if cloudscraper is not None:
+                scraper = cloudscraper.create_scraper()
+            else:
+                scraper = requests.Session()
+            scraper.cookies.clear()
             response = scraper.post(
                 self.url,
                 headers=headers,
                 json=payload,
                 stream=True,
-                timeout=(15, 120),
+                timeout=(NOTION_UPSTREAM_CONNECT_TIMEOUT, NOTION_UPSTREAM_READ_TIMEOUT),
             )
             if response.status_code == 403:
                 # Cloudflare challenge text scraper text
@@ -973,15 +990,16 @@ class NotionOpusAPI:
                     "Got 403, rebuilding cloudscraper to refresh Cloudflare challenge",
                     extra={"request_info": {"event": "cloudflare_challenge_refresh", "account": self.account_key}},
                 )
-                new_scraper = cloudscraper.create_scraper()
-                with self._scraper_lock:
-                    self._scraper = new_scraper
-                response = new_scraper.post(
+                if cloudscraper is not None:
+                    scraper = cloudscraper.create_scraper()
+                else:
+                    scraper = requests.Session()
+                response = scraper.post(
                     self.url,
                     headers=headers,
                     json=payload,
                     stream=True,
-                    timeout=(15, 120),
+                    timeout=(NOTION_UPSTREAM_CONNECT_TIMEOUT, NOTION_UPSTREAM_READ_TIMEOUT),
                 )
             if response.status_code != 200:
                 excerpt = (response.text or "").strip().replace("\n", " ")[:300]
@@ -995,9 +1013,21 @@ class NotionOpusAPI:
                 )
 
             emitted = False
+            stream_completed = False
             for chunk in parse_stream(response):
+                if isinstance(chunk, dict) and chunk.get("type") == "stream_complete":
+                    stream_completed = True
+                    continue
                 emitted = True
                 yield chunk
+
+            if not stream_completed:
+                raise NotionUpstreamError(
+                    "Notion upstream stream ended before completion metadata.",
+                    status_code=502,
+                    retriable=True,
+                    response_excerpt="missing_finishedAt",
+                )
 
             if not emitted:
                 raise NotionUpstreamError(
@@ -1055,3 +1085,8 @@ class NotionOpusAPI:
         finally:
             if response is not None:
                 response.close()
+            if scraper is not None:
+                try:
+                    scraper.close()
+                except Exception:
+                    pass

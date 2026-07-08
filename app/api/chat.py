@@ -11,6 +11,7 @@ from fastapi import APIRouter, BackgroundTasks, HTTPException, Request, Response
 from fastapi.responses import JSONResponse, StreamingResponse
 
 from app.core.errors import openai_error
+from app.core.internal_callers import is_repo_ai_internal_request
 from app.core.models import normalize_model_id
 from app.conversation import compress_round_if_needed, compress_sliding_window_round, build_lite_transcript
 from app.config import is_lite_mode
@@ -131,12 +132,33 @@ def _upstream_error_response(exc: NotionUpstreamError) -> JSONResponse:
     )
 
 
-def _resolve_request_model(model: str | None) -> str:
+def _resolve_request_model(request: Request, model: str | None) -> str:
     normalized_model = normalize_model_id(model)
     if not normalized_model:
         openai_error("The 'model' field is required.", "model_required")
+
+    restricted = set()
+    try:
+        pool = request.app.state.account_pool
+        client = pool.get_client(wait_if_cooling=False)
+        from app.model_registry import get_restricted_models_for_space, get_notion_model
+        restricted = get_restricted_models_for_space(client)
+        notion_model = get_notion_model(normalized_model)
+        if notion_model in restricted or normalized_model in restricted:
+            openai_error(
+                f"Model '{normalized_model}' is unavailable for the current account due to restriction (e.g. trial_not_allowed).",
+                "model_restricted",
+                status_code=400
+            )
+    except Exception as e:
+        if hasattr(e, "status_code"):
+            raise e
+
     if not is_supported_model(normalized_model):
-        available_models = list_available_models()
+        try:
+            available_models = [m for m in list_available_models() if get_notion_model(m) not in restricted and m not in restricted]
+        except Exception:
+            available_models = list_available_models()
         openai_error(
             f"Unsupported model '{normalized_model}'. Available models: {', '.join(available_models)}",
             "model_not_found",
@@ -808,67 +830,55 @@ def _create_lite_stream_generator(
             exc_info=True,
             extra={"request_info": {"event": "lite_stream_interrupted"}},
         )
-        error_hint = "\n\n[Upstream connection interrupted. Retry later.]"
-        streamed_content_accumulator += error_hint
+        raise
+    # text
+    final_reply, _ = _select_best_final_reply(
+        streamed_content_accumulator,
+        authoritative_final_content,
+        authoritative_final_source_type,
+    )
+
+    # text
+    missing_suffix = _compute_missing_suffix(
+        streamed_content_accumulator, final_reply
+    )
+    if missing_suffix:
         if not assistant_started:
             assistant_started = True
             yield _build_stream_chunk(
                 response_id,
                 model_name,
                 role="assistant",
-                content=error_hint,
+                content=missing_suffix,
             )
         else:
-            yield _build_stream_chunk(response_id, model_name, content=error_hint)
-    finally:
+            yield _build_stream_chunk(
+                response_id, model_name, content=missing_suffix
+            )
+        streamed_content_accumulator += missing_suffix
+    elif final_reply != streamed_content_accumulator:
         # text
-        final_reply, _ = _select_best_final_reply(
-            streamed_content_accumulator,
-            authoritative_final_content,
-            authoritative_final_source_type,
-        )
-
-        # text
-        missing_suffix = _compute_missing_suffix(
-            streamed_content_accumulator, final_reply
-        )
-        if missing_suffix:
+        if not streamed_content_accumulator and final_reply:
             if not assistant_started:
                 assistant_started = True
                 yield _build_stream_chunk(
                     response_id,
                     model_name,
                     role="assistant",
-                    content=missing_suffix,
+                    content=final_reply,
                 )
             else:
                 yield _build_stream_chunk(
-                    response_id, model_name, content=missing_suffix
+                    response_id, model_name, content=final_reply
                 )
-            streamed_content_accumulator += missing_suffix
-        elif final_reply != streamed_content_accumulator:
-            # text
-            if not streamed_content_accumulator and final_reply:
-                if not assistant_started:
-                    assistant_started = True
-                    yield _build_stream_chunk(
-                        response_id,
-                        model_name,
-                        role="assistant",
-                        content=final_reply,
-                    )
-                else:
-                    yield _build_stream_chunk(
-                        response_id, model_name, content=final_reply
-                    )
-                streamed_content_accumulator = final_reply
+            streamed_content_accumulator = final_reply
 
-        metadata_event = _build_model_metadata_event(model_name, model_metadata)
-        if metadata_event:
-            yield metadata_event
+    metadata_event = _build_model_metadata_event(model_name, model_metadata)
+    if metadata_event:
+        yield metadata_event
 
-        yield _build_stream_chunk(response_id, model_name, finish_reason="stop")
-        yield "data: [DONE]\n\n"
+    yield _build_stream_chunk(response_id, model_name, finish_reason="stop")
+    yield "data: [DONE]\n\n"
 
 
 def _create_standard_stream_generator(
@@ -978,80 +988,68 @@ def _create_standard_stream_generator(
             exc_info=True,
             extra={"request_info": {"event": "standard_stream_interrupted"}},
         )
-        error_hint = "\n\n[Upstream connection interrupted. Retry later.]"
-        streamed_content_accumulator += error_hint
+        raise
+    # text
+    final_reply, _ = _select_best_final_reply(
+        streamed_content_accumulator,
+        authoritative_final_content,
+        authoritative_final_source_type,
+    )
+
+    # text
+    missing_suffix = _compute_missing_suffix(
+        streamed_content_accumulator, final_reply
+    )
+    if missing_suffix:
         if not assistant_started:
             assistant_started = True
             yield _build_stream_chunk(
                 response_id,
                 model_name,
                 role="assistant",
-                content=error_hint,
+                content=missing_suffix,
             )
         else:
-            yield _build_stream_chunk(response_id, model_name, content=error_hint)
-    finally:
+            yield _build_stream_chunk(
+                response_id, model_name, content=missing_suffix
+            )
+        streamed_content_accumulator += missing_suffix
+    elif final_reply != streamed_content_accumulator:
         # text
-        final_reply, _ = _select_best_final_reply(
-            streamed_content_accumulator,
-            authoritative_final_content,
-            authoritative_final_source_type,
-        )
-
-        # text
-        missing_suffix = _compute_missing_suffix(
-            streamed_content_accumulator, final_reply
-        )
-        if missing_suffix:
+        if not streamed_content_accumulator and final_reply:
             if not assistant_started:
                 assistant_started = True
                 yield _build_stream_chunk(
                     response_id,
                     model_name,
                     role="assistant",
-                    content=missing_suffix,
+                    content=final_reply,
                 )
             else:
                 yield _build_stream_chunk(
-                    response_id, model_name, content=missing_suffix
+                    response_id, model_name, content=final_reply
                 )
-            streamed_content_accumulator += missing_suffix
-        elif final_reply != streamed_content_accumulator:
-            # text
-            if not streamed_content_accumulator and final_reply:
-                if not assistant_started:
-                    assistant_started = True
-                    yield _build_stream_chunk(
-                        response_id,
-                        model_name,
-                        role="assistant",
-                        content=final_reply,
-                    )
-                else:
-                    yield _build_stream_chunk(
-                        response_id, model_name, content=final_reply
-                    )
-                streamed_content_accumulator = final_reply
+            streamed_content_accumulator = final_reply
 
-        # 输出搜索结果（使用前端定义的 search_metadata 类型；仅 web UI 客户端）
-        if _emit_search_metadata_for_client(client_type) and (
-            collected_search_sources or collected_search_queries
-        ):
-            search_metadata = {
-                "type": "search_metadata",
-                "searches": {
-                    "queries": collected_search_queries,
-                    "sources": collected_search_sources,
-                },
-            }
-            yield f"data: {json.dumps(search_metadata, ensure_ascii=False)}\n\n"
+    # 输出搜索结果（使用前端定义的 search_metadata 类型；仅 web UI 客户端）
+    if _emit_search_metadata_for_client(client_type) and (
+        collected_search_sources or collected_search_queries
+    ):
+        search_metadata = {
+            "type": "search_metadata",
+            "searches": {
+                "queries": collected_search_queries,
+                "sources": collected_search_sources,
+            },
+        }
+        yield f"data: {json.dumps(search_metadata, ensure_ascii=False)}\n\n"
 
-        metadata_event = _build_model_metadata_event(model_name, model_metadata)
-        if metadata_event:
-            yield metadata_event
+    metadata_event = _build_model_metadata_event(model_name, model_metadata)
+    if metadata_event:
+        yield metadata_event
 
-        yield _build_stream_chunk(response_id, model_name, finish_reason="stop")
-        yield "data: [DONE]\n\n"
+    yield _build_stream_chunk(response_id, model_name, finish_reason="stop")
+    yield "data: [DONE]\n\n"
 
 
 def _persist_round(
@@ -1134,6 +1132,10 @@ def _request_state_attachments(request: Request) -> list[Any]:
     return attachments if isinstance(attachments, list) else []
 
 
+def _attachments_enabled_for_request(request: Request, policy: AttachmentPolicy) -> bool:
+    return policy.enabled or is_repo_ai_internal_request(request)
+
+
 def _attachment_error_response(exc: AttachmentError) -> JSONResponse:
     return _build_error_response(
         getattr(exc, "status_code", 400) or 400,
@@ -1152,7 +1154,7 @@ def _handle_lite_request(
     """text Lite text"""
     pool = request.app.state.account_pool
 
-    req_body.model = _resolve_request_model(req_body.model)
+    req_body.model = _resolve_request_model(request, req_body.model)
     assert req_body.model is not None
 
     # text
@@ -1162,7 +1164,7 @@ def _handle_lite_request(
         attachments = state_attachments
     # Gate feature flag
     policy = AttachmentPolicy.from_env()
-    if attachments and not policy.enabled:
+    if attachments and not _attachments_enabled_for_request(request, policy):
         openai_error("Attachments are disabled for this server.", "attachments_disabled")
 
     # text
@@ -1388,7 +1390,7 @@ def _handle_standard_request(
 
     pool = request.app.state.account_pool
 
-    req_body.model = _resolve_request_model(req_body.model)
+    req_body.model = _resolve_request_model(request, req_body.model)
     assert req_body.model is not None
 
     response_id = f"chatcmpl-{uuid.uuid4().hex}"
@@ -1420,7 +1422,7 @@ def _handle_standard_request(
             if state_attachments:
                 attachments = state_attachments
             policy = AttachmentPolicy.from_env()
-            if attachments and not policy.enabled:
+            if attachments and not _attachments_enabled_for_request(request, policy):
                 openai_error("Attachments are disabled for this server.", "attachments_disabled")
 
             # text Standard transcripttext
@@ -1667,7 +1669,7 @@ async def create_chat_completion(
     user_agent = request.headers.get("user-agent", "").lower()
     x_client_name = request.headers.get("x-client-name", "").lower()
     is_opencode = "opencode" in user_agent or x_client_name == "opencode"
-    
+
     if is_opencode:
         custom_instructions = (
             "If concrete artifacts are provided:\n"
@@ -1689,14 +1691,14 @@ async def create_chat_completion(
             "\tUse the provided tool protocol.\n"
             "\tDo not claim independent access outside that protocol."
         )
-        
+
         # Check if there is already a system message
         system_msg = None
         for msg in req_body.messages:
             if msg.role == "system":
                 system_msg = msg
                 break
-                
+
         if system_msg:
             # Prefix the system message content
             if isinstance(system_msg.content, str):
@@ -1710,7 +1712,7 @@ async def create_chat_completion(
             new_system_msg = ChatMessage(role="system", content=custom_instructions)
             req_body.messages.insert(0, new_system_msg)
 
-    req_body.model = _resolve_request_model(req_body.model)
+    req_body.model = _resolve_request_model(request, req_body.model)
     assert req_body.model is not None
 
     # Check for local smoke/preflight messages to avoid creating new chats in Notion.
@@ -1725,7 +1727,7 @@ async def create_chat_completion(
                     yield _build_stream_chunk(response_id, req_body.model, content=probe_response)
                     yield _build_stream_chunk(response_id, req_body.model, finish_reason="stop")
                     yield "data: [DONE]\n\n"
-                
+
                 stream_headers = {
                     "Cache-Control": "no-cache",
                     "Connection": "keep-alive",
@@ -1878,7 +1880,7 @@ async def create_chat_completion(
             state_attachments = _request_state_attachments(request)
             if state_attachments:
                 attachments = state_attachments
-            if attachments and not AttachmentPolicy.from_env().enabled:
+            if attachments and not _attachments_enabled_for_request(request, AttachmentPolicy.from_env()):
                 openai_error("Attachments are disabled for this server.", "attachments_disabled")
 
             persist_remote_chat = None

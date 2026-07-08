@@ -299,6 +299,25 @@ Descriptor request shape:
 }
 ```
 
+ZIP descriptor request shape:
+
+```json
+{
+  "name": "source.zip",
+  "contentType": "application/x-zip-compressed",
+  "assistantChatTranscriptSessionPointer": {
+    "spaceId": "<space_id>",
+    "table": "thread",
+    "id": "<thread_id>"
+  },
+  "contentLength": 1954460,
+  "createThread": true,
+  "allowUnsupportedTypes": true
+}
+```
+
+Notion rejects ZIP descriptors without this override. The backend should treat both `application/zip` and `application/x-zip-compressed`, plus `.zip` filenames, as ZIP uploads; it should send `application/x-zip-compressed` upstream and set `allowUnsupportedTypes: true`.
+
 Attachment-processing task shape:
 
 ```json
@@ -739,7 +758,7 @@ Never log raw file bytes, base64 payloads, signed upload URLs, signed GET URLs, 
 - Should remote URL downloads use `requests` only, or share `cloudscraper` for sites that block normal clients?
 - Should the first frontend upload path use base64 data URLs or a staged local upload endpoint?
 - Should Heavy mode persist attachment metadata in SQLite conversation history?
-- Should attachment requests force `workflow` thread type, or preserve the current `thread_type` resolution?
+- Attachment requests should preserve the model's resolved `thread_type`. For Repo AI ZIP uploads with Claude/Opus-class models, the working path is `workflow`: the upload descriptor creates the thread, the inference request reuses it with `createThread: false`, and `persist_remote_chat=true` preserves a visible Notion AI history entry.
 
 ## Definition of done
 
@@ -747,6 +766,7 @@ The feature is complete when:
 
 - PDF, CSV, and image attachments work through `/v1/chat/completions`.
 - PDF, CSV, and image attachments work through `/v1/responses`.
+- ZIP attachments work through `/v1/chat/completions` and MCP chat tools using `application/x-zip-compressed` plus `allowUnsupportedTypes: true`.
 - Streaming and non-streaming modes both work.
 - Lite, Standard, and Heavy modes remain compatible.
 - Attachment validation failures are safe and do not cool down accounts.

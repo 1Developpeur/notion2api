@@ -22,6 +22,7 @@ from app.attachments.runtime_config import apply_attachment_runtime_config
 from app.config import ACCOUNTS, ALLOWED_ORIGINS, API_KEY, is_lite_mode, is_standard_mode
 from app.conversation import ConversationManager
 from app.core.errors import openai_error_payload
+from app.core.internal_callers import is_repo_ai_internal_request
 from app.limiter import limiter
 from app.logger import logger, setup_uvicorn_logging
 
@@ -176,7 +177,7 @@ async def api_key_auth(request: Request, call_next):
         # text OPTIONS text
         if request.url.path.startswith("/v1") and request.method != "OPTIONS":
             auth_header = request.headers.get("Authorization", "")
-            if not _valid_bearer_token(auth_header, API_KEY):
+            if not is_repo_ai_internal_request(request) and not _valid_bearer_token(auth_header, API_KEY):
                 return JSONResponse(
                     status_code=401,
                     content=openai_error_payload(

@@ -125,6 +125,7 @@ Access the Web UI at `http://localhost:8000`.
 | Model Name | Description |
 |---|---|
 | `claude-sonnet4.6` | Best balance of speed and quality — **most recommended** |
+| `claude-sonnet5` | Latest Sonnet with stronger reasoning and agent capabilities |
 | `claude-opus4.6` | Stronger reasoning, use sparingly |
 | `claude-opus4.7` | Latest Claude, strongest reasoning |
 | `gpt-5.5` | Latest GPT (Beta) |
