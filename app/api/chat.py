@@ -21,6 +21,7 @@ from app.notion_client import NotionUpstreamError
 from app.attachments.normalizer import normalize_chat_messages
 from app.attachments.security import AttachmentPolicy
 from app.attachments.errors import AttachmentError
+from app.output_hygiene import finalize_visible_output, strip_thinking_blocks
 from app.schemas import (
     ChatCompletionRequest,
     ChatCompletionResponse,
@@ -347,6 +348,104 @@ RECALL_INTENT_KEYWORDS = [
 ]
 
 
+def _strip_visible_stream_chunk(text: str) -> str:
+    """Remove hidden-reasoning markup from a single streamed visible chunk."""
+
+    return strip_thinking_blocks(text)
+
+
+def _finalize_visible_reply(
+    streamed_text: str,
+    authoritative_final: str,
+    authoritative_source: str,
+) -> tuple[str, str, dict[str, bool]]:
+    raw_reply, decision = _select_best_final_reply(
+        streamed_text,
+        authoritative_final,
+        authoritative_source,
+    )
+    sanitized, hygiene = finalize_visible_output(raw_reply)
+    return sanitized, decision, hygiene
+
+
+def _build_hygiene_metadata_event(hygiene: dict[str, bool]) -> str:
+    if not any(hygiene.values()):
+        return ""
+    event = {"type": "output_hygiene", "hygiene": hygiene}
+    return f"data: {json.dumps(event, ensure_ascii=False)}\n\n"
+
+
+def _emit_visible_stream_correction(
+    response_id: str,
+    model_name: str,
+    *,
+    assistant_started: bool,
+    streamed_text: str,
+    sanitized_text: str,
+    client_type: str = "",
+) -> tuple[bool, str, list[str]]:
+    """Emit best-effort stream corrections when sanitized text differs."""
+
+    chunks: list[str] = []
+    if sanitized_text == streamed_text:
+        return assistant_started, streamed_text, chunks
+
+    if sanitized_text.startswith(streamed_text):
+        suffix = sanitized_text[len(streamed_text) :]
+        if suffix:
+            if not assistant_started:
+                assistant_started = True
+                chunks.append(
+                    _build_stream_chunk(
+                        response_id,
+                        model_name,
+                        role="assistant",
+                        content=suffix,
+                    )
+                )
+            else:
+                chunks.append(_build_stream_chunk(response_id, model_name, content=suffix))
+            streamed_text += suffix
+        return assistant_started, streamed_text, chunks
+
+    if not streamed_text and sanitized_text:
+        if not assistant_started:
+            assistant_started = True
+            chunks.append(
+                _build_stream_chunk(
+                    response_id,
+                    model_name,
+                    role="assistant",
+                    content=sanitized_text,
+                )
+            )
+        else:
+            chunks.append(_build_stream_chunk(response_id, model_name, content=sanitized_text))
+        return assistant_started, sanitized_text, chunks
+
+    if client_type == "web":
+        chunks.append(
+            _build_local_ui_chunk(
+                response_id,
+                model_name,
+                "content_replace",
+                content=sanitized_text,
+                reason="output_hygiene",
+            )
+        )
+        return assistant_started, sanitized_text, chunks
+
+    return assistant_started, streamed_text, chunks
+
+
+def _attach_response_hygiene(
+    response_obj: ChatCompletionResponse,
+    hygiene: dict[str, bool] | None,
+) -> None:
+    if hygiene and any(hygiene.values()):
+        response_obj.hygiene = hygiene
+
+
 def _build_stream_chunk(
     response_id: str,
     model: str,
@@ -355,6 +454,7 @@ def _build_stream_chunk(
     thinking: str = "",
     role: str = "",
     finish_reason=None,
+    usage: dict[str, Any] | None = None,
 ) -> str:
     delta: Dict[str, Any] = {}
     if role:
@@ -371,6 +471,8 @@ def _build_stream_chunk(
         "model": model,
         "choices": [{"index": 0, "delta": delta, "finish_reason": finish_reason}],
     }
+    if usage:
+        payload["usage"] = usage
     return f"data: {json.dumps(payload, ensure_ascii=False)}\n\n"
 
 
@@ -841,7 +943,9 @@ def _create_lite_stream_generator(
                 continue
 
             if item_type == "final_content":
-                final_text = str(item.get("text", "") or "").strip()
+                final_text = _strip_visible_stream_chunk(
+                    str(item.get("text", "") or "").strip()
+                )
                 if final_text:
                     authoritative_final_content = final_text
                     authoritative_final_source_type = str(
@@ -856,7 +960,7 @@ def _create_lite_stream_generator(
             if item_type != "content":
                 continue
 
-            chunk_text = item.get("text", "")
+            chunk_text = _strip_visible_stream_chunk(item.get("text", ""))
             if not chunk_text:
                 continue
 
@@ -891,50 +995,31 @@ def _create_lite_stream_generator(
         )
         raise
     # text
-    final_reply, _ = _select_best_final_reply(
+    final_reply, _, hygiene_meta = _finalize_visible_reply(
         streamed_content_accumulator,
         authoritative_final_content,
         authoritative_final_source_type,
     )
 
-    # text
-    missing_suffix = _compute_missing_suffix(
-        streamed_content_accumulator, final_reply
+    assistant_started, streamed_content_accumulator, correction_chunks = (
+        _emit_visible_stream_correction(
+            response_id,
+            model_name,
+            assistant_started=assistant_started,
+            streamed_text=streamed_content_accumulator,
+            sanitized_text=final_reply,
+        )
     )
-    if missing_suffix:
-        if not assistant_started:
-            assistant_started = True
-            yield _build_stream_chunk(
-                response_id,
-                model_name,
-                role="assistant",
-                content=missing_suffix,
-            )
-        else:
-            yield _build_stream_chunk(
-                response_id, model_name, content=missing_suffix
-            )
-        streamed_content_accumulator += missing_suffix
-    elif final_reply != streamed_content_accumulator:
-        # text
-        if not streamed_content_accumulator and final_reply:
-            if not assistant_started:
-                assistant_started = True
-                yield _build_stream_chunk(
-                    response_id,
-                    model_name,
-                    role="assistant",
-                    content=final_reply,
-                )
-            else:
-                yield _build_stream_chunk(
-                    response_id, model_name, content=final_reply
-                )
-            streamed_content_accumulator = final_reply
+    for chunk in correction_chunks:
+        yield chunk
 
     metadata_event = _build_model_metadata_event(model_name, model_metadata)
     if metadata_event:
         yield metadata_event
+
+    hygiene_event = _build_hygiene_metadata_event(hygiene_meta)
+    if hygiene_event:
+        yield hygiene_event
 
     yield _build_stream_chunk(response_id, model_name, finish_reason="stop")
     yield "data: [DONE]\n\n"
@@ -976,7 +1061,9 @@ def _create_standard_stream_generator(
                 continue
 
             if item_type == "final_content":
-                final_text = str(item.get("text", "") or "").strip()
+                final_text = _strip_visible_stream_chunk(
+                    str(item.get("text", "") or "").strip()
+                )
                 if final_text:
                     authoritative_final_content = final_text
                     authoritative_final_source_type = str(
@@ -1025,7 +1112,7 @@ def _create_standard_stream_generator(
             if item_type != "content":
                 continue
 
-            chunk_text = item.get("text", "")
+            chunk_text = _strip_visible_stream_chunk(item.get("text", ""))
             if not chunk_text:
                 continue
 
@@ -1064,46 +1151,24 @@ def _create_standard_stream_generator(
         )
         raise
     # text
-    final_reply, _ = _select_best_final_reply(
+    final_reply, _, hygiene_meta = _finalize_visible_reply(
         streamed_content_accumulator,
         authoritative_final_content,
         authoritative_final_source_type,
     )
 
-    # text
-    missing_suffix = _compute_missing_suffix(
-        streamed_content_accumulator, final_reply
+    assistant_started, streamed_content_accumulator, correction_chunks = (
+        _emit_visible_stream_correction(
+            response_id,
+            model_name,
+            assistant_started=assistant_started,
+            streamed_text=streamed_content_accumulator,
+            sanitized_text=final_reply,
+            client_type=client_type,
+        )
     )
-    if missing_suffix:
-        if not assistant_started:
-            assistant_started = True
-            yield _build_stream_chunk(
-                response_id,
-                model_name,
-                role="assistant",
-                content=missing_suffix,
-            )
-        else:
-            yield _build_stream_chunk(
-                response_id, model_name, content=missing_suffix
-            )
-        streamed_content_accumulator += missing_suffix
-    elif final_reply != streamed_content_accumulator:
-        # text
-        if not streamed_content_accumulator and final_reply:
-            if not assistant_started:
-                assistant_started = True
-                yield _build_stream_chunk(
-                    response_id,
-                    model_name,
-                    role="assistant",
-                    content=final_reply,
-                )
-            else:
-                yield _build_stream_chunk(
-                    response_id, model_name, content=final_reply
-                )
-            streamed_content_accumulator = final_reply
+    for chunk in correction_chunks:
+        yield chunk
 
     # 输出搜索结果（使用前端定义的 search_metadata 类型；仅 web UI 客户端）
     if _emit_search_metadata_for_client(client_type) and (
@@ -1121,6 +1186,10 @@ def _create_standard_stream_generator(
     metadata_event = _build_model_metadata_event(model_name, model_metadata)
     if metadata_event:
         yield metadata_event
+
+    hygiene_event = _build_hygiene_metadata_event(hygiene_meta)
+    if hygiene_event:
+        yield hygiene_event
 
     yield _build_stream_chunk(response_id, model_name, finish_reason="stop")
     yield "data: [DONE]\n\n"
@@ -1324,7 +1393,9 @@ def _handle_lite_request(
                     continue
 
                 if item_type == "final_content":
-                    final_text = str(item.get("text", "") or "").strip()
+                    final_text = _strip_visible_stream_chunk(
+                        str(item.get("text", "") or "").strip()
+                    )
                     if final_text:
                         authoritative_final_content = final_text
                         authoritative_final_source_type = str(
@@ -1339,11 +1410,11 @@ def _handle_lite_request(
                 if item_type != "content":
                     continue
 
-                chunk_text = item.get("text", "")
+                chunk_text = _strip_visible_stream_chunk(item.get("text", ""))
                 if chunk_text:
                     content_parts.append(chunk_text)
 
-            full_text, _ = _select_best_final_reply(
+            full_text, _, hygiene_meta = _finalize_visible_reply(
                 "".join(content_parts),
                 authoritative_final_content,
                 authoritative_final_source_type,
@@ -1372,6 +1443,7 @@ def _handle_lite_request(
                 model_metadata=model_metadata,
             )
             _attach_response_model_metadata(response_obj, req_body.model, model_metadata)
+            _attach_response_hygiene(response_obj, hygiene_meta)
             if _strict_model_requested(req_body) and _is_model_mismatch(response_obj):
                 return _model_mismatch_response(response_obj)
             return response_obj
@@ -1575,7 +1647,9 @@ def _handle_standard_request(
                     continue
 
                 if item_type == "final_content":
-                    final_text = str(item.get("text", "") or "").strip()
+                    final_text = _strip_visible_stream_chunk(
+                        str(item.get("text", "") or "").strip()
+                    )
                     if final_text:
                         authoritative_final_content = final_text
                         authoritative_final_source_type = str(
@@ -1600,11 +1674,11 @@ def _handle_standard_request(
                 if item_type != "content":
                     continue
 
-                chunk_text = item.get("text", "")
+                chunk_text = _strip_visible_stream_chunk(item.get("text", ""))
                 if chunk_text:
                     content_parts.append(chunk_text)
 
-            full_text, _ = _select_best_final_reply(
+            full_text, _, hygiene_meta = _finalize_visible_reply(
                 "".join(content_parts),
                 authoritative_final_content,
                 authoritative_final_source_type,
@@ -1640,6 +1714,7 @@ def _handle_standard_request(
                 model_metadata=model_metadata,
             )
             _attach_response_model_metadata(response_obj, req_body.model, model_metadata)
+            _attach_response_hygiene(response_obj, hygiene_meta)
 
             # text
             if search_results:
@@ -2051,7 +2126,9 @@ async def create_chat_completion(
                             continue
 
                         if item_type == "final_content":
-                            final_text = str(item.get("text", "") or "").strip()
+                            final_text = _strip_visible_stream_chunk(
+                                str(item.get("text", "") or "").strip()
+                            )
                             if final_text:
                                 authoritative_final_content = final_text
                                 authoritative_final_source_type = str(
@@ -2088,7 +2165,7 @@ async def create_chat_completion(
                         if item_type != "content":
                             continue
 
-                        chunk_text = item.get("text", "")
+                        chunk_text = _strip_visible_stream_chunk(item.get("text", ""))
                         if not chunk_text and not pending_search_md:
                             continue
 
@@ -2208,7 +2285,7 @@ async def create_chat_completion(
                             response_id, req_body.model, content=error_hint
                         )
                 finally:
-                    final_reply, reply_decision = _select_best_final_reply(
+                    final_reply, reply_decision, hygiene_meta = _finalize_visible_reply(
                         streamed_content_accumulator,
                         authoritative_final_content,
                         authoritative_final_source_type,
@@ -2272,6 +2349,19 @@ async def create_chat_completion(
                                 )
                             streamed_content_accumulator = final_reply
 
+                    assistant_started, streamed_content_accumulator, correction_chunks = (
+                        _emit_visible_stream_correction(
+                            response_id,
+                            req_body.model,
+                            assistant_started=assistant_started,
+                            streamed_text=streamed_content_accumulator,
+                            sanitized_text=final_reply,
+                            client_type=client_type,
+                        )
+                    )
+                    for chunk in correction_chunks:
+                        yield chunk
+
                     thinking_replacement = _build_thinking_replacement(
                         streamed_content_accumulator,
                         thinking_accumulator,
@@ -2320,6 +2410,10 @@ async def create_chat_completion(
                     if metadata_event:
                         yield metadata_event
 
+                    hygiene_event = _build_hygiene_metadata_event(hygiene_meta)
+                    if hygiene_event:
+                        yield hygiene_event
+
                     yield _build_stream_chunk(
                         response_id, req_body.model, finish_reason="stop"
                     )
@@ -2351,7 +2445,9 @@ async def create_chat_completion(
                 if item_type == "model_metadata":
                     continue
                 if item_type == "final_content":
-                    final_text = str(item.get("text", "") or "").strip()
+                    final_text = _strip_visible_stream_chunk(
+                        str(item.get("text", "") or "").strip()
+                    )
                     if final_text:
                         authoritative_final_content = final_text
                         authoritative_final_source_type = str(
@@ -2365,11 +2461,11 @@ async def create_chat_completion(
                     continue
                 if item_type != "content":
                     continue
-                chunk_text = item.get("text", "")
+                chunk_text = _strip_visible_stream_chunk(item.get("text", ""))
                 if chunk_text:
                     content_parts.append(chunk_text)
 
-            full_text, _ = _select_best_final_reply(
+            full_text, _, hygiene_meta = _finalize_visible_reply(
                 "".join(content_parts),
                 authoritative_final_content,
                 authoritative_final_source_type,
@@ -2415,6 +2511,7 @@ async def create_chat_completion(
                 ],
             )
             _attach_response_model_metadata(response_obj, req_body.model, model_metadata)
+            _attach_response_hygiene(response_obj, hygiene_meta)
             return response_obj
         except NotionUpstreamError as exc:
             if client is not None and exc.retriable:
