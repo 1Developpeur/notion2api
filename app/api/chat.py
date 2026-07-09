@@ -21,7 +21,11 @@ from app.notion_client import NotionUpstreamError
 from app.attachments.normalizer import normalize_chat_messages
 from app.attachments.security import AttachmentPolicy
 from app.attachments.errors import AttachmentError
-from app.output_hygiene import finalize_visible_output, strip_thinking_blocks
+from app.output_hygiene import (
+    finalize_visible_output,
+    strip_thinking_blocks,
+    strip_thinking_blocks_from_chunk,
+)
 from app.schemas import (
     ChatCompletionRequest,
     ChatCompletionResponse,
@@ -351,7 +355,13 @@ RECALL_INTENT_KEYWORDS = [
 def _strip_visible_stream_chunk(text: str) -> str:
     """Remove hidden-reasoning markup from a single streamed visible chunk."""
 
-    return strip_thinking_blocks(text)
+    raw = str(text or "")
+    if not raw:
+        return ""
+    lowered = raw.lower()
+    if "redacted_thinking" in lowered or "<think" in lowered:
+        return strip_thinking_blocks(raw)
+    return strip_thinking_blocks_from_chunk(raw)
 
 
 def _finalize_visible_reply(

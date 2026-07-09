@@ -76,6 +76,22 @@ def strip_thinking_blocks(text: Any) -> str:
     return cleaned.strip()
 
 
+def strip_thinking_blocks_from_chunk(text: Any) -> str:
+    """Remove hidden-reasoning markup from one streamed chunk.
+
+    Unlike ``strip_thinking_blocks``, this preserves whitespace-only chunks.
+    Notion often streams inter-word spaces as their own chunks; trimming them
+    would concatenate words in the assembled assistant reply.
+    """
+
+    cleaned = str(text or "")
+    if not cleaned:
+        return ""
+    cleaned = THINK_BLOCK_RE.sub("", cleaned)
+    cleaned = UNCLOSED_THINK_RE.sub("", cleaned)
+    return cleaned
+
+
 def _has_repeated_markdown_heading(text: str) -> bool:
     headings = [
         re.sub(r"\s+", " ", match.group(1)).strip().casefold()

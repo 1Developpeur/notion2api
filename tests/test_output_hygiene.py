@@ -5,6 +5,7 @@ from app.output_hygiene import (
     finalize_visible_output,
     is_hidden_content_type,
     strip_thinking_blocks,
+    strip_thinking_blocks_from_chunk,
 )
 
 
@@ -14,6 +15,17 @@ def test_strip_thinking_blocks_removes_complete_and_unclosed_markup():
         == "Visible answer"
     )
     assert strip_thinking_blocks("<think>hidden only") == ""
+
+
+def test_strip_thinking_blocks_from_chunk_preserves_whitespace_only_segments():
+    assert strip_thinking_blocks_from_chunk(" ") == " "
+    assert strip_thinking_blocks_from_chunk("\n") == "\n"
+    assert (
+        strip_thinking_blocks_from_chunk("Hello")
+        + strip_thinking_blocks_from_chunk(" ")
+        + strip_thinking_blocks_from_chunk("world")
+        == "Hello world"
+    )
 
 
 def test_clean_visible_output_is_idempotent():
