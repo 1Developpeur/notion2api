@@ -34,6 +34,7 @@ MODEL_MAP: dict[str, str] = {
 
     # xAI
     "grok-4.3": "xigua-mochi-medium",
+    "grok-4.5": "strawberry-whoopiepie",
     "grok-build0.1": "xinomavro-cake",
 
     # Other
@@ -67,6 +68,7 @@ MODEL_MAP: dict[str, str] = {
     "baseten-deepseek-v4-pro": "baseten-deepseek-v4-pro",
     "baseten-glm-5.2": "baseten-glm-5.2",
     "xigua-mochi-medium": "xigua-mochi-medium",
+    "strawberry-whoopiepie": "strawberry-whoopiepie",
     "xinomavro-cake": "xinomavro-cake",
     "galette-medium-thinking": "galette-medium-thinking",
     "anthropic-haiku-4.5": "anthropic-haiku-4.5",
@@ -99,6 +101,7 @@ NOTION_MODEL_REVERSE_MAP: dict[str, str] = {
 
     # xAI
     "xigua-mochi-medium": "grok-4.3",
+    "strawberry-whoopiepie": "grok-4.5",
     "xinomavro-cake": "grok-build0.1",
 
     # Other
@@ -129,6 +132,7 @@ DISPLAY_NAMES: dict[str, str] = {
     "gemini-3.5flash": "Gemini 3.5 Flash",
     "gemini-2.5flash": "Gemini 2.5 Flash",
     "grok-4.3": "Grok 4.3",
+    "grok-4.5": "Grok 4.5",
     "grok-build0.1": "Grok Build 0.1",
     "minimax-m2.5": "MiniMax M2.5",
     "kimi-2.6": "Kimi 2.6",
@@ -153,6 +157,7 @@ DISPLAY_NAMES: dict[str, str] = {
     "baseten-deepseek-v4-pro": "DeepSeek V4 Pro",
     "baseten-glm-5.2": "GLM 5.2",
     "xigua-mochi-medium": "Grok 4.3",
+    "strawberry-whoopiepie": "Grok 4.5",
     "xinomavro-cake": "Grok Build 0.1",
     "galette-medium-thinking": "Gemini 3.1 Pro",
     "anthropic-haiku-4.5": "Haiku 4.5",
@@ -183,6 +188,7 @@ MODEL_FAMILIES: dict[str, str] = {
     "vertex-gemini-3.5-flash": "google",
     "vertex-gemini-2.5-flash": "google",
     "xigua-mochi-medium": "xai",
+    "strawberry-whoopiepie": "xai",
     "xinomavro-cake": "xai",
     "fireworks-minimax-m2.5": "minimax",
     "fireworks-kimi-k2.6": "kimi",
@@ -214,6 +220,7 @@ MODEL_ICONS: dict[str, str] = {
     "gemini-2.5flash": "✦",
     # xAI
     "grok-4.3": "◐",
+    "grok-4.5": "◐",
     "grok-build0.1": "◐",
     # Other
     "minimax-m2.5": "◈",
@@ -239,6 +246,7 @@ MODEL_ICONS: dict[str, str] = {
     "vertex-gemini-3.5-flash": "✦",
     "vertex-gemini-2.5-flash": "✦",
     "xigua-mochi-medium": "◐",
+    "strawberry-whoopiepie": "◐",
     "xinomavro-cake": "◐",
     "fireworks-minimax-m2.5": "◈",
     "fireworks-kimi-k2.6": "🌙",

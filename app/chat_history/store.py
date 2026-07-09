@@ -190,6 +190,7 @@ def _simple_model_display_name(actual_model: Any) -> str:
         "gemini-3.5flash": "Gemini 3.5 Flash",
         "gemini-2.5flash": "Gemini 2.5 Flash",
         "grok-4.3": "Grok 4.3",
+        "grok-4.5": "Grok 4.5",
         "grok-build0.1": "Grok Build 0.1",
         "minimax-m2.5": "MiniMax M2.5",
         "kimi-2.6": "Kimi 2.6",

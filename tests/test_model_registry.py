@@ -28,6 +28,7 @@ def test_captured_notion_backend_mappings_are_registered():
         "deepseek-v4pro": "baseten-deepseek-v4-pro",
         "glm-5.2": "baseten-glm-5.2",
         "grok-4.3": "xigua-mochi-medium",
+        "grok-4.5": "strawberry-whoopiepie",
         "grok-build0.1": "xinomavro-cake",
         "gemini-3.1pro": "galette-medium-thinking",
         "claude-haiku4.5": "anthropic-haiku-4.5",
@@ -43,6 +44,8 @@ def test_captured_notion_backend_mappings_are_registered():
 
 def test_captured_display_names_are_registered():
     assert get_display_name("grok-4.3") == "Grok 4.3"
+    assert get_display_name("grok-4.5") == "Grok 4.5"
+    assert get_display_name("strawberry-whoopiepie") == "Grok 4.5"
     assert get_display_name("grok-build0.1") == "Grok Build 0.1"
     assert get_display_name("minimax-m2.5") == "MiniMax M2.5"
     assert get_display_name("claude-sonnet5") == "Claude Sonnet 5"
@@ -59,7 +62,7 @@ def test_gemini_3_5_flash_no_longer_uses_markdown_chat_route():
 def test_available_models_expose_only_canonical_notion_ids():
     models = list_available_models()
 
-    assert len(models) == 22
+    assert len(models) == 23
     assert len(models) == len(set(models))
     assert "angel-cake-high" in models
     assert "claude-sonnet5" not in models
@@ -67,6 +70,8 @@ def test_available_models_expose_only_canonical_notion_ids():
     assert "claude-opus4.7" not in models
     assert "baseten-glm-5.2" in models
     assert "glm-5.2" not in models
+    assert "strawberry-whoopiepie" in models
+    assert "grok-4.5" not in models
 
 
 def test_model_metadata_preserves_transport_and_underlying_family():
