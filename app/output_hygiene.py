@@ -33,13 +33,83 @@ CORRUPT_CITATION_OR_HEADING_RE = re.compile(
 MODEL_NAME_SPLICE_RE = re.compile(
     r"(?i)(?:\*{2,})?(?:"
     r"grok(?:\s+build\s+0\.1|\s+4\.3)?|"
-    r"glm\s+5\.2|"
+    r"(?:glm|lm)\s+5\.2|"
     r"gpt-?5\.5|"
     r"sonnet\s+5|"
-    r"opus\s+4\.7|"
+    r"opus\s+4\.[78]|"
     r"deepseek\s+v4\s+pro|"
-    r"gemini\s+3\.1\s+pro"
+    r"gemini\s+3\.1\s+pro|"
+    r"strawberry\s+whoopiepie|"
+    r"fable\s*5|"
+    r"angel[\s-]?cake(?:[\s-]?high)?|"
+    r"xinomavro[\s-]?cake|"
+    r"opal[\s-]?quince"
     r")(?=[A-Za-z0-9])"
+)
+
+MODEL_NAME_TOKEN_RE = re.compile(
+    r"(?i)(?:\*{2,})?(?:"
+    r"grok(?:\s+build\s+0\.1|\s+4\.3)?|"
+    r"(?:glm|lm)\s+5\.2|"
+    r"gpt-?5\.5|"
+    r"sonnet\s+5|"
+    r"opus\s+4\.[78]|"
+    r"deepseek\s+v4\s+pro|"
+    r"gemini\s+3\.1\s+pro|"
+    r"strawberry\s+whoopiepie|"
+    r"fable\s*5|"
+    r"angel[\s-]?cake(?:[\s-]?high)?|"
+    r"xinomavro[\s-]?cake|"
+    r"opal[\s-]?quince"
+    r")"
+)
+_COMMON_GLUE_WORDS = (
+    "attorney",
+    "chairman",
+    "clarification",
+    "county",
+    "december",
+    "letter",
+    "proposed",
+    "recording",
+    "response",
+    "statutory",
+    "synthesis",
+    "that",
+    "the",
+    "this",
+    "transactional",
+    "whether",
+    "your",
+)
+
+_COMMON_PREFIX_WORDS = (
+    "a",
+    "an",
+    "and",
+    "for",
+    "in",
+    "of",
+    "on",
+    "or",
+    "the",
+    "to",
+    "with",
+    "your",
+)
+
+_GLUED_PREFIX_PAIR_RE = re.compile(
+    r"(?i)\b("
+    + "|".join(re.escape(word) for word in sorted(_COMMON_PREFIX_WORDS, key=len, reverse=True))
+    + r")("
+    + "|".join(re.escape(word) for word in sorted(_COMMON_GLUE_WORDS, key=len, reverse=True))
+    + r")\b"
+)
+_COMMON_GLUE_WORD_RE = re.compile(
+    r"(?<![A-Za-z])(?:"
+    + "|".join(re.escape(word) for word in sorted(_COMMON_GLUE_WORDS, key=len, reverse=True))
+    + r")(?=[a-z])",
+    re.IGNORECASE,
 )
 TEXT_CORRUPTION_ARTIFACT_RE = re.compile(
     r"(?i)(^\s*<[A-Za-z]{1,24}(?=#{1,6}\s)|"
@@ -99,11 +169,19 @@ def needs_visible_stream_boundary_space(previous: str, chunk: str) -> bool:
         return False
     if chunk[0].isspace() or previous[-1].isspace():
         return False
-    return previous[-1].isalpha() and chunk[0].isalpha()
+    previous_tail = previous.rstrip()
+    if not previous_tail:
+        return False
+    if not chunk or not chunk[0].isalpha():
+        return False
+    # Notion sometimes streams the space between a stopword and the next token as
+    # its own chunk, but occasionally omits it. Only infer a boundary after
+    # common stopwords to avoid splitting real intra-word chunks like "str"+"ategic".
+    return bool(re.search(r"(?i)\b(?:a|an|and|as|at|but|by|for|from|in|of|on|or|the|to|with)$", previous_tail))
 
 
 def prepare_visible_stream_chunk(previous: str, raw_chunk: Any) -> str:
-    """Normalize one streamed chunk and infer a missing inter-word space."""
+    """Normalize one streamed chunk and infer narrow missing word boundaries."""
 
     raw = str(raw_chunk or "")
     if not raw:
@@ -118,6 +196,37 @@ def prepare_visible_stream_chunk(previous: str, raw_chunk: Any) -> str:
     if needs_visible_stream_boundary_space(previous, chunk):
         return " " + chunk
     return chunk
+
+
+def strip_model_name_splices(text: Any) -> str:
+    """Remove known model-display-name fragments spliced into visible prose."""
+
+    cleaned = str(text or "")
+    if not cleaned:
+        return ""
+    cleaned = re.sub(r"(?i)(?:chairman'?s|hairman'?s)", "", cleaned)
+    previous = None
+    while cleaned != previous:
+        previous = cleaned
+        cleaned = MODEL_NAME_SPLICE_RE.sub("", cleaned)
+        cleaned = MODEL_NAME_TOKEN_RE.sub("", cleaned)
+    return cleaned
+
+
+def repair_missing_inter_word_spaces(text: Any) -> str:
+    """Repair a narrow class of glued English words left by dropped space chunks."""
+
+    cleaned = str(text or "")
+    if not cleaned:
+        return ""
+    if detect_visible_output_contamination(cleaned):
+        return cleaned
+    previous = None
+    while cleaned != previous:
+        previous = cleaned
+        cleaned = _GLUED_PREFIX_PAIR_RE.sub(lambda match: f"{match.group(1)} {match.group(2)}", cleaned)
+        cleaned = _COMMON_GLUE_WORD_RE.sub(lambda match: f"{match.group(0)} ", cleaned)
+    return cleaned
 
 
 def _has_repeated_markdown_heading(text: str) -> bool:
@@ -149,13 +258,17 @@ def clean_visible_output(text: Any) -> str:
     """Clean visible output without changing substantive answer content."""
 
     cleaned = strip_thinking_blocks(text)
+    cleaned = strip_model_name_splices(cleaned)
+    cleaned = repair_missing_inter_word_spaces(cleaned)
     cleaned = LEADING_PARTIAL_TAG_RE.sub("", cleaned).strip()
     if VISIBLE_REASONING_PREAMBLE_RE.search(cleaned):
         match = VISIBLE_REASONING_TRIM_TARGET_RE.search(cleaned)
         if match and match.start() > 0:
             cleaned = cleaned[match.start():].strip()
             cleaned = LEADING_PARTIAL_TAG_RE.sub("", cleaned).strip()
-    return cleaned
+    cleaned = strip_model_name_splices(cleaned)
+    cleaned = repair_missing_inter_word_spaces(cleaned)
+    return cleaned.strip()
 
 
 def build_hygiene_metadata(raw_text: Any, cleaned_text: Any) -> Dict[str, bool]:
@@ -167,7 +280,10 @@ def build_hygiene_metadata(raw_text: Any, cleaned_text: Any) -> Dict[str, bool]:
     hidden_thinking_removed = bool(raw.strip()) and (
         stripped != raw.strip() or cleaned != raw.strip()
     )
-    contamination = detect_visible_output_contamination(cleaned)
+    contamination = (
+        detect_visible_output_contamination(raw)
+        or detect_visible_output_contamination(cleaned)
+    )
     return {
         "hidden_thinking_removed": hidden_thinking_removed,
         "visible_contamination_detected": contamination,

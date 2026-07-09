@@ -177,6 +177,7 @@ class PersistRemoteChatTests(unittest.TestCase):
             "model": "claude-sonnet4.6",
             "messages": [{"role": "user", "content": "Hello"}],
             "stream": False,
+            "chat_title": "RepoAI AID - repo - task - abc123",
             "metadata": {
                 "persist_remote_chat": True
             }
@@ -191,6 +192,7 @@ class PersistRemoteChatTests(unittest.TestCase):
             # Verify it was called with persist_remote_chat=True
             _, kwargs = mock_stream.call_args
             self.assertEqual(kwargs.get("persist_remote_chat"), True)
+            self.assertEqual(kwargs.get("thread_title"), "RepoAI AID - repo - task - abc123")
 
 
 if __name__ == '__main__':

@@ -43,6 +43,18 @@ class ChatCompletionRequest(BaseModel):
         default=None,
         description="Optional caller metadata for per-request behavior such as remote chat persistence.",
     )
+    chat_title: Optional[str] = Field(
+        default=None,
+        description="Explicit Notion AI thread title. Takes precedence over auto-generated titles.",
+    )
+    title: Optional[str] = Field(
+        default=None,
+        description="Alias for chat_title when callers use a generic title field.",
+    )
+    session_name: Optional[str] = Field(
+        default=None,
+        description="Alias for chat_title when callers name the session instead of the thread.",
+    )
 
 # ================================
 # Non-streaming response schema.

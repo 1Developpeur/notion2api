@@ -155,11 +155,25 @@ def _wrap_handler(handler: Callable[..., Any]) -> Callable[..., Any]:
         if manager and not manager.conversation_exists(conversation_id):
             try:
                 import datetime
+                from app.thread_title import resolve_requested_thread_title
+
+                metadata = getattr(req_body, "metadata", None)
+                requested_title = resolve_requested_thread_title(
+                    chat_title=getattr(req_body, "chat_title", None),
+                    title=getattr(req_body, "title", None),
+                    session_name=getattr(req_body, "session_name", None),
+                    metadata=metadata if isinstance(metadata, dict) else None,
+                )
                 created_at = int(datetime.datetime.now().timestamp())
                 with manager._get_conn() as conn:
                     conn.execute(
                         "INSERT INTO conversations (id, title, created_at, next_round_index) VALUES (?, ?, ?, ?)",
-                        (conversation_id, "External Chat", created_at, 0)
+                        (
+                            conversation_id,
+                            (requested_title or "External Chat")[:240],
+                            created_at,
+                            0,
+                        ),
                     )
                     conn.commit()
                 logger.info(

@@ -22,6 +22,7 @@ from app.attachments.normalizer import normalize_chat_messages
 from app.attachments.security import AttachmentPolicy
 from app.attachments.errors import AttachmentError
 from app.output_hygiene import (
+    detect_visible_output_contamination,
     finalize_visible_output,
     prepare_visible_stream_chunk,
     strip_thinking_blocks,
@@ -33,6 +34,7 @@ from app.schemas import (
     ChatMessage,
     ChatMessageResponseChoice,
 )
+from app.thread_title import resolve_requested_thread_title
 
 router = APIRouter()
 
@@ -194,6 +196,16 @@ def _request_computer_use_review(req_body: ChatCompletionRequest) -> bool:
     if "computer_use_review" in metadata:
         return bool(metadata.get("computer_use_review"))
     return str(metadata.get("review_mode") or "").strip().lower() == "computer_use"
+
+
+def _request_thread_title(req_body: ChatCompletionRequest) -> str:
+    metadata = req_body.metadata if isinstance(req_body.metadata, dict) else {}
+    return resolve_requested_thread_title(
+        chat_title=getattr(req_body, "chat_title", None),
+        title=getattr(req_body, "title", None),
+        session_name=getattr(req_body, "session_name", None),
+        metadata=metadata,
+    )
 
 
 def _strict_model_requested(req_body: ChatCompletionRequest) -> bool:
@@ -703,6 +715,8 @@ def _select_best_final_reply(
         return streamed, "streamed_only"
     if not streamed_stripped:
         return final, "final_only"
+    if detect_visible_output_contamination(streamed_stripped) and not detect_visible_output_contamination(final_stripped):
+        return final, "final_preferred_over_contaminated_stream"
     if final.startswith(streamed):
         return final, "final_extends_streamed"
     if streamed.startswith(final):
@@ -1362,6 +1376,7 @@ def _handle_lite_request(
             if req_body.metadata and isinstance(req_body.metadata, dict):
                 persist_remote_chat = req_body.metadata.get("persist_remote_chat")
             computer_use_review = _request_computer_use_review(req_body)
+            requested_thread_title = _request_thread_title(req_body)
 
             stream_gen = client.stream_response(
                 transcript,
@@ -1369,6 +1384,7 @@ def _handle_lite_request(
                 attachments=attachments if attachments else None,
                 persist_remote_chat=persist_remote_chat,
                 computer_use_review=computer_use_review,
+                thread_title=requested_thread_title or None,
             )
             first_item = next(stream_gen, None)
 
@@ -1616,6 +1632,7 @@ def _handle_standard_request(
             if req_body.metadata and isinstance(req_body.metadata, dict):
                 persist_remote_chat = req_body.metadata.get("persist_remote_chat")
             computer_use_review = _request_computer_use_review(req_body)
+            requested_thread_title = _request_thread_title(req_body)
 
             stream_gen = client.stream_response(
                 transcript,
@@ -1623,6 +1640,7 @@ def _handle_standard_request(
                 attachments=attachments if attachments else None,
                 persist_remote_chat=persist_remote_chat,
                 computer_use_review=computer_use_review,
+                thread_title=requested_thread_title or None,
             )
             first_item = next(stream_gen, None)
 
@@ -1956,6 +1974,7 @@ async def create_chat_completion(
     manager = request.app.state.conversation_manager
 
     user_prompt, history_messages, raw_user_prompt = _prepare_messages(req_body)
+    requested_thread_title = _request_thread_title(req_body)
     recall_query = (
         _extract_recall_query(raw_user_prompt)
         if _contains_recall_intent(raw_user_prompt)
@@ -1965,7 +1984,7 @@ async def create_chat_completion(
     conversation_id = req_body.conversation_id.strip() if req_body.conversation_id else ""
     restore_history = False
     if not conversation_id:
-        conversation_id = manager.new_conversation()
+        conversation_id = manager.new_conversation(title=requested_thread_title or None)
         restore_history = True
     elif not manager.conversation_exists(conversation_id):
         logger.warning(
@@ -1977,8 +1996,10 @@ async def create_chat_completion(
                 }
             },
         )
-        conversation_id = manager.new_conversation()
+        conversation_id = manager.new_conversation(title=requested_thread_title or None)
         restore_history = True
+    elif requested_thread_title:
+        manager.set_conversation_title(conversation_id, requested_thread_title)
 
     # text
     # text conversation_id text
@@ -2087,6 +2108,7 @@ async def create_chat_completion(
                 attachments=attachments if attachments else None,
                 persist_remote_chat=persist_remote_chat,
                 computer_use_review=computer_use_review,
+                thread_title=requested_thread_title or None,
             )
             first_item = next(stream_gen, None)
 

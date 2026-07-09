@@ -750,8 +750,26 @@ class NotionOpusAPI:
 
         return collected
 
-    def _create_thread(self, thread_id: str, thread_type: str) -> bool:
+    def _create_thread(self, thread_id: str, thread_type: str, title: str | None = None) -> bool:
         persisted_thread_type = "markdownChat" if thread_type == "markdown-chat" else thread_type
+        clean_title = str(title or "").strip()[:240]
+        thread_args: dict[str, Any] = {
+            "id": thread_id,
+            "version": 1,
+            "parent_id": self.space_id,
+            "parent_table": "space",
+            "space_id": self.space_id,
+            "created_time": int(time.time() * 1000),
+            "created_by_id": self.user_id,
+            "created_by_table": "notion_user",
+            "messages": [],
+            "data": {},
+            "alive": True,
+            "type": persisted_thread_type,
+        }
+        if clean_title:
+            thread_args["title"] = clean_title
+            thread_args["data"] = {"title": clean_title}
         payload = {
             "requestId": str(uuid.uuid4()),
             "transactions": [
@@ -763,20 +781,7 @@ class NotionOpusAPI:
                             "pointer": {"table": "thread", "id": thread_id, "spaceId": self.space_id},
                             "path": [],
                             "command": "set",
-                            "args": {
-                                "id": thread_id,
-                                "version": 1,
-                                "parent_id": self.space_id,
-                                "parent_table": "space",
-                                "space_id": self.space_id,
-                                "created_time": int(time.time() * 1000),
-                                "created_by_id": self.user_id,
-                                "created_by_table": "notion_user",
-                                "messages": [],
-                                "data": {},
-                                "alive": True,
-                                "type": persisted_thread_type,
-                            },
+                            "args": thread_args,
                         }
                     ],
                 }
@@ -899,6 +904,56 @@ class NotionOpusAPI:
         """Mark one remote Notion AI thread inactive."""
         self.delete_threads([thread_id])
 
+    def set_thread_title(self, thread_id: str, title: str) -> bool:
+        """Assign an explicit title to a persisted Notion AI thread."""
+        clean_id = str(thread_id or "").strip()
+        clean_title = str(title or "").strip()[:240]
+        if not clean_id or not clean_title:
+            return False
+        operations = [
+            {
+                "pointer": {
+                    "table": "thread",
+                    "id": clean_id,
+                    "spaceId": self.space_id,
+                },
+                "command": "update",
+                "path": [],
+                "args": {
+                    "title": clean_title,
+                    "data": {"title": clean_title},
+                },
+            }
+        ]
+        try:
+            self._post_save_transactions(
+                operations,
+                error_message="Failed to set Notion thread title.",
+            )
+        except NotionUpstreamError:
+            logger.warning(
+                "Unable to set explicit Notion thread title",
+                exc_info=True,
+                extra={
+                    "request_info": {
+                        "event": "thread_title_set_failed",
+                        "thread_id": clean_id,
+                    }
+                },
+            )
+            return False
+        logger.info(
+            "Set explicit Notion thread title",
+            extra={
+                "request_info": {
+                    "event": "thread_title_set",
+                    "thread_id": clean_id,
+                    "title_length": len(clean_title),
+                }
+            },
+        )
+        return True
+
     def stream_response(
         self,
         transcript: list,
@@ -906,6 +961,7 @@ class NotionOpusAPI:
         attachments: list | None = None,
         persist_remote_chat: Optional[bool] = None,
         computer_use_review: Optional[bool] = None,
+        thread_title: str | None = None,
     ) -> Generator[dict[str, Any], None, None]:
         """
         text Notion API text
@@ -916,6 +972,7 @@ class NotionOpusAPI:
             thread_id: text thread_idtext
             persist_remote_chat: text Notion text
             computer_use_review: keep workflow thread + script agent for ZIP extraction
+            thread_title: explicit Notion sidebar title; disables auto title generation
         """
         if not isinstance(transcript, list) or not transcript:
             raise ValueError("Invalid transcript payload: transcript must be a non-empty list.")
@@ -932,6 +989,7 @@ class NotionOpusAPI:
             notion_transcript = self._with_thread_type(notion_transcript, thread_type)
         request_profile = self._resolve_request_profile(thread_type)
         thread_persistence = _resolve_thread_persistence()
+        clean_thread_title = str(thread_title or "").strip()[:240]
 
         if persist_remote_chat is not None:
             if persist_remote_chat:
@@ -943,6 +1001,9 @@ class NotionOpusAPI:
             else:
                 thread_persistence["persist"] = False
                 thread_persistence["delete_after_stream"] = True
+
+        if clean_thread_title:
+            thread_persistence["generate_title"] = False
 
         if not thread_persistence["persist"]:
             request_profile["precreate_thread"] = False
@@ -999,7 +1060,7 @@ class NotionOpusAPI:
             self.warm_script_agent_cache()
 
         if request_profile["precreate_thread"] and should_create_thread:
-            if not self._create_thread(thread_id, thread_type):
+            if not self._create_thread(thread_id, thread_type, title=clean_thread_title or None):
                 should_create_thread = True
                 request_profile["create_thread"] = True
                 request_profile["is_partial_transcript"] = False
@@ -1190,6 +1251,8 @@ class NotionOpusAPI:
                 # textNotion API text workflow text
                 # text thread textAI text
                 # text thread text
+                if clean_thread_title and thread_persistence["persist"]:
+                    self.set_thread_title(thread_id, clean_thread_title)
                 logger.info(
                     "Thread completed and preserved for conversation context",
                     extra={

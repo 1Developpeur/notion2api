@@ -574,16 +574,17 @@ class ConversationManager:
             lines.append("")
         return "\n".join(lines).strip()
 
-    def new_conversation(self) -> str:
+    def new_conversation(self, title: str | None = None) -> str:
         conv_id = str(uuid.uuid4())
         created_at = int(datetime.datetime.now().timestamp())
+        clean_title = str(title or "").strip() or "New Chat"
         with self._get_conn() as conn:
             conn.execute(
                 """
                 INSERT INTO conversations (id, title, created_at, next_round_index)
                 VALUES (?, ?, ?, ?)
                 """,
-                (conv_id, "New Chat", created_at, 0),
+                (conv_id, clean_title[:240], created_at, 0),
             )
             conn.commit()
         logger.info(
@@ -591,6 +592,25 @@ class ConversationManager:
             extra={"request_info": {"event": "conversation_created", "conversation_id": conv_id}},
         )
         return conv_id
+
+    def set_conversation_title(self, conversation_id: str, title: str) -> None:
+        clean_title = str(title or "").strip()
+        if not clean_title or not conversation_id:
+            return
+        with self._get_conn() as conn:
+            conn.execute(
+                "UPDATE conversations SET title = ? WHERE id = ?",
+                (clean_title[:240], conversation_id),
+            )
+            conn.commit()
+
+    def get_conversation_title(self, conversation_id: str) -> str:
+        with self._get_conn() as conn:
+            row = conn.execute(
+                "SELECT title FROM conversations WHERE id = ?",
+                (conversation_id,),
+            ).fetchone()
+            return str(row["title"] or "").strip() if row else ""
 
     def get_conversation_thread_id(self, conversation_id: str) -> Optional[str]:
         """text Notion thread_id"""
