@@ -27,11 +27,16 @@ def _parse_sse_chunks(chunks):
     return payloads
 
 
-def test_lite_stream_infers_missing_word_boundary_between_chunks():
+def test_lite_stream_repairs_glued_words_at_finalize():
     source = _iter_items(
         {"type": "content", "text": "Assessment of the"},
         {"type": "content", "text": "proposed"},
         {"type": "content", "text": " edits"},
+        {
+            "type": "final_content",
+            "text": "Assessment of the proposed edits",
+            "source_type": "markdown-chat",
+        },
     )
     first_item = next(source)
 

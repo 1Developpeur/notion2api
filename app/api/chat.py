@@ -22,6 +22,7 @@ from app.attachments.normalizer import normalize_chat_messages
 from app.attachments.security import AttachmentPolicy
 from app.attachments.errors import AttachmentError
 from app.output_hygiene import (
+    detect_visible_output_contamination,
     finalize_visible_output,
     prepare_visible_stream_chunk,
     strip_thinking_blocks,
@@ -703,6 +704,8 @@ def _select_best_final_reply(
         return streamed, "streamed_only"
     if not streamed_stripped:
         return final, "final_only"
+    if detect_visible_output_contamination(streamed_stripped) and not detect_visible_output_contamination(final_stripped):
+        return final, "final_preferred_over_contaminated_stream"
     if final.startswith(streamed):
         return final, "final_extends_streamed"
     if streamed.startswith(final):

@@ -5,6 +5,8 @@ from app.output_hygiene import (
     finalize_visible_output,
     is_hidden_content_type,
     prepare_visible_stream_chunk,
+    repair_missing_inter_word_spaces,
+    strip_model_name_splices,
     strip_thinking_blocks,
     strip_thinking_blocks_from_chunk,
 )
@@ -29,10 +31,29 @@ def test_strip_thinking_blocks_from_chunk_preserves_whitespace_only_segments():
     )
 
 
-def test_prepare_visible_stream_chunk_infers_missing_word_boundary():
+def test_prepare_visible_stream_chunk_does_not_split_intra_word_chunks():
+    assert prepare_visible_stream_chunk("str", "ategic") == "ategic"
+    assert prepare_visible_stream_chunk("pa", "nel") == "nel"
+    assert prepare_visible_stream_chunk("Hello", "world") == "world"
     assert prepare_visible_stream_chunk("Assessment of the", "proposed") == " proposed"
-    assert prepare_visible_stream_chunk("Hello", "world") == " world"
-    assert prepare_visible_stream_chunk("Hello", " world") == " world"
+
+
+def test_repair_missing_inter_word_spaces_fixes_glued_common_words():
+    assert repair_missing_inter_word_spaces("Assessment of theproposed edits") == (
+        "Assessment of the proposed edits"
+    )
+    assert repair_missing_inter_word_spaces("yourletterand envelope") == (
+        "your letter and envelope"
+    )
+
+
+def test_strip_model_name_splices_removes_known_display_name_fragments():
+    assert strip_model_name_splices("Sonnet 5owever the issue remains.") == (
+        "owever the issue remains."
+    )
+    assert strip_model_name_splices("## ****Opus 4.7LM 5.2hairman's Synthesis") == (
+        "##  Synthesis"
+    )
 
 
 def test_clean_visible_output_is_idempotent():
@@ -78,6 +99,7 @@ def test_build_hygiene_metadata_marks_contamination_for_retry():
     hygiene = build_hygiene_metadata(raw, cleaned)
     assert hygiene["visible_contamination_detected"] is True
     assert hygiene["retry_recommended"] is True
+    assert "owever" in cleaned
 
 
 def test_is_hidden_content_type_matches_transport_reasoning_types():
