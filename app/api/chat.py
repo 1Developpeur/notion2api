@@ -23,6 +23,7 @@ from app.attachments.security import AttachmentPolicy
 from app.attachments.errors import AttachmentError
 from app.output_hygiene import (
     finalize_visible_output,
+    prepare_visible_stream_chunk,
     strip_thinking_blocks,
     strip_thinking_blocks_from_chunk,
 )
@@ -355,13 +356,13 @@ RECALL_INTENT_KEYWORDS = [
 def _strip_visible_stream_chunk(text: str) -> str:
     """Remove hidden-reasoning markup from a single streamed visible chunk."""
 
-    raw = str(text or "")
-    if not raw:
-        return ""
-    lowered = raw.lower()
-    if "redacted_thinking" in lowered or "<think" in lowered:
-        return strip_thinking_blocks(raw)
-    return strip_thinking_blocks_from_chunk(raw)
+    return prepare_visible_stream_chunk("", text)
+
+
+def _prepare_visible_stream_chunk(accumulator: str, raw_chunk: Any) -> str:
+    """Normalize a streamed chunk and preserve missing word boundaries."""
+
+    return prepare_visible_stream_chunk(accumulator, raw_chunk)
 
 
 def _finalize_visible_reply(
@@ -970,7 +971,10 @@ def _create_lite_stream_generator(
             if item_type != "content":
                 continue
 
-            chunk_text = _strip_visible_stream_chunk(item.get("text", ""))
+            chunk_text = _prepare_visible_stream_chunk(
+                streamed_content_accumulator,
+                item.get("text", ""),
+            )
             if not chunk_text:
                 continue
 
@@ -1122,7 +1126,10 @@ def _create_standard_stream_generator(
             if item_type != "content":
                 continue
 
-            chunk_text = _strip_visible_stream_chunk(item.get("text", ""))
+            chunk_text = _prepare_visible_stream_chunk(
+                streamed_content_accumulator,
+                item.get("text", ""),
+            )
             if not chunk_text:
                 continue
 
@@ -1420,7 +1427,10 @@ def _handle_lite_request(
                 if item_type != "content":
                     continue
 
-                chunk_text = _strip_visible_stream_chunk(item.get("text", ""))
+                chunk_text = _prepare_visible_stream_chunk(
+                    "".join(content_parts),
+                    item.get("text", ""),
+                )
                 if chunk_text:
                     content_parts.append(chunk_text)
 
@@ -1684,7 +1694,10 @@ def _handle_standard_request(
                 if item_type != "content":
                     continue
 
-                chunk_text = _strip_visible_stream_chunk(item.get("text", ""))
+                chunk_text = _prepare_visible_stream_chunk(
+                    "".join(content_parts),
+                    item.get("text", ""),
+                )
                 if chunk_text:
                     content_parts.append(chunk_text)
 
@@ -2175,7 +2188,10 @@ async def create_chat_completion(
                         if item_type != "content":
                             continue
 
-                        chunk_text = _strip_visible_stream_chunk(item.get("text", ""))
+                        chunk_text = _prepare_visible_stream_chunk(
+                            streamed_content_accumulator,
+                            item.get("text", ""),
+                        )
                         if not chunk_text and not pending_search_md:
                             continue
 
@@ -2471,7 +2487,10 @@ async def create_chat_completion(
                     continue
                 if item_type != "content":
                     continue
-                chunk_text = _strip_visible_stream_chunk(item.get("text", ""))
+                chunk_text = _prepare_visible_stream_chunk(
+                    "".join(content_parts),
+                    item.get("text", ""),
+                )
                 if chunk_text:
                     content_parts.append(chunk_text)
 

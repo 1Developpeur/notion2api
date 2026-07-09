@@ -27,6 +27,26 @@ def _parse_sse_chunks(chunks):
     return payloads
 
 
+def test_lite_stream_infers_missing_word_boundary_between_chunks():
+    source = _iter_items(
+        {"type": "content", "text": "Assessment of the"},
+        {"type": "content", "text": "proposed"},
+        {"type": "content", "text": " edits"},
+    )
+    first_item = next(source)
+
+    chunks = list(
+        _create_lite_stream_generator("chatcmpl-test", "test-model", first_item, source)
+    )
+    payloads = _parse_sse_chunks(chunks)
+    content = "".join(
+        payload["choices"][0]["delta"].get("content", "")
+        for payload in payloads
+        if isinstance(payload, dict) and payload.get("choices")
+    )
+    assert content == "Assessment of the proposed edits"
+
+
 def test_lite_stream_preserves_whitespace_only_chunks_between_tokens():
     source = _iter_items(
         {"type": "content", "text": "Corrected"},

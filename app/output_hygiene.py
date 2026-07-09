@@ -92,6 +92,34 @@ def strip_thinking_blocks_from_chunk(text: Any) -> str:
     return cleaned
 
 
+def needs_visible_stream_boundary_space(previous: str, chunk: str) -> bool:
+    """Return True when two streamed chunks need an inferred word boundary."""
+
+    if not previous or not chunk:
+        return False
+    if chunk[0].isspace() or previous[-1].isspace():
+        return False
+    return previous[-1].isalpha() and chunk[0].isalpha()
+
+
+def prepare_visible_stream_chunk(previous: str, raw_chunk: Any) -> str:
+    """Normalize one streamed chunk and infer a missing inter-word space."""
+
+    raw = str(raw_chunk or "")
+    if not raw:
+        return ""
+    lowered = raw.lower()
+    if "redacted_thinking" in lowered or "<think" in lowered:
+        chunk = strip_thinking_blocks(raw)
+    else:
+        chunk = strip_thinking_blocks_from_chunk(raw)
+    if not chunk:
+        return ""
+    if needs_visible_stream_boundary_space(previous, chunk):
+        return " " + chunk
+    return chunk
+
+
 def _has_repeated_markdown_heading(text: str) -> bool:
     headings = [
         re.sub(r"\s+", " ", match.group(1)).strip().casefold()

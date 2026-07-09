@@ -4,6 +4,7 @@ from app.output_hygiene import (
     detect_visible_output_contamination,
     finalize_visible_output,
     is_hidden_content_type,
+    prepare_visible_stream_chunk,
     strip_thinking_blocks,
     strip_thinking_blocks_from_chunk,
 )
@@ -26,6 +27,12 @@ def test_strip_thinking_blocks_from_chunk_preserves_whitespace_only_segments():
         + strip_thinking_blocks_from_chunk("world")
         == "Hello world"
     )
+
+
+def test_prepare_visible_stream_chunk_infers_missing_word_boundary():
+    assert prepare_visible_stream_chunk("Assessment of the", "proposed") == " proposed"
+    assert prepare_visible_stream_chunk("Hello", "world") == " world"
+    assert prepare_visible_stream_chunk("Hello", " world") == " world"
 
 
 def test_clean_visible_output_is_idempotent():
