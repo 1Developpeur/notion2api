@@ -722,6 +722,18 @@ def _prepare_messages(
         raise HTTPException(
             status_code=400, detail="The last message must be from role 'user'."
         )
+    
+    if isinstance(user_prompt, list):
+        raw_user_prompt = ""
+        for prompt in user_prompt:
+            if isinstance(prompt, dict):
+                prompt = prompt.get("text", "")
+                if prompt:
+                    raw_user_prompt += prompt
+                    raw_user_prompt += "\n"
+        
+        user_prompt = raw_user_prompt
+
     if not user_prompt.strip():
         raise HTTPException(
             status_code=400, detail="The last user message cannot be empty."
